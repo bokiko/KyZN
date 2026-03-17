@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# kyzn — Autonomous Code Improvement CLI
+# https://github.com/bokiko/kyzn
+set -euo pipefail
+
+KYZN_VERSION="0.1.0"
+KYZN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load core library
+# shellcheck source=lib/core.sh
+source "$KYZN_ROOT/lib/core.sh"
+
+# ---------------------------------------------------------------------------
+# Subcommand routing
+# ---------------------------------------------------------------------------
+usage() {
+    cat <<'EOF'
+kyzn — Autonomous Code Improvement CLI (kaizen)
+
+Usage:
+  kyzn <command> [options]
+
+Commands:
+  improve         Run an improvement cycle (measure → improve → verify → PR)
+  measure         Measure project health (no changes)
+  status          Show health score dashboard
+  init            Interactive setup (creates .kyzn/config.yaml)
+  doctor          Check prerequisites
+
+  approve <id>    Sign off on a completed improvement
+  reject <id>     Reject with reason (tool learns)
+  diff <id>       Show what a run changed
+  history         Show all runs with scores and trends
+
+  schedule        Set up recurring runs (cron)
+  version         Show version
+
+Options:
+  -h, --help      Show this help
+  -v, --version   Show version
+
+Examples:
+  kyzn init                       # First-time setup
+  kyzn doctor                     # Check prerequisites
+  kyzn improve                    # Interactive improvement cycle
+  kyzn improve --auto             # Use saved config (for cron)
+  kyzn improve --focus security   # Target specific area
+  kyzn improve --mode deep        # Real improvements only
+  kyzn measure                    # Measure only, no changes
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        improve)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/interview.sh"
+            source "$KYZN_ROOT/lib/measure.sh"
+            source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/execute.sh"
+            source "$KYZN_ROOT/lib/verify.sh"
+            source "$KYZN_ROOT/lib/allowlist.sh"
+            source "$KYZN_ROOT/lib/report.sh"
+            cmd_improve "$@"
+            ;;
+        measure)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/measure.sh"
+            cmd_measure "$@"
+            ;;
+        status)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/measure.sh"
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_status "$@"
+            ;;
+        init)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/interview.sh"
+            cmd_init "$@"
+            ;;
+        doctor)
+            shift
+            cmd_doctor "$@"
+            ;;
+        approve)
+            shift
+            source "$KYZN_ROOT/lib/approve.sh"
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_approve "$@"
+            ;;
+        reject)
+            shift
+            source "$KYZN_ROOT/lib/approve.sh"
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_reject "$@"
+            ;;
+        diff)
+            shift
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_diff "$@"
+            ;;
+        history)
+            shift
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_history "$@"
+            ;;
+        schedule)
+            shift
+            source "$KYZN_ROOT/lib/schedule.sh"
+            cmd_schedule "$@"
+            ;;
+        version|--version|-v)
+            echo "kyzn v${KYZN_VERSION}"
+            ;;
+        help|--help|-h|"")
+            usage
+            ;;
+        *)
+            log_error "Unknown command: $cmd"
+            echo ""
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Doctor — prerequisite checker
+# ---------------------------------------------------------------------------
+cmd_doctor() {
+    log_header "kyzn doctor — checking prerequisites"
+    local ok=true
+
+    # Required tools
+    local -a required=("git" "gh" "claude" "jq" "yq")
+    for tool in "${required[@]}"; do
+        if command -v "$tool" &>/dev/null; then
+            local ver
+            case "$tool" in
+                git)    ver=$(git --version | awk '{print $3}') ;;
+                gh)     ver=$(gh --version | head -1 | awk '{print $3}') ;;
+                claude) ver=$(claude --version 2>/dev/null || echo "unknown") ;;
+                jq)     ver=$(jq --version 2>/dev/null || echo "unknown") ;;
+                yq)     ver=$(yq --version 2>/dev/null | awk '{print $NF}') ;;
+            esac
+            log_ok "$tool ($ver)"
+        else
+            log_fail "$tool — not found"
+            ok=false
+        fi
+    done
+
+    # API key
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        log_ok "ANTHROPIC_API_KEY is set"
+    else
+        log_warn "ANTHROPIC_API_KEY not set (needed for claude CLI)"
+    fi
+
+    # GitHub auth
+    if gh auth status &>/dev/null; then
+        log_ok "gh authenticated"
+    else
+        log_warn "gh not authenticated (run: gh auth login)"
+    fi
+
+    # Optional tools by language
+    echo ""
+    log_info "Optional tools (per project type):"
+
+    local -A optional_tools=(
+        ["npm"]="Node.js"
+        ["npx"]="Node.js"
+        ["eslint"]="Node.js linting"
+        ["tsc"]="TypeScript"
+        ["ruff"]="Python linting"
+        ["mypy"]="Python types"
+        ["pytest"]="Python testing"
+        ["cargo"]="Rust"
+        ["go"]="Go"
+        ["govulncheck"]="Go security"
+    )
+
+    for tool in npm npx eslint tsc ruff mypy pytest cargo go govulncheck; do
+        if command -v "$tool" &>/dev/null; then
+            log_ok "$tool (${optional_tools[$tool]})"
+        else
+            log_dim "$tool (${optional_tools[$tool]}) — not installed"
+        fi
+    done
+
+    echo ""
+    if $ok; then
+        log_ok "All required tools found. kyzn is ready."
+    else
+        log_fail "Missing required tools. Install them and re-run kyzn doctor."
+        exit 1
+    fi
+}
+
+main "$@"

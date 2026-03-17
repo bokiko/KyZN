@@ -1,0 +1,14 @@
+# kyzn local data
+.kyzn/history/
+.kyzn/reports/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

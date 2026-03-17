@@ -1,0 +1,26 @@
+# kyzn configuration — commit this file
+# Run `kyzn init` to generate this interactively
+
+project:
+  name: my-project
+  type: node  # auto-detected: node, python, rust, go
+
+preferences:
+  mode: deep          # deep (real improvements) | clean (cleanup) | full (everything)
+  budget: 2.50        # USD per run
+  max_turns: 30       # max Claude turns per run
+  diff_limit: 2000    # max lines changed before aborting
+  trust: guardian      # guardian (always PR) | autopilot (auto-merge if safe)
+  on_build_fail: report  # report | discard | draft-pr
+
+focus:
+  priorities: [security, testing, performance]  # from interview
+
+# Optional: custom scoring weights (default shown)
+# scoring:
+#   weights:
+#     security: 25
+#     testing: 25
+#     performance: 15
+#     quality: 25
+#     documentation: 10

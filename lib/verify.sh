@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# kyzn/lib/verify.sh — Build/test verification
+
+# ---------------------------------------------------------------------------
+# Verify build and tests pass
+# ---------------------------------------------------------------------------
+verify_build() {
+    local project_type="${KYZN_PROJECT_TYPE:-generic}"
+
+    log_header "kyzn verify — checking build & tests"
+
+    local build_ok=true
+    # tests_ok reserved for future per-step tracking
+
+    case "$project_type" in
+        node)
+            verify_node || build_ok=false
+            ;;
+        python)
+            verify_python || build_ok=false
+            ;;
+        rust)
+            verify_rust || build_ok=false
+            ;;
+        go)
+            verify_go || build_ok=false
+            ;;
+        generic)
+            log_info "Generic project — skipping language-specific verification"
+            ;;
+    esac
+
+    if $build_ok; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Node.js verification
+# ---------------------------------------------------------------------------
+verify_node() {
+    local ok=true
+
+    # Check if build script exists
+    if [[ -f "package.json" ]] && jq -e '.scripts.build' package.json &>/dev/null; then
+        log_step "Running npm build..."
+        if ! npm run build 2>&1 | tail -5; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
+    fi
+
+    # TypeScript check
+    if [[ -f "tsconfig.json" ]] && command -v npx &>/dev/null; then
+        log_step "Running TypeScript check..."
+        if ! npx tsc --noEmit 2>&1 | tail -5; then
+            log_error "TypeScript check failed"
+            ok=false
+        else
+            log_ok "TypeScript check passed"
+        fi
+    fi
+
+    # Run tests
+    if jq -e '.scripts.test' package.json &>/dev/null 2>&1; then
+        log_step "Running tests..."
+        if ! npm test 2>&1 | tail -10; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+    fi
+
+    $ok
+}
+
+# ---------------------------------------------------------------------------
+# Python verification
+# ---------------------------------------------------------------------------
+verify_python() {
+    local ok=true
+
+    # Ruff check
+    if command -v ruff &>/dev/null; then
+        log_step "Running ruff check..."
+        if ! ruff check . 2>&1 | tail -5; then
+            log_warn "Ruff found issues (non-blocking)"
+        else
+            log_ok "Ruff check passed"
+        fi
+    fi
+
+    # Mypy
+    if command -v mypy &>/dev/null; then
+        log_step "Running mypy..."
+        if ! mypy . 2>&1 | tail -5; then
+            log_warn "Mypy found issues (non-blocking)"
+        else
+            log_ok "Mypy check passed"
+        fi
+    fi
+
+    # pytest
+    if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
+        log_step "Running pytest..."
+        if ! pytest 2>&1 | tail -10; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+    fi
+
+    $ok
+}
+
+# ---------------------------------------------------------------------------
+# Rust verification
+# ---------------------------------------------------------------------------
+verify_rust() {
+    local ok=true
+
+    if command -v cargo &>/dev/null; then
+        log_step "Running cargo check..."
+        if ! cargo check 2>&1 | tail -5; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
+
+        log_step "Running cargo test..."
+        if ! cargo test 2>&1 | tail -10; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+    fi
+
+    $ok
+}
+
+# ---------------------------------------------------------------------------
+# Go verification
+# ---------------------------------------------------------------------------
+verify_go() {
+    local ok=true
+
+    if command -v go &>/dev/null; then
+        log_step "Running go build..."
+        if ! go build ./... 2>&1 | tail -5; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
+
+        log_step "Running go test..."
+        if ! go test ./... 2>&1 | tail -10; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+
+        log_step "Running go vet..."
+        if ! go vet ./... 2>&1 | tail -5; then
+            log_warn "go vet found issues (non-blocking)"
+        else
+            log_ok "go vet passed"
+        fi
+    fi
+
+    $ok
+}
