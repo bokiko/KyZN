@@ -225,9 +225,12 @@ cmd_improve() {
         return 1
     }
 
-    # Step 5: Check diff size (locale-independent via --numstat)
+    # Step 5: Check diff size (tracked changes + new untracked files)
+    # Stage temporarily to count all changes (tracked + untracked)
+    git add -A 2>/dev/null
     local numstat
-    numstat=$(git diff --numstat HEAD 2>/dev/null) || true
+    numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
+    git reset HEAD 2>/dev/null || true
     local diff_lines=0 del_lines=0
     if [[ -n "$numstat" ]]; then
         diff_lines=$(echo "$numstat" | awk '{sum+=$1} END {print sum+0}')
@@ -333,7 +336,8 @@ EOF
             ;;
         draft-pr)
             log_info "Creating draft PR with failure report..."
-            git add -u 2>/dev/null
+            git add -A 2>/dev/null
+            git reset HEAD -- '*.env' '*.env.*' '*.pem' '*.key' 'credentials*' '.env*' 2>/dev/null || true
             git commit -m "kyzn: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
             git push -u origin HEAD 2>/dev/null || true
             gh pr create --draft \

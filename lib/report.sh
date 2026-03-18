@@ -72,8 +72,9 @@ EOF
     local trust
     trust=$(config_get '.preferences.trust' 'guardian')
 
-    # Commit changes (only tracked files, not untracked)
-    git add -u 2>/dev/null
+    # Stage all changes but exclude common secrets
+    git add -A 2>/dev/null
+    git reset HEAD -- '*.env' '*.env.*' '*.pem' '*.key' 'credentials*' '.env*' 2>/dev/null || true
     git commit -m "kyzn($mode): improve $focus [run:$run_id]
 
 Health: $before_score → $after_score ($trend$delta)
