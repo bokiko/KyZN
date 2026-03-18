@@ -16,39 +16,50 @@ build_allowlist() {
         "Grep"
     )
 
-    # Language-specific bash commands
+    # Language-specific bash commands (tightened to specific subcommands)
     case "$project_type" in
         node)
             tools+=(
-                '"Bash(npm *)"'
+                '"Bash(npm test*)"'
+                '"Bash(npm run *)"'
+                '"Bash(npm audit*)"'
+                '"Bash(npm ci*)"'
+                '"Bash(npm install*)"'
                 '"Bash(npx *)"'
-                '"Bash(node *)"'
             )
             ;;
         python)
             tools+=(
-                '"Bash(pip *)"'
-                '"Bash(pytest *)"'
+                '"Bash(pip install*)"'
+                '"Bash(pip list*)"'
+                '"Bash(pytest*)"'
+                '"Bash(python -m pytest*)"'
+                '"Bash(python -m pip*)"'
                 '"Bash(ruff *)"'
                 '"Bash(mypy *)"'
-                '"Bash(python *)"'
             )
             ;;
         rust)
             tools+=(
-                '"Bash(cargo *)"'
+                '"Bash(cargo check*)"'
+                '"Bash(cargo test*)"'
+                '"Bash(cargo clippy*)"'
+                '"Bash(cargo build*)"'
+                '"Bash(cargo audit*)"'
             )
             ;;
         go)
             tools+=(
-                '"Bash(go *)"'
+                '"Bash(go build*)"'
+                '"Bash(go test*)"'
+                '"Bash(go vet*)"'
+                '"Bash(go mod*)"'
             )
             ;;
         generic)
             # Minimal bash access for generic projects
             tools+=(
                 '"Bash(ls *)"'
-                '"Bash(cat *)"'
                 '"Bash(wc *)"'
             )
             ;;

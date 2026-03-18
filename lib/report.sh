@@ -70,9 +70,9 @@ EOF
 
     log_ok "Report saved to $report_file"
 
-    # Create PR if trust mode allows
+    # Create PR if trust mode allows (trust only from local.yaml, never committed config)
     local trust
-    trust=$(config_get '.preferences.trust' 'guardian')
+    trust=$(local_config_get '.trust' 'guardian')
 
     # Stage all changes, unstage secrets, warn about CI files
     safe_git add -A 2>/dev/null

@@ -50,18 +50,48 @@ detect_pkg_manager() {
 # ---------------------------------------------------------------------------
 # Dependency installers
 # ---------------------------------------------------------------------------
+prompt_sudo() {
+    local pkg_name="$1"
+    warn "kyzn needs to install: $pkg_name"
+    echo -en "  ${BOLD}Allow sudo to install dependencies?${RESET} [Y/n]: "
+    local answer
+    read -r answer
+    answer="${answer:-y}"
+    if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+        return 0
+    else
+        info "Skipping. Install manually: sudo apt-get install $pkg_name (or equivalent)"
+        return 1
+    fi
+}
+
 install_jq() {
     local pkg_mgr="$1"
     echo -e "\n${BOLD}Installing jq...${RESET}"
     case "$pkg_mgr" in
-        apt)    sudo apt-get install -y -qq jq ;;
+        apt)
+            prompt_sudo jq || return 0
+            sudo apt-get install -y -qq jq
+            ;;
         brew)   brew install jq ;;
-        dnf)    sudo dnf install -y -q jq ;;
-        yum)    sudo yum install -y -q jq ;;
-        pacman) sudo pacman -S --noconfirm jq ;;
-        apk)    sudo apk add -q jq ;;
+        dnf)
+            prompt_sudo jq || return 0
+            sudo dnf install -y -q jq
+            ;;
+        yum)
+            prompt_sudo jq || return 0
+            sudo yum install -y -q jq
+            ;;
+        pacman)
+            prompt_sudo jq || return 0
+            sudo pacman -S --noconfirm jq
+            ;;
+        apk)
+            prompt_sudo jq || return 0
+            sudo apk add -q jq
+            ;;
         *)
-            # Fallback: download binary
+            # Fallback: download binary (no sudo needed)
             local arch
             arch=$(uname -m)
             case "$arch" in
@@ -85,7 +115,7 @@ install_yq() {
     # Always install as native binary
     if has_cmd yq && [[ "$(which yq)" == */snap/* ]]; then
         warn "Removing snap yq (incompatible with hidden directories)..."
-        sudo snap remove yq 2>/dev/null || true
+        prompt_sudo "snap remove yq" && sudo snap remove yq 2>/dev/null || true
     fi
 
     local arch
@@ -98,11 +128,47 @@ install_yq() {
     local os="linux"
     [[ "$(uname)" == "Darwin" ]] && os="darwin"
 
-    mkdir -p "$BIN_DIR"
-    wget -qO "$BIN_DIR/yq" "https://github.com/mikefarah/yq/releases/latest/download/yq_${os}_${arch}" \
-        && chmod +x "$BIN_DIR/yq"
+    # Pinned version + SHA256 checksums for supply chain safety
+    local YQ_VERSION="v4.44.1"
+    # checksums from https://github.com/mikefarah/yq/releases/tag/v4.44.1
+    local -A YQ_CHECKSUMS=(
+        ["linux_amd64"]="a8bd3bd4e1871b37028a1e89ddc16fec10e62586e4a1053e0c4666abb559f029"
+        ["linux_arm64"]="47025f24e1b752fdf340e48cdeab56bdd2a6a7f2cf7b2d48b6fae83a4e724c8c"
+        ["darwin_amd64"]="2ff786273b7a5f2d1c9df9e4c932a4fb38cf6d44f553573a1d53ed9108d661db"
+        ["darwin_arm64"]="de22118250c2eb8e87d8720d4101990fc66c3ddd1dda29f0b3a83bf6f7c3a699"
+    )
 
-    has_cmd yq && ok "yq installed (native binary)" || err "yq install failed"
+    local platform_key="${os}_${arch}"
+    local expected_checksum="${YQ_CHECKSUMS[$platform_key]:-}"
+
+    mkdir -p "$BIN_DIR"
+    local tmp
+    tmp=$(mktemp)
+    wget -qO "$tmp" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${platform_key}" || {
+        err "Failed to download yq"
+        rm -f "$tmp"
+        return 1
+    }
+
+    # Verify checksum if available for this platform
+    if [[ -n "$expected_checksum" ]]; then
+        local actual_checksum
+        actual_checksum=$(sha256sum "$tmp" | awk '{print $1}')
+        if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+            err "yq checksum verification failed!"
+            err "  Expected: $expected_checksum"
+            err "  Got:      $actual_checksum"
+            rm -f "$tmp"
+            return 1
+        fi
+        ok "yq checksum verified"
+    else
+        warn "No checksum available for $platform_key — skipping verification"
+    fi
+
+    mv "$tmp" "$BIN_DIR/yq" && chmod +x "$BIN_DIR/yq"
+
+    has_cmd yq && ok "yq installed (native binary, $YQ_VERSION)" || err "yq install failed"
 }
 
 # ---------------------------------------------------------------------------

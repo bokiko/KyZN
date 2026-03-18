@@ -27,13 +27,22 @@ unstage_secrets() {
 # Safety: check for dangerous staged files (CI pipelines, git hooks)
 # ---------------------------------------------------------------------------
 check_dangerous_files() {
+    local allow_ci="${KYZN_ALLOW_CI:-false}"
     local dangerous
-    dangerous=$(git diff --cached --name-only 2>/dev/null | grep -E '\.github/workflows/|\.git/hooks/|\.gitlab-ci\.yml|Jenkinsfile' || true)
+    dangerous=$(git diff --cached --name-only 2>/dev/null | grep -E '\.github/workflows/|\.git/hooks/|\.gitlab-ci\.yml|Jenkinsfile|\.circleci/' || true)
     if [[ -n "$dangerous" ]]; then
-        log_warn "Claude created CI/pipeline files — review carefully:"
-        echo "$dangerous" | while IFS= read -r f; do
-            [[ -n "$f" ]] && log_warn "  - $f"
-        done
+        if [[ "$allow_ci" == "true" ]]; then
+            log_warn "Claude created CI/pipeline files (--allow-ci enabled):"
+            echo "$dangerous" | while IFS= read -r f; do
+                [[ -n "$f" ]] && log_warn "  - $f"
+            done
+        else
+            log_warn "Claude created CI/pipeline files — unstaging (use --allow-ci to override):"
+            echo "$dangerous" | while IFS= read -r f; do
+                [[ -n "$f" ]] && log_warn "  - $f"
+            done
+            echo "$dangerous" | xargs -r git reset HEAD -- 2>/dev/null || true
+        fi
     fi
 }
 
@@ -91,16 +100,23 @@ execute_claude() {
     local stderr_file
     stderr_file=$(mktemp)
 
+    # Sensitive file access restrictions
+    local disallowed_globs="~/.ssh/**,~/.aws/**,~/.config/gh/**,~/.gnupg/**,**/.env,**/.env.*,**/*.pem,**/*.key"
+
+    # Timeout (default 10 minutes)
+    local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-600}"
+
     # Core invocation (allowlist is intentionally unquoted for word splitting)
     local result
     # shellcheck disable=SC2086
     if $verbose; then
         # Stream condensed progress lines to terminal in real-time
-        result=$(claude -p "$prompt" \
+        result=$(timeout "$claude_timeout" claude -p "$prompt" \
             --model "$model" \
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
             $allowlist \
+            --disallowedFileGlobs "$disallowed_globs" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
@@ -109,17 +125,34 @@ execute_claude() {
                 local short
                 short=$(truncate_str "$line" 100)
                 echo -e "  ${DIM}${short}${RESET}" >&2
-            done)) || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
+            done)) || {
+            local exit_code=$?
+            if (( exit_code == 124 )); then
+                log_error "Claude Code timed out after ${claude_timeout}s"
+            else
+                log_error "Claude Code invocation failed"
+            fi
+            rm -f "$stderr_file"; return 1
+        }
     else
-        result=$(claude -p "$prompt" \
+        result=$(timeout "$claude_timeout" claude -p "$prompt" \
             --model "$model" \
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
             $allowlist \
+            --disallowedFileGlobs "$disallowed_globs" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
-            2>"$stderr_file") || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
+            2>"$stderr_file") || {
+            local exit_code=$?
+            if (( exit_code == 124 )); then
+                log_error "Claude Code timed out after ${claude_timeout}s"
+            else
+                log_error "Claude Code invocation failed"
+            fi
+            rm -f "$stderr_file"; return 1
+        }
     fi
 
     rm -f "$stderr_file"
@@ -177,6 +210,7 @@ cmd_improve() {
             --budget)   budget="$2"; budget_from_cli=true; shift 2 ;;
             --turns)    max_turns="$2"; shift 2 ;;
             --model)    model="$2"; model_from_cli=true; shift 2 ;;
+            --allow-ci) export KYZN_ALLOW_CI=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
@@ -408,6 +442,30 @@ cmd_improve() {
     if (( after_score < baseline_score )); then
         log_warn "Score regressed ($baseline_score → $after_score). Aborting."
         # Always discard on regression — never create a PR for worse code
+        handle_build_failure "discard" "$run_id" "$branch_name" "$mode" "$focus"
+        return 1
+    fi
+
+    # Per-category score floor: abort if any category drops > 5 points
+    local category_regression=false
+    for cat in security testing performance quality documentation; do
+        local before_cat after_cat
+        before_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$baseline_file" 2>/dev/null) || true
+        after_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$after_file" 2>/dev/null) || true
+
+        if [[ -n "$before_cat" && -n "$after_cat" ]]; then
+            local b_int="${before_cat%.*}" a_int="${after_cat%.*}"
+            b_int="${b_int:-0}"; a_int="${a_int:-0}"
+            local drop=$(( b_int - a_int ))
+            if (( drop > 5 )); then
+                log_warn "Category '$cat' dropped $drop points ($b_int → $a_int)"
+                category_regression=true
+            fi
+        fi
+    done
+
+    if $category_regression; then
+        log_warn "Per-category score floor breached. Aborting."
         handle_build_failure "discard" "$run_id" "$branch_name" "$mode" "$focus"
         return 1
     fi

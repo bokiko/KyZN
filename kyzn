@@ -3,7 +3,7 @@
 # https://github.com/bokiko/kyzn
 set -euo pipefail
 
-KYZN_VERSION="0.2.0"
+KYZN_VERSION="0.3.0"
 KYZN_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Load core library
@@ -28,7 +28,7 @@ Commands:
   doctor          Check prerequisites
 
   approve <id>    Sign off on a completed improvement
-  reject <id>     Reject with reason (tool learns)
+  reject <id>     Reject with reason
   diff <id>       Show what a run changed
   history         Show all runs with scores and trends
 

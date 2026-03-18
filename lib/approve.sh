@@ -95,6 +95,6 @@ cmd_reject() {
     log_ok "Run $run_id rejected."
     if [[ -n "$reason" ]]; then
         log_info "Reason: $reason"
-        log_info "kyzn will learn to avoid similar changes."
+        log_info "Rejection recorded."
     fi
 }

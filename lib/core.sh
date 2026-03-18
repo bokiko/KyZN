@@ -34,6 +34,7 @@ log_step()   { echo -e "${BOLD}→${RESET} $*"; }
 # ---------------------------------------------------------------------------
 KYZN_DIR=".kyzn"
 KYZN_CONFIG="$KYZN_DIR/config.yaml"
+KYZN_LOCAL_CONFIG="$KYZN_DIR/local.yaml"
 KYZN_HISTORY_DIR="$KYZN_DIR/history"
 KYZN_REPORTS_DIR="$KYZN_DIR/reports"
 KYZN_GLOBAL_DIR="${HOME}/.kyzn"
@@ -65,6 +66,23 @@ config_get() {
     if has_config; then
         local val
         val=$(yq eval "$key" "$KYZN_CONFIG" 2>/dev/null)
+        if [[ "$val" == "null" || -z "$val" ]]; then
+            echo "$default"
+        else
+            echo "$val"
+        fi
+    else
+        echo "$default"
+    fi
+}
+
+# Read a value from local (gitignored) config
+local_config_get() {
+    local key="$1"
+    local default="${2:-}"
+    if [[ -f "$KYZN_LOCAL_CONFIG" ]]; then
+        local val
+        val=$(yq eval "$key" "$KYZN_LOCAL_CONFIG" 2>/dev/null)
         if [[ "$val" == "null" || -z "$val" ]]; then
             echo "$default"
         else

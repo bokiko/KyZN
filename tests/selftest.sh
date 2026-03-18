@@ -276,9 +276,10 @@ test_interview_config() {
     mode=$(config_get '.preferences.mode' '')
     assert_eq "config mode is clean" "deep" "$mode"
 
+    # Trust now lives in local.yaml (not config.yaml) — verify it's there
     local trust
-    trust=$(config_get '.preferences.trust' '')
-    assert_eq "config trust is clean" "guardian" "$trust"
+    trust=$(local_config_get '.trust' '')
+    assert_eq "local trust is clean" "guardian" "$trust"
 
     local on_fail
     on_fail=$(config_get '.preferences.on_build_fail' '')
@@ -876,6 +877,184 @@ test_get_system_prompt() {
 }
 
 # ---------------------------------------------------------------------------
+# v0.3.0 security hardening tests
+# ---------------------------------------------------------------------------
+
+test_disallowed_file_globs() {
+    log_header "31. --disallowedFileGlobs in execute_claude"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+
+    # Read the function source and verify it contains disallowedFileGlobs
+    local src
+    src=$(cat "$KYZN_ROOT/lib/execute.sh")
+    assert_contains "execute.sh has disallowedFileGlobs" "$src" "disallowedFileGlobs"
+    assert_contains "blocks ~/.ssh" "$src" "~/.ssh/**"
+    assert_contains "blocks ~/.aws" "$src" "~/.aws/**"
+    assert_contains "blocks .env files" "$src" "**/.env"
+    assert_contains "blocks .pem files" "$src" "**/*.pem"
+}
+
+test_ci_blocking() {
+    log_header "32. CI file blocking (check_dangerous_files)"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Stage a CI workflow file
+    mkdir -p .github/workflows
+    echo 'name: evil' > .github/workflows/evil.yml
+    git add .github/workflows/evil.yml
+
+    # Without --allow-ci, should unstage
+    KYZN_ALLOW_CI=false check_dangerous_files 2>/dev/null
+
+    local staged
+    staged=$(git diff --cached --name-only 2>/dev/null | grep -c 'evil.yml' || true)
+    assert_eq "CI file unstaged by default" "0" "$staged"
+
+    # With --allow-ci, should keep staged
+    git add .github/workflows/evil.yml
+    KYZN_ALLOW_CI=true check_dangerous_files 2>/dev/null
+
+    staged=$(git diff --cached --name-only 2>/dev/null | grep -c 'evil.yml' || true)
+    assert_eq "CI file kept with --allow-ci" "1" "$staged"
+
+    cleanup_sandbox
+}
+
+test_timeout_flag() {
+    log_header "33. Timeout wrapping in execute_claude"
+
+    local src
+    src=$(cat "$KYZN_ROOT/lib/execute.sh")
+    assert_contains "has timeout wrapper" "$src" 'timeout "$claude_timeout"'
+    assert_contains "has KYZN_CLAUDE_TIMEOUT env" "$src" "KYZN_CLAUDE_TIMEOUT"
+    assert_contains "default 600s" "$src" ':-600'
+}
+
+test_tightened_allowlist() {
+    log_header "34. Tightened allowlist wildcards"
+
+    source "$KYZN_ROOT/lib/allowlist.sh"
+
+    # Python: should NOT have broad 'python *', should have specific subcommands
+    local py_list
+    py_list=$(build_allowlist "python")
+    assert_not_contains "python no broad wildcard" "$py_list" '"Bash(python *)"'
+    assert_contains "python has pytest" "$py_list" "pytest"
+    assert_contains "python has python -m pytest" "$py_list" "python -m pytest"
+
+    # Node: should NOT have broad 'npm *', should have specific subcommands
+    local node_list
+    node_list=$(build_allowlist "node")
+    assert_not_contains "node no broad npm wildcard" "$node_list" '"Bash(npm *)"'
+    assert_contains "node has npm test" "$node_list" "npm test"
+    assert_contains "node has npm run" "$node_list" "npm run"
+    assert_not_contains "node no bare node" "$node_list" '"Bash(node *)"'
+
+    # Rust: should NOT have broad 'cargo *'
+    local rust_list
+    rust_list=$(build_allowlist "rust")
+    assert_not_contains "rust no broad cargo wildcard" "$rust_list" '"Bash(cargo *)"'
+    assert_contains "rust has cargo test" "$rust_list" "cargo test"
+    assert_contains "rust has cargo check" "$rust_list" "cargo check"
+
+    # Go: should NOT have broad 'go *'
+    local go_list
+    go_list=$(build_allowlist "go")
+    assert_not_contains "go no broad go wildcard" "$go_list" '"Bash(go *)"'
+    assert_contains "go has go test" "$go_list" "go test"
+    assert_contains "go has go build" "$go_list" "go build"
+
+    # Generic: should NOT have 'cat *'
+    local gen_list
+    gen_list=$(build_allowlist "generic")
+    assert_not_contains "generic no cat" "$gen_list" "cat"
+}
+
+test_trust_in_local_yaml() {
+    log_header "35. Trust stored in local.yaml, not config.yaml"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/interview.sh"
+
+    create_sandbox node
+
+    # Run interview with all defaults
+    echo -e "1\n1\n2.50\n1\n1" | run_interview 2>/dev/null
+
+    # Config should NOT have trust
+    local config_trust
+    config_trust=$(config_get '.preferences.trust' 'MISSING')
+    assert_eq "config.yaml has no trust" "MISSING" "$config_trust"
+
+    # Local config should have trust
+    assert_file_exists "local.yaml created" "$KYZN_LOCAL_CONFIG"
+    local local_trust
+    local_trust=$(local_config_get '.trust' '')
+    assert_eq "local.yaml has trust=guardian" "guardian" "$local_trust"
+
+    # .gitignore should include local.yaml
+    local gi
+    gi=$(cat "$KYZN_DIR/.gitignore")
+    assert_contains "gitignore has local.yaml" "$gi" "local.yaml"
+
+    cleanup_sandbox
+}
+
+test_per_category_floor() {
+    log_header "36. Per-category score floor logic"
+
+    source "$KYZN_ROOT/lib/measure.sh"
+
+    # Create measurement files where one category drops > 5 points
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    cat > "$tmpdir/baseline.json" <<'JSON'
+[
+  {"category": "security", "score": 9, "max_score": 10},
+  {"category": "quality", "score": 8, "max_score": 10}
+]
+JSON
+
+    cat > "$tmpdir/after.json" <<'JSON'
+[
+  {"category": "security", "score": 2, "max_score": 10},
+  {"category": "quality", "score": 10, "max_score": 10}
+]
+JSON
+
+    # Even though aggregate might be similar, security dropped 70 points
+    local before_sec after_sec
+    before_sec=$(jq -r '[.[] | select(.category == "security") | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$tmpdir/baseline.json")
+    after_sec=$(jq -r '[.[] | select(.category == "security") | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$tmpdir/after.json")
+
+    local b_int="${before_sec%.*}" a_int="${after_sec%.*}"
+    local drop=$(( b_int - a_int ))
+
+    if (( drop > 5 )); then
+        pass "per-category floor detects security drop ($b_int → $a_int, drop=$drop)"
+    else
+        fail "per-category floor" "should detect drop, got $drop"
+    fi
+
+    rm -rf "$tmpdir"
+}
+
+test_reject_no_learn_message() {
+    log_header "37. Reject says 'recorded' not 'will learn'"
+
+    local src
+    src=$(cat "$KYZN_ROOT/lib/approve.sh")
+    assert_contains "has 'Rejection recorded'" "$src" "Rejection recorded"
+    assert_not_contains "no 'will learn' message" "$src" "will learn"
+}
+
+# ---------------------------------------------------------------------------
 # Stress tests (--full or --stress only)
 # ---------------------------------------------------------------------------
 
@@ -1029,6 +1208,13 @@ main() {
     test_approve_missing_report
     test_allowlist_rust_go
     test_get_system_prompt
+    test_disallowed_file_globs
+    test_ci_blocking
+    test_timeout_flag
+    test_tightened_allowlist
+    test_trust_in_local_yaml
+    test_per_category_floor
+    test_reject_no_learn_message
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

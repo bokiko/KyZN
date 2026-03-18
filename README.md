@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/github/license/bokiko/kyzn?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/kyzn?style=flat-square" alt="Last Commit">
   <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
-  <img src="https://img.shields.io/badge/version-0.2.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-79%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-142%20passing-brightgreen?style=flat-square" alt="Tests">
 </p>
 
 </div>
@@ -236,12 +236,18 @@ kyzn schedule off                   # Remove schedule
 |-------|-----------|
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
 | **Budget cap** | Configurable per-run spending limit (default $2.50) |
-| **Tool allowlist** | Per-language restrictions — no `rm`, `sudo`, `git push` |
+| **Tool allowlist** | Per-language restrictions — tightened to specific subcommands (no `python -c`, no `rm`) |
+| **File access restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `~/.gnupg`, `.env`, or key files |
+| **CI file blocking** | Pipeline/workflow files are unstaged by default (override with `--allow-ci`) |
+| **Invocation timeout** | Claude calls timeout after 10min by default (`KYZN_CLAUDE_TIMEOUT` to override) |
 | **Build gate** | PR only if build + tests pass after changes |
-| **Score gate** | Aborts if health score drops after improvements |
+| **Score gate** | Aborts if aggregate health score drops after improvements |
+| **Per-category floor** | Aborts if any single category drops more than 5 points |
 | **Diff guard** | Aborts if changes exceed configurable threshold (default 2000 lines) |
 | **Pre-existing failures** | Won't abort on test failures that existed before |
 | **Branch cleanup** | Failed runs delete their branches automatically |
+| **Trust isolation** | Autopilot trust level stored in gitignored `local.yaml`, not committable config |
+| **Secret detection** | Regex-based heuristic pattern matching on staged files (`.env`, `.pem`, `.key`, etc.). This is not AST-level analysis — it catches common patterns but may miss obfuscated secrets. Use dedicated tools like `gitleaks` or `trufflehog` for comprehensive scanning. |
 
 ---
 
@@ -315,7 +321,7 @@ kyzn/
 ├── templates/              # Prompt templates
 ├── profiles/               # Focus-specific system prompts
 └── tests/
-    └── selftest.sh         # 79 tests (20 core + 4 stress)
+    └── selftest.sh         # 142 tests (37 core + 4 stress)
 ```
 
 ---
@@ -323,8 +329,8 @@ kyzn/
 ## Self-Test
 
 ```bash
-kyzn selftest              # Quick tests (20 cases)
-kyzn selftest --full       # Full suite with stress tests (79 cases)
+kyzn selftest              # Quick tests (133 cases)
+kyzn selftest --full       # Full suite with stress tests (142 cases)
 ```
 
 ---
@@ -337,7 +343,7 @@ kyzn selftest --full       # Full suite with stress tests (79 cases)
 - [x] Score regression gate
 - [x] Pre-existing test failure detection
 - [x] Branch cleanup on all failure paths
-- [x] 79-test self-test suite
+- [x] 142-test self-test suite
 - [ ] Parallel runs across multiple focus areas
 - [ ] Learning from rejection feedback
 - [ ] Coverage-aware test generation
