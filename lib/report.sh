@@ -72,8 +72,8 @@ EOF
     local trust
     trust=$(config_get '.preferences.trust' 'guardian')
 
-    # Commit changes
-    git add -A 2>/dev/null
+    # Commit changes (only tracked files, not untracked)
+    git add -u 2>/dev/null
     git commit -m "kyzn($mode): improve $focus [run:$run_id]
 
 Health: $before_score → $after_score ($trend$delta)
@@ -82,7 +82,7 @@ Cost: \$${KYZN_CLAUDE_COST:-unknown}" 2>/dev/null || true
     # Push and create PR
     git push -u origin HEAD 2>/dev/null || {
         log_warn "Could not push to remote. Create PR manually."
-        return
+        return 1
     }
 
     local pr_body
@@ -94,7 +94,7 @@ Cost: \$${KYZN_CLAUDE_COST:-unknown}" 2>/dev/null || true
         --body "$pr_body" \
         2>/dev/null) || {
         log_warn "Could not create PR. Create it manually."
-        return
+        return 1
     }
 
     log_ok "PR created: $pr_url"

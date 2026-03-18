@@ -81,14 +81,12 @@ cmd_reject() {
         updated=$(jq --arg r "$reason" '.status = "rejected" | .rejected_at = "'"$(timestamp)"'" | .rejection_reason = $r' "$history_file")
         echo "$updated" > "$history_file"
     else
-        cat > "$history_file" <<EOF
-{
-    "run_id": "$run_id",
-    "status": "rejected",
-    "rejected_at": "$(timestamp)",
-    "rejection_reason": "$reason"
-}
-EOF
+        jq -n \
+            --arg id "$run_id" \
+            --arg reason "$reason" \
+            --arg ts "$(timestamp)" \
+            '{"run_id":$id,"status":"rejected","rejected_at":$ts,"rejection_reason":$reason,"created_at":$ts}' \
+            > "$history_file"
     fi
 
     # Save to global history

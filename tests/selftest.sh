@@ -610,9 +610,8 @@ test_branch_cleanup_in_failure() {
     git branch | grep -q "kyzn/test-cleanup-branch" && pass "test branch created" || fail "test branch" "not created"
 
     # Simulate failure handler (discard strategy) — checkout - goes back to master, then deletes branch
-    # Use local to avoid clobbering main()'s mode variable
-    local mode="deep" focus="test" KYZN_CLAUDE_COST="0.00"
-    handle_build_failure "discard" "test-run" "kyzn/test-cleanup-branch"
+    local KYZN_CLAUDE_COST="0.00"
+    handle_build_failure "discard" "test-run" "kyzn/test-cleanup-branch" "deep" "test"
 
     # Branch should be deleted
     if ! git branch | grep -q "kyzn/test-cleanup-branch"; then

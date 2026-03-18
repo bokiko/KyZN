@@ -94,7 +94,7 @@ config_set_str() {
     if [[ ! -f "$KYZN_CONFIG" ]]; then
         echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
     fi
-    yq eval -i "$key = \"$value\"" "$KYZN_CONFIG"
+    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
 }
 
 # ---------------------------------------------------------------------------

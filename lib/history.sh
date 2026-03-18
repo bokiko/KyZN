@@ -110,10 +110,8 @@ cmd_status() {
     print_detection
     echo ""
 
-    local results_file
-    results_file=$(run_measurements)
-
-    display_health_dashboard "$results_file"
+    run_measurements "$KYZN_PROJECT_TYPE"
+    display_health_dashboard "$KYZN_MEASUREMENTS_FILE"
 
     # Show recent history
     if [[ -d "$KYZN_HISTORY_DIR" ]] && [[ -n "$(ls -A "$KYZN_HISTORY_DIR" 2>/dev/null)" ]]; then

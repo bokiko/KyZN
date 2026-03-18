@@ -179,9 +179,15 @@ cmd_improve() {
 
     display_health_dashboard "$baseline_file"
 
+    # Persist model choice to config for next run
+    if has_config; then
+        VALUE="$model" yq eval -i '.preferences.model = strenv(VALUE)' "$KYZN_CONFIG"
+    fi
+
     # Step 2: Create branch (use run_id suffix for uniqueness)
     local run_suffix="${run_id##*-}"
-    local branch_name="kyzn/$(date +%Y%m%d)-${focus}-${run_suffix}"
+    local safe_focus="${focus//[^a-zA-Z0-9_-]/-}"
+    local branch_name="kyzn/$(date +%Y%m%d)-${safe_focus}-${run_suffix}"
     log_step "Creating branch: $branch_name"
     git checkout -b "$branch_name" 2>/dev/null || {
         log_error "Failed to create branch $branch_name"
@@ -205,7 +211,6 @@ cmd_improve() {
     sys_prompt_file=$(get_system_prompt "$profile")
 
     # Step 3.5: Pre-existing test failure detection
-    source "$KYZN_ROOT/lib/verify.sh"
     local baseline_verify_ok=true
     if ! verify_build 2>/dev/null; then
         baseline_verify_ok=false
@@ -215,23 +220,24 @@ cmd_improve() {
     # Step 4: Execute Claude
     execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
         log_error "Claude execution failed"
-        git checkout - 2>/dev/null
+        git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
         git branch -D "$branch_name" 2>/dev/null || true
         return 1
     }
 
-    # Step 5: Check diff size
-    local diff_lines
-    diff_lines=$(git diff --stat HEAD 2>/dev/null | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+') || true
-    diff_lines="${diff_lines:-0}"
-    local del_lines
-    del_lines=$(git diff --stat HEAD 2>/dev/null | tail -1 | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+') || true
-    del_lines="${del_lines:-0}"
+    # Step 5: Check diff size (locale-independent via --numstat)
+    local numstat
+    numstat=$(git diff --numstat HEAD 2>/dev/null) || true
+    local diff_lines=0 del_lines=0
+    if [[ -n "$numstat" ]]; then
+        diff_lines=$(echo "$numstat" | awk '{sum+=$1} END {print sum+0}')
+        del_lines=$(echo "$numstat" | awk '{sum+=$2} END {print sum+0}')
+    fi
     local total_diff=$(( diff_lines + del_lines ))
 
     if (( total_diff > diff_limit )); then
         log_warn "Diff exceeds limit ($total_diff > $diff_limit lines). Aborting."
-        git checkout - 2>/dev/null
+        git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
         git branch -D "$branch_name" 2>/dev/null || true
         return 1
     fi
@@ -245,7 +251,7 @@ cmd_improve() {
         if $baseline_verify_ok; then
             # New failures introduced by Claude — abort
             log_error "Build or tests failed after improvements."
-            handle_build_failure "$on_fail" "$run_id" "$branch_name"
+            handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
         else
             log_warn "Build/tests still failing, but failures are pre-existing. Continuing."
@@ -258,21 +264,27 @@ cmd_improve() {
     run_measurements "$KYZN_PROJECT_TYPE" "$after_dir"
     local after_file="$KYZN_MEASUREMENTS_FILE"
 
-    # Step 7.5: Score regression gate
-    compute_health_score "$after_file"
-    local after_score="${KYZN_HEALTH_SCORE:-0}"
+    # Step 7.5: Score regression gate (capture baseline first, then after)
     compute_health_score "$baseline_file"
     local baseline_score="${KYZN_HEALTH_SCORE:-0}"
+    compute_health_score "$after_file"
+    local after_score="${KYZN_HEALTH_SCORE:-0}"
 
     if (( after_score < baseline_score )); then
         log_warn "Score regressed ($baseline_score → $after_score). Aborting."
-        handle_build_failure "$on_fail" "$run_id" "$branch_name"
+        handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
         return 1
     fi
 
+    # Clean up temp dirs
+    rm -rf "$baseline_dir" "$after_dir" 2>/dev/null
+    # Clean up combined system prompt if it was a temp file
+    [[ "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+
     # Step 8: Generate report and create PR
-    source "$KYZN_ROOT/lib/report.sh"
-    generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"
+    if ! generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"; then
+        log_warn "Report generation or PR creation had issues — check output above."
+    fi
 
     log_ok "Improvement cycle complete!"
     log_info "Run 'kyzn approve $run_id' to sign off, or 'kyzn reject $run_id' to discard."
@@ -285,6 +297,8 @@ handle_build_failure() {
     local strategy="$1"
     local run_id="$2"
     local branch_name="${3:-}"
+    local fail_mode="${4:-unknown}"
+    local fail_focus="${5:-unknown}"
 
     case "$strategy" in
         report)
@@ -294,8 +308,8 @@ handle_build_failure() {
 # kyzn Run Failed: $run_id
 
 **Date:** $(date -u)
-**Mode:** ${mode:-unknown}
-**Focus:** ${focus:-unknown}
+**Mode:** $fail_mode
+**Focus:** $fail_focus
 **Cost:** \$${KYZN_CLAUDE_COST:-unknown}
 
 ## What Happened
@@ -309,24 +323,24 @@ $(git diff --stat 2>/dev/null || echo "No diff available")
 - Consider running with a more conservative mode
 EOF
             log_info "Report saved to $KYZN_REPORTS_DIR/$run_id-failed.md"
-            git checkout - 2>/dev/null
+            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
             if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         discard)
             log_info "Discarding branch..."
-            git checkout - 2>/dev/null
+            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
             if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         draft-pr)
             log_info "Creating draft PR with failure report..."
-            git add -A 2>/dev/null
+            git add -u 2>/dev/null
             git commit -m "kyzn: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
             git push -u origin HEAD 2>/dev/null || true
             gh pr create --draft \
                 --title "kyzn: attempted improvements (build failed)" \
                 --body "**WARNING: Build failed after these changes.**\n\nRun ID: $run_id\nCost: \$${KYZN_CLAUDE_COST:-unknown}" \
                 2>/dev/null || true
-            git checkout - 2>/dev/null
+            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
             if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
     esac
