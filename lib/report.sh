@@ -28,11 +28,13 @@ generate_report() {
     if (( delta > 0 )); then trend="↑"; fi
     if (( delta < 0 )); then trend="↓"; fi
 
-    # Generate diff summary
+    # Generate diff summary (stage first to include new files)
+    safe_git add -A 2>/dev/null
     local diff_stat
-    diff_stat=$(git diff --stat HEAD 2>/dev/null || echo "No changes")
+    diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
     local files_changed
-    files_changed=$(git diff --name-only HEAD 2>/dev/null | wc -l)
+    files_changed=$(git diff --cached --name-only HEAD 2>/dev/null | wc -l)
+    git reset HEAD 2>/dev/null || true
 
     # Write report
     cat > "$report_file" <<EOF
@@ -72,10 +74,11 @@ EOF
     local trust
     trust=$(config_get '.preferences.trust' 'guardian')
 
-    # Stage all changes but exclude common secrets
-    git add -A 2>/dev/null
-    git reset HEAD -- '*.env' '*.env.*' '*.pem' '*.key' 'credentials*' '.env*' 2>/dev/null || true
-    git commit -m "kyzn($mode): improve $focus [run:$run_id]
+    # Stage all changes, unstage secrets, warn about CI files
+    safe_git add -A 2>/dev/null
+    unstage_secrets
+    check_dangerous_files
+    safe_git commit -m "kyzn($mode): improve $focus [run:$run_id]
 
 Health: $before_score → $after_score ($trend$delta)
 Cost: \$${KYZN_CLAUDE_COST:-unknown}" 2>/dev/null || true

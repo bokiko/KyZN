@@ -2,6 +2,75 @@
 # kyzn/lib/execute.sh — Claude Code invocation + safety
 
 # ---------------------------------------------------------------------------
+# Safety: git wrapper that disables hooks to prevent RCE from malicious repos
+# ---------------------------------------------------------------------------
+safe_git() {
+    git -c core.hooksPath=/dev/null "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Safety: unstage files matching secret patterns (works with actual globs)
+# ---------------------------------------------------------------------------
+unstage_secrets() {
+    local staged_secrets
+    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc' || true)
+    if [[ -n "$staged_secrets" ]]; then
+        echo "$staged_secrets" | xargs -r git reset HEAD -- 2>/dev/null || true
+        log_warn "Unstaged potential secrets from commit:"
+        echo "$staged_secrets" | while IFS= read -r f; do
+            [[ -n "$f" ]] && log_dim "  - $f"
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Safety: check for dangerous staged files (CI pipelines, git hooks)
+# ---------------------------------------------------------------------------
+check_dangerous_files() {
+    local dangerous
+    dangerous=$(git diff --cached --name-only 2>/dev/null | grep -E '\.github/workflows/|\.git/hooks/|\.gitlab-ci\.yml|Jenkinsfile' || true)
+    if [[ -n "$dangerous" ]]; then
+        log_warn "Claude created CI/pipeline files — review carefully:"
+        echo "$dangerous" | while IFS= read -r f; do
+            [[ -n "$f" ]] && log_warn "  - $f"
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Safety: enforce hard ceilings on config values
+# ---------------------------------------------------------------------------
+enforce_config_ceilings() {
+    local -n _budget=$1 _turns=$2 _diff_limit=$3
+
+    # Hard ceilings (cannot be overridden by config)
+    local max_budget=25 max_turns=100 max_diff=10000
+
+    if (( $(echo "$_budget > $max_budget" | bc -l 2>/dev/null || echo 0) )); then
+        log_warn "Budget $_budget exceeds max ($max_budget). Capping."
+        _budget="$max_budget"
+    fi
+    if (( _turns > max_turns )); then
+        log_warn "Max turns $_turns exceeds max ($max_turns). Capping."
+        _turns=$max_turns
+    fi
+    if (( _diff_limit > max_diff )); then
+        log_warn "Diff limit $_diff_limit exceeds max ($max_diff). Capping."
+        _diff_limit=$max_diff
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Safety: return to main/master branch (fallback chain)
+# ---------------------------------------------------------------------------
+safe_checkout_back() {
+    git checkout - 2>/dev/null ||
+    git checkout main 2>/dev/null ||
+    git checkout master 2>/dev/null ||
+    log_warn "Could not return to previous branch — run 'git checkout main' manually"
+}
+
+# ---------------------------------------------------------------------------
 # Execute Claude Code with safety layers
 # ---------------------------------------------------------------------------
 execute_claude() {
@@ -81,6 +150,14 @@ execute_claude() {
 cmd_improve() {
     require_git_repo
 
+    # Prevent concurrent runs on the same repo
+    ensure_kyzn_dirs
+    exec 9>"$KYZN_DIR/.improve.lock"
+    if ! flock -n 9; then
+        log_error "Another kyzn improve is already running on this repo."
+        return 1
+    fi
+
     # Parse args
     local auto=false
     local focus=""
@@ -135,6 +212,9 @@ cmd_improve() {
         focus="$config_focus"
     fi
 
+    # Enforce hard ceilings (prevents config poisoning)
+    enforce_config_ceilings budget max_turns diff_limit
+
     # Interactive confirmation (skipped in --auto mode)
     if ! $auto; then
         echo ""
@@ -174,8 +254,18 @@ cmd_improve() {
     # Step 1: Baseline measurement
     local baseline_dir
     baseline_dir=$(mktemp -d)
-    # Ensure temp dirs and combined system prompt are cleaned up on all exit paths
-    trap '[[ -d "${baseline_dir:-}" ]] && rm -rf "$baseline_dir" 2>/dev/null; [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null; [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null; trap - RETURN' RETURN
+
+    # Cleanup function — handles Ctrl+C, errors, and normal exit
+    _kyzn_cleanup() {
+        [[ -d "${baseline_dir:-}" ]] && rm -rf "$baseline_dir" 2>/dev/null
+        [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null
+        [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+        # Release flock
+        exec 9>&- 2>/dev/null
+        trap - EXIT INT TERM
+    }
+    trap _kyzn_cleanup EXIT INT TERM
+
     run_measurements "$KYZN_PROJECT_TYPE" "$baseline_dir"
     local baseline_file="$KYZN_MEASUREMENTS_FILE"
 
@@ -191,7 +281,7 @@ cmd_improve() {
     local safe_focus="${focus//[^a-zA-Z0-9_-]/-}"
     local branch_name="kyzn/$(date +%Y%m%d)-${safe_focus}-${run_suffix}"
     log_step "Creating branch: $branch_name"
-    git checkout -b "$branch_name" 2>/dev/null || {
+    safe_git checkout -b "$branch_name" || {
         log_error "Failed to create branch $branch_name"
         return 1
     }
@@ -230,14 +320,14 @@ cmd_improve() {
     # Step 4: Execute Claude
     execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
         log_error "Claude execution failed"
-        git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
-        git branch -D "$branch_name" 2>/dev/null || true
+        safe_checkout_back
+        safe_git branch -D "$branch_name" 2>/dev/null || true
         return 1
     }
 
     # Step 5: Check diff size (tracked changes + new untracked files)
     # Stage temporarily to count all changes (tracked + untracked)
-    git add -A 2>/dev/null
+    safe_git add -A 2>/dev/null
     local numstat
     numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
     git reset HEAD 2>/dev/null || true
@@ -248,10 +338,18 @@ cmd_improve() {
     fi
     local total_diff=$(( diff_lines + del_lines ))
 
+    # Check for binary files in diff
+    local binary_count
+    binary_count=$(echo "$numstat" | grep -c '^-' 2>/dev/null) || true
+    if (( binary_count > 0 )); then
+        log_warn "Claude added $binary_count binary file(s)"
+        total_diff=$(( total_diff + binary_count * 500 )) # penalize binaries
+    fi
+
     if (( total_diff > diff_limit )); then
         log_warn "Diff exceeds limit ($total_diff > $diff_limit lines). Aborting."
-        git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
-        git branch -D "$branch_name" 2>/dev/null || true
+        safe_checkout_back
+        safe_git branch -D "$branch_name" 2>/dev/null || true
         return 1
     fi
 
@@ -309,7 +407,8 @@ cmd_improve() {
 
     if (( after_score < baseline_score )); then
         log_warn "Score regressed ($baseline_score → $after_score). Aborting."
-        handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
+        # Always discard on regression — never create a PR for worse code
+        handle_build_failure "discard" "$run_id" "$branch_name" "$mode" "$focus"
         return 1
     fi
 
@@ -360,26 +459,27 @@ $(git diff --stat 2>/dev/null || echo "No diff available")
 - Consider running with a more conservative mode
 EOF
             log_info "Report saved to $KYZN_REPORTS_DIR/$run_id-failed.md"
-            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
-            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
+            safe_checkout_back
+            if [[ -n "$branch_name" ]]; then safe_git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         discard)
             log_info "Discarding branch..."
-            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
-            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
+            safe_checkout_back
+            if [[ -n "$branch_name" ]]; then safe_git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         draft-pr)
             log_info "Creating draft PR with failure report..."
-            git add -A 2>/dev/null
-            git reset HEAD -- '*.env' '*.env.*' '*.pem' '*.key' 'credentials*' '.env*' 2>/dev/null || true
-            git commit -m "kyzn: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
+            safe_git add -A 2>/dev/null
+            unstage_secrets
+            check_dangerous_files
+            safe_git commit -m "kyzn: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
             git push -u origin HEAD 2>/dev/null || true
             gh pr create --draft \
                 --title "kyzn: attempted improvements (build failed)" \
                 --body "**WARNING: Build failed after these changes.**\n\nRun ID: $run_id\nCost: \$${KYZN_CLAUDE_COST:-unknown}" \
                 2>/dev/null || true
-            git checkout - 2>/dev/null || log_warn "Could not return to previous branch"
-            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
+            safe_checkout_back
+            if [[ -n "$branch_name" ]]; then safe_git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
     esac
 }
