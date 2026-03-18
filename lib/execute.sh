@@ -174,6 +174,8 @@ cmd_improve() {
     # Step 1: Baseline measurement
     local baseline_dir
     baseline_dir=$(mktemp -d)
+    # Ensure temp dirs and combined system prompt are cleaned up on all exit paths
+    trap '[[ -d "${baseline_dir:-}" ]] && rm -rf "$baseline_dir" 2>/dev/null; [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null; [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null; trap - RETURN' RETURN
     run_measurements "$KYZN_PROJECT_TYPE" "$baseline_dir"
     local baseline_file="$KYZN_MEASUREMENTS_FILE"
 

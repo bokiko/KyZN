@@ -47,7 +47,7 @@ fi
 if command -v npx &>/dev/null; then
     eslint_output=""
     # Try eslint via npx
-    if npx --yes eslint --version &>/dev/null 2>&1; then
+    if npx eslint --version &>/dev/null 2>&1; then
         eslint_output=$(npx eslint . --format json 2>/dev/null) || true
     fi
 

@@ -30,15 +30,12 @@ cmd_approve() {
         updated=$(jq '.status = "approved" | .approved_at = "'"$(timestamp)"'"' "$history_file")
         echo "$updated" > "$history_file"
     else
-        # Create history entry
-        cat > "$history_file" <<EOF
-{
-    "run_id": "$run_id",
-    "status": "approved",
-    "approved_at": "$(timestamp)",
-    "created_at": "$(timestamp)"
-}
-EOF
+        # Create history entry (use jq to avoid JSON injection from run_id)
+        jq -n \
+            --arg id "$run_id" \
+            --arg ts "$(timestamp)" \
+            '{"run_id":$id,"status":"approved","approved_at":$ts,"created_at":$ts}' \
+            > "$history_file"
     fi
 
     # Also save to global history
