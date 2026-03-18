@@ -10,29 +10,50 @@ execute_claude() {
     local budget="${3:-2.50}"
     local max_turns="${4:-30}"
     local project_type="${5:-$KYZN_PROJECT_TYPE}"
+    local model="${6:-sonnet}"
+    local verbose="${7:-false}"
 
     # Build allowlist
     local allowlist
     allowlist=$(build_allowlist "$project_type")
 
-    log_step "Invoking Claude Code (budget: \$$budget, max turns: $max_turns)..."
+    log_step "Invoking Claude Code (model: $model, budget: \$$budget, max turns: $max_turns)..."
 
-    # Read model from config (default: sonnet)
-    local model
-    model=$(config_get '.preferences.model' 'sonnet')
+    local stderr_file
+    stderr_file=$(mktemp)
 
     # Core invocation (allowlist is intentionally unquoted for word splitting)
     local result
     # shellcheck disable=SC2086
-    result=$(claude -p "$prompt" \
-        --model "$model" \
-        --max-budget-usd "$budget" \
-        --max-turns "$max_turns" \
-        $allowlist \
-        --append-system-prompt-file "$system_prompt_file" \
-        --output-format json \
-        --no-session-persistence \
-        2>/dev/null) || { log_error "Claude Code invocation failed"; return 1; }
+    if $verbose; then
+        # Stream last 5 lines of stderr to terminal in real-time
+        result=$(claude -p "$prompt" \
+            --model "$model" \
+            --max-budget-usd "$budget" \
+            --max-turns "$max_turns" \
+            $allowlist \
+            --append-system-prompt-file "$system_prompt_file" \
+            --output-format json \
+            --no-session-persistence \
+            2> >(tee "$stderr_file" | while IFS= read -r line; do
+                # Show condensed progress lines
+                local short
+                short=$(truncate_str "$line" 100)
+                echo -e "  ${DIM}${short}${RESET}" >&2
+            done | tail -5 >&2)) || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
+    else
+        result=$(claude -p "$prompt" \
+            --model "$model" \
+            --max-budget-usd "$budget" \
+            --max-turns "$max_turns" \
+            $allowlist \
+            --append-system-prompt-file "$system_prompt_file" \
+            --output-format json \
+            --no-session-persistence \
+            2>"$stderr_file") || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
+    fi
+
+    rm -f "$stderr_file"
 
     # Defensive JSON extraction
     if ! echo "$result" | jq . &>/dev/null; then
@@ -66,6 +87,8 @@ cmd_improve() {
     local mode=""
     local budget=""
     local max_turns=""
+    local model=""
+    local verbose=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -74,6 +97,8 @@ cmd_improve() {
             --mode)     mode="$2"; shift 2 ;;
             --budget)   budget="$2"; shift 2 ;;
             --turns)    max_turns="$2"; shift 2 ;;
+            --model)    model="$2"; shift 2 ;;
+            -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
     done
@@ -93,6 +118,7 @@ cmd_improve() {
 
     # Apply defaults from config
     mode="${mode:-$(config_get '.preferences.mode' 'deep')}"
+    model="${model:-$(config_get '.preferences.model' 'sonnet')}"
     budget="${budget:-$(config_get '.preferences.budget' '2.50')}"
     max_turns="${max_turns:-$(config_get '.preferences.max_turns' '30')}"
     local diff_limit
@@ -105,6 +131,33 @@ cmd_improve() {
         local config_focus
         config_focus=$(config_get '.focus.priorities[0]' 'auto')
         focus="$config_focus"
+    fi
+
+    # Interactive confirmation (skipped in --auto mode)
+    if ! $auto; then
+        echo ""
+        echo -e "${BOLD}Run settings:${RESET}"
+        echo -e "  Mode:   ${CYAN}$mode${RESET}"
+        echo -e "  Model:  ${CYAN}$model${RESET}"
+        echo -e "  Budget: ${CYAN}\$$budget${RESET}"
+        echo -e "  Focus:  ${CYAN}$focus${RESET}"
+        echo ""
+
+        # Let user adjust model
+        local model_choice
+        model_choice=$(prompt_choice "Model to use?" \
+            "sonnet  — fast, cost-effective (recommended)" \
+            "opus    — highest quality, slower" \
+            "haiku   — cheapest, basic improvements")
+
+        case "$model_choice" in
+            1) model="sonnet" ;;
+            2) model="opus" ;;
+            3) model="haiku" ;;
+        esac
+
+        # Let user adjust budget
+        budget=$(prompt_input "Budget per run (USD)" "$budget")
     fi
 
     # Generate run ID
@@ -154,7 +207,7 @@ cmd_improve() {
     fi
 
     # Step 4: Execute Claude
-    execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" || {
+    execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
         log_error "Claude execution failed"
         git checkout - 2>/dev/null
         git branch -D "$branch_name" 2>/dev/null || true

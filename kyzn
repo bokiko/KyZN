@@ -3,7 +3,7 @@
 # https://github.com/bokiko/kyzn
 set -euo pipefail
 
-KYZN_VERSION="0.1.0"
+KYZN_VERSION="0.2.0"
 KYZN_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Load core library
@@ -42,10 +42,13 @@ Options:
 Examples:
   kyzn init                       # First-time setup
   kyzn doctor                     # Check prerequisites
-  kyzn improve                    # Interactive improvement cycle
+  kyzn improve                    # Interactive (choose model & budget)
   kyzn improve --auto             # Use saved config (for cron)
   kyzn improve --focus security   # Target specific area
   kyzn improve --mode deep        # Real improvements only
+  kyzn improve --model opus       # Use specific model
+  kyzn improve --budget 5.00      # Set budget per run
+  kyzn improve -v                 # Show live progress
   kyzn measure                    # Measure only, no changes
 EOF
 }
