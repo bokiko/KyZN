@@ -1,22 +1,30 @@
-<p align="center">
-  <h1 align="center">kyzn</h1>
-  <p align="center">
-    Autonomous code improvement CLI powered by Claude Code
-    <br />
-    <em>Measure. Improve. Verify. Ship.</em>
-  </p>
-  <p align="center">
-    <a href="#install">Install</a> &middot;
-    <a href="#quick-start">Quick Start</a> &middot;
-    <a href="#how-it-works">How It Works</a> &middot;
-    <a href="#supported-languages">Languages</a> &middot;
-    <a href="#safety">Safety</a>
-  </p>
+<div align="center">
+
+# kyzn
+
+<strong>Autonomous code improvement CLI — measure, improve, verify, ship</strong>
+
+<p>
+  <a href="https://github.com/bokiko/kyzn"><img src="https://img.shields.io/badge/GitHub-kyzn-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
+  <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Powered_by-Claude_Code-6B4FBB?style=for-the-badge" alt="Claude Code"></a>
 </p>
+
+<p>
+  <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
+  <img src="https://img.shields.io/github/license/bokiko/kyzn?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/last-commit/bokiko/kyzn?style=flat-square" alt="Last Commit">
+  <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
+  <img src="https://img.shields.io/badge/version-0.2.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-79%20passing-brightgreen?style=flat-square" alt="Tests">
+</p>
+
+</div>
 
 ---
 
-**kyzn** (from _kaizen_ — continuous improvement) is a CLI that measures your codebase health, sends the measurements to Claude Code with strict constraints, verifies the result, and opens a PR — all autonomously.
+## Overview
+
+**kyzn** (from _kaizen_ — continuous improvement) points at any project, measures its health with real tools, sends measurements to Claude Code with strict constraints, verifies the result, and opens a PR — all autonomously.
 
 ```
 $ kyzn improve
@@ -43,16 +51,9 @@ $ kyzn improve
 ✓ PR created: https://github.com/you/project/pull/42
 ```
 
-## Install
+---
 
-```bash
-# One-liner (recommended)
-curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
-
-# Or clone manually
-git clone https://github.com/bokiko/kyzn.git ~/.kyzn-cli
-ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
-```
+## Quick Start
 
 ### Prerequisites
 
@@ -65,24 +66,77 @@ ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
 | `yq` | Yes | YAML config |
 | `ANTHROPIC_API_KEY` | Yes | Claude API access |
 
+### Installation
+
 ```bash
-kyzn doctor  # checks all prerequisites
+# One-liner (recommended)
+curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
+
+# Or clone manually
+git clone https://github.com/bokiko/kyzn.git ~/.kyzn-cli
+ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
+
+# Verify
+kyzn doctor
 ```
 
-## Quick Start
+### First Run
 
 ```bash
 cd your-project
-
-# 1. Set up (one-time)
-kyzn init
-
-# 2. See your health score
-kyzn measure
-
-# 3. Run an improvement cycle
-kyzn improve
+kyzn init       # One-time setup
+kyzn measure    # See your health score
+kyzn improve    # Run improvement cycle
 ```
+
+---
+
+## Features
+
+<table>
+<tr>
+<td width="50%">
+
+### Measure
+- Runs real tools (eslint, ruff, clippy, go vet)
+- Health score out of 100 across 5 categories
+- Weighted scoring with custom priorities
+- Per-language measurers for Node, Python, Rust, Go
+
+</td>
+<td width="50%">
+
+### Improve
+- Interactive model selection (sonnet/opus/haiku)
+- Configurable budget cap per run
+- Deep, clean, or full improvement modes
+- Focus targeting (security, testing, quality)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### Verify
+- Runs build + tests after every change
+- Pre-existing failure detection
+- Score regression gate — aborts if score drops
+- Diff guard — aborts if changes too large
+
+</td>
+<td width="50%">
+
+### Ship
+- Auto-creates PR with before/after comparison
+- Branch isolation — never touches main
+- Approve/reject workflow with feedback
+- Schedule daily or weekly via cron
+
+</td>
+</tr>
+</table>
+
+---
 
 ## Usage
 
@@ -90,14 +144,14 @@ kyzn improve
 
 ```bash
 kyzn improve                        # Interactive — choose model & budget
-kyzn improve --auto                 # Non-interactive — use saved config (for cron)
-kyzn improve --mode deep            # Real improvements only (no cosmetic changes)
-kyzn improve --mode clean           # Cleanup only (dead code, naming, imports)
+kyzn improve --auto                 # Non-interactive (for cron)
+kyzn improve --mode deep            # Real improvements only
+kyzn improve --mode clean           # Cleanup only (dead code, naming)
 kyzn improve --mode full            # Everything
 kyzn improve --focus security       # Target a specific area
 kyzn improve --model opus           # Use a specific model
 kyzn improve --budget 5.00          # Override budget cap
-kyzn improve -v                     # Show live progress from Claude
+kyzn improve -v                     # Show live progress
 ```
 
 ### Review
@@ -117,6 +171,8 @@ kyzn schedule weekly                # Run weekly (Sundays)
 kyzn schedule off                   # Remove schedule
 ```
 
+---
+
 ## How It Works
 
 ```
@@ -129,23 +185,15 @@ kyzn schedule off                   # Remove schedule
 ```
 
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
-2. **Measure** — runs real tools (eslint, ruff, npm audit, cargo clippy, go vet, etc.) and computes a health score out of 100
-3. **Improve** — invokes Claude Code in headless mode with measurements, constraints, and a per-language tool allowlist
-4. **Verify** — runs build and tests. If they fail and the baseline was clean, aborts. If failures are pre-existing, continues.
-5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up the branch.
-6. **PR** — commits changes, pushes, and creates a PR with before/after health comparison
+2. **Measure** — runs real tools and computes a health score out of 100
+3. **Improve** — invokes Claude Code in headless mode with measurements and constraints
+4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
+5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
+6. **PR** — commits, pushes, and creates PR with before/after health comparison
+
+---
 
 ## Health Score
-
-kyzn computes a weighted health score across 5 categories:
-
-| Category | Weight | What It Measures |
-|----------|--------|------------------|
-| Security | 25% | Dependency vulnerabilities, hardcoded secrets |
-| Testing | 25% | Test coverage, test file ratio |
-| Quality | 25% | Lint errors, type errors, TODO count, git health |
-| Performance | 15% | Large files, bundle size indicators |
-| Documentation | 10% | README quality and completeness |
 
 ```
   Project Health Score
@@ -160,6 +208,16 @@ kyzn computes a weighted health score across 5 categories:
   documentation   ████████████░░░░░░░░  60%
 ```
 
+| Category | Weight | What It Measures |
+|----------|--------|------------------|
+| Security | 25% | Dependency vulnerabilities, hardcoded secrets |
+| Testing | 25% | Test coverage, test file ratio |
+| Quality | 25% | Lint errors, type errors, TODO count, git health |
+| Performance | 15% | Large files, bundle size indicators |
+| Documentation | 10% | README quality and completeness |
+
+---
+
 ## Supported Languages
 
 | Language | Detection | Measurers | Verify |
@@ -170,18 +228,22 @@ kyzn computes a weighted health score across 5 categories:
 | **Go** | `go.mod` | go vet, govulncheck | go build, go test, go vet |
 | **Generic** | (fallback) | TODOs, git health, secrets, docs | — |
 
+---
+
 ## Safety
 
-kyzn is designed to never make things worse:
+| Layer | Protection |
+|-------|-----------|
+| **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
+| **Budget cap** | Configurable per-run spending limit (default $2.50) |
+| **Tool allowlist** | Per-language restrictions — no `rm`, `sudo`, `git push` |
+| **Build gate** | PR only if build + tests pass after changes |
+| **Score gate** | Aborts if health score drops after improvements |
+| **Diff guard** | Aborts if changes exceed configurable threshold (default 2000 lines) |
+| **Pre-existing failures** | Won't abort on test failures that existed before |
+| **Branch cleanup** | Failed runs delete their branches automatically |
 
-- **Branch isolation** — all changes happen on `kyzn/` branches, never touches `main`
-- **Budget cap** — configurable per-run spending limit (default $2.50)
-- **Tool allowlist** — per-language restrictions on what Claude can run (no `rm`, `sudo`, `git push`)
-- **Build gate** — PR only created if build + tests pass after changes
-- **Score gate** — aborts if health score drops after improvements
-- **Diff guard** — aborts if changes exceed a configurable line threshold (default 2000)
-- **Pre-existing failure detection** — won't abort on test failures that existed before Claude ran
-- **Branch cleanup** — failed runs clean up their branches automatically
+---
 
 ## Configuration
 
@@ -204,7 +266,6 @@ preferences:
 focus:
   priorities: [auto]    # auto | security | testing | quality | performance | documentation
 
-# Optional: custom category weights
 scoring:
   weights:
     security: 25
@@ -214,13 +275,17 @@ scoring:
     documentation: 10
 ```
 
+---
+
 ## Modes
 
 | Mode | What It Does | Best For |
 |------|-------------|----------|
 | **deep** | Only fixes real bugs, security issues, error handling gaps. No cosmetic changes. | Production codebases |
-| **clean** | Dead code removal, unused imports, naming fixes, documentation. No behavior changes. | Tech debt cleanup |
+| **clean** | Dead code removal, unused imports, naming fixes, docs. No behavior changes. | Tech debt cleanup |
 | **full** | Both real improvements and cleanup. Maximum value per run. | Side projects |
+
+---
 
 ## Project Structure
 
@@ -247,32 +312,46 @@ kyzn/
 │   ├── python.sh           # ruff, mypy, pytest-cov, pip-audit
 │   ├── rust.sh             # cargo clippy, cargo audit
 │   └── go.sh               # go vet, govulncheck
-├── templates/
-│   ├── improvement-prompt.md
-│   └── system-prompt.md
+├── templates/              # Prompt templates
 ├── profiles/               # Focus-specific system prompts
-│   ├── security.md
-│   ├── testing.md
-│   ├── performance.md
-│   ├── quality.md
-│   └── documentation.md
 └── tests/
     └── selftest.sh         # 79 tests (20 core + 4 stress)
 ```
+
+---
 
 ## Self-Test
 
 ```bash
 kyzn selftest              # Quick tests (20 cases)
-kyzn selftest --full       # Full suite including stress tests (79 cases)
+kyzn selftest --full       # Full suite with stress tests (79 cases)
 ```
+
+---
+
+## Roadmap
+
+- [x] Core improvement cycle (detect → measure → improve → verify → PR)
+- [x] Node.js, Python, Rust, Go support
+- [x] Interactive model and budget selection
+- [x] Score regression gate
+- [x] Pre-existing test failure detection
+- [x] Branch cleanup on all failure paths
+- [x] 79-test self-test suite
+- [ ] Parallel runs across multiple focus areas
+- [ ] Learning from rejection feedback
+- [ ] Coverage-aware test generation
+- [ ] Custom measurer plugins
+- [ ] GitHub Actions integration
+
+---
 
 ## License
 
-[MIT](LICENSE)
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
 <p align="center">
-  Built with <a href="https://claude.ai/code">Claude Code</a>
+  Made by <a href="https://github.com/bokiko">@bokiko</a>
 </p>
