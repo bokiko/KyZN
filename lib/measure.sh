@@ -182,13 +182,15 @@ display_health_dashboard() {
 
         if [[ -n "$cat_score" ]]; then
             local bar=""
-            local filled=$(( cat_score / 5 ))
+            local cs_int="${cat_score%%.*}"
+            cs_int="${cs_int:-0}"
+            local filled=$(( cs_int / 5 ))
             local empty=$(( 20 - filled ))
 
             # Color per score
-            if (( cat_score >= 80 )); then
+            if (( cs_int >= 80 )); then
                 color="$GREEN"
-            elif (( cat_score >= 50 )); then
+            elif (( cs_int >= 50 )); then
                 color="$YELLOW"
             else
                 color="$RED"
@@ -200,7 +202,7 @@ display_health_dashboard() {
             printf -v bar_empty '%*s' "$empty" ''
             bar_empty="${bar_empty// /░}"
 
-            printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cat_score"
+            printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cs_int"
         fi
     done
     echo ""
