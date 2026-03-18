@@ -116,6 +116,10 @@ main() {
             source "$KYZN_ROOT/lib/schedule.sh"
             cmd_schedule "$@"
             ;;
+        selftest)
+            shift
+            bash "$KYZN_ROOT/tests/selftest.sh" "$@"
+            ;;
         version|--version|-v)
             echo "kyzn v${KYZN_VERSION}"
             ;;
