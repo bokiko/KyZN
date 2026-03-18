@@ -42,7 +42,7 @@ schedule_cron() {
     local kyzn_path
     kyzn_path=$(command -v kyzn 2>/dev/null || echo "$KYZN_ROOT/kyzn")
 
-    local cron_line="$cron_expr cd $project_dir && $kyzn_path improve --auto >> $project_dir/.kyzn/reports/cron.log 2>&1 # kyzn:$label"
+    local cron_line="$cron_expr cd \"$project_dir\" && \"$kyzn_path\" improve --auto >> \"$project_dir/.kyzn/reports/cron.log\" 2>&1 # kyzn:$label"
 
     # Remove existing kyzn entry for this project, then add new one
     (crontab -l 2>/dev/null | grep -v "# kyzn:"; echo "$cron_line") | crontab -
