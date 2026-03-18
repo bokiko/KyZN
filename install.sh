@@ -6,15 +6,238 @@ REPO="bokiko/kyzn"
 INSTALL_DIR="${KYZN_INSTALL_DIR:-$HOME/.kyzn-cli}"
 BIN_DIR="${KYZN_BIN_DIR:-$HOME/.local/bin}"
 
-echo "Installing kyzn..."
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+ok()   { echo -e "  ${GREEN}✓${RESET} $*"; }
+warn() { echo -e "  ${YELLOW}⚠${RESET} $*"; }
+err()  { echo -e "  ${RED}✗${RESET} $*"; }
+info() { echo -e "  ${DIM}$*${RESET}"; }
+
+has_cmd() { command -v "$1" &>/dev/null; }
+
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        echo "${ID:-linux}"
+    elif [[ "$(uname)" == "Darwin" ]]; then
+        echo "macos"
+    else
+        echo "linux"
+    fi
+}
+
+detect_pkg_manager() {
+    if has_cmd apt-get; then echo "apt"
+    elif has_cmd brew; then echo "brew"
+    elif has_cmd dnf; then echo "dnf"
+    elif has_cmd yum; then echo "yum"
+    elif has_cmd pacman; then echo "pacman"
+    elif has_cmd apk; then echo "apk"
+    else echo "unknown"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Dependency installers
+# ---------------------------------------------------------------------------
+install_jq() {
+    local pkg_mgr="$1"
+    echo -e "\n${BOLD}Installing jq...${RESET}"
+    case "$pkg_mgr" in
+        apt)    sudo apt-get install -y -qq jq ;;
+        brew)   brew install jq ;;
+        dnf)    sudo dnf install -y -q jq ;;
+        yum)    sudo yum install -y -q jq ;;
+        pacman) sudo pacman -S --noconfirm jq ;;
+        apk)    sudo apk add -q jq ;;
+        *)
+            # Fallback: download binary
+            local arch
+            arch=$(uname -m)
+            case "$arch" in
+                x86_64)  arch="amd64" ;;
+                aarch64) arch="arm64" ;;
+            esac
+            local url="https://github.com/jqlang/jq/releases/latest/download/jq-linux-${arch}"
+            if [[ "$(uname)" == "Darwin" ]]; then
+                url="https://github.com/jqlang/jq/releases/latest/download/jq-macos-${arch}"
+            fi
+            wget -qO "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+            ;;
+    esac
+    has_cmd jq && ok "jq installed" || err "jq install failed"
+}
+
+install_yq() {
+    echo -e "\n${BOLD}Installing yq...${RESET}"
+
+    # IMPORTANT: snap yq cannot access hidden directories (.kyzn/)
+    # Always install as native binary
+    if has_cmd yq && [[ "$(which yq)" == */snap/* ]]; then
+        warn "Removing snap yq (incompatible with hidden directories)..."
+        sudo snap remove yq 2>/dev/null || true
+    fi
+
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+
+    local os="linux"
+    [[ "$(uname)" == "Darwin" ]] && os="darwin"
+
+    mkdir -p "$BIN_DIR"
+    wget -qO "$BIN_DIR/yq" "https://github.com/mikefarah/yq/releases/latest/download/yq_${os}_${arch}" \
+        && chmod +x "$BIN_DIR/yq"
+
+    has_cmd yq && ok "yq installed (native binary)" || err "yq install failed"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+echo ""
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${BOLD}  kyzn installer${RESET}"
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+
+OS=$(detect_os)
+PKG=$(detect_pkg_manager)
+info "Detected: $OS ($PKG)"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Step 1: Check required tools that need user setup
+# ---------------------------------------------------------------------------
+echo -e "${BOLD}Step 1: Checking prerequisites${RESET}"
+echo ""
+
+BLOCKERS=0
+
+# git
+if has_cmd git; then
+    ok "git $(git --version | awk '{print $3}')"
+else
+    err "git — not found"
+    case "$PKG" in
+        apt)    info "Install: sudo apt install git" ;;
+        brew)   info "Install: brew install git" ;;
+        dnf)    info "Install: sudo dnf install git" ;;
+        *)      info "Install: https://git-scm.com/downloads" ;;
+    esac
+    BLOCKERS=$((BLOCKERS + 1))
+fi
+
+# gh (GitHub CLI)
+if has_cmd gh; then
+    ok "gh $(gh --version | head -1 | awk '{print $3}')"
+    if gh auth status &>/dev/null; then
+        ok "gh authenticated"
+    else
+        warn "gh not authenticated — run: gh auth login"
+    fi
+else
+    err "gh (GitHub CLI) — not found"
+    case "$PKG" in
+        apt)
+            info "Install:"
+            info "  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg"
+            info "  echo \"deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | sudo tee /etc/apt/sources.list.d/github-cli.list"
+            info "  sudo apt update && sudo apt install gh"
+            ;;
+        brew) info "Install: brew install gh" ;;
+        *)    info "Install: https://cli.github.com" ;;
+    esac
+    BLOCKERS=$((BLOCKERS + 1))
+fi
+
+# claude CLI
+if has_cmd claude; then
+    ok "claude $(claude --version 2>/dev/null || echo '(version unknown)')"
+else
+    err "claude CLI — not found"
+    info "Install: npm install -g @anthropic-ai/claude-code"
+    info "  Then set ANTHROPIC_API_KEY in your shell profile"
+    BLOCKERS=$((BLOCKERS + 1))
+fi
+
+# ANTHROPIC_API_KEY
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    ok "ANTHROPIC_API_KEY is set"
+else
+    if has_cmd claude; then
+        warn "ANTHROPIC_API_KEY not set (claude CLI may use its own auth)"
+        info "If you get auth errors, add to ~/.bashrc or ~/.zshrc:"
+        info "  export ANTHROPIC_API_KEY=\"sk-ant-...\""
+    else
+        warn "ANTHROPIC_API_KEY not set"
+    fi
+fi
+
+echo ""
+
+if (( BLOCKERS > 0 )); then
+    err "${BLOCKERS} required tool(s) missing. Install them and re-run the installer."
+    echo ""
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: Auto-install utility dependencies (jq, yq)
+# ---------------------------------------------------------------------------
+echo -e "${BOLD}Step 2: Installing dependencies${RESET}"
+echo ""
+
+# jq
+if has_cmd jq; then
+    ok "jq $(jq --version 2>/dev/null || echo '')"
+else
+    install_jq "$PKG"
+fi
+
+# yq — always prefer native binary over snap
+if has_cmd yq; then
+    if [[ "$(which yq)" == */snap/* ]]; then
+        warn "snap yq detected — replacing with native binary"
+        info "(snap yq cannot access hidden directories like .kyzn/)"
+        install_yq
+    else
+        ok "yq $(yq --version 2>/dev/null | awk '{print $NF}')"
+    fi
+else
+    install_yq
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# Step 3: Install kyzn
+# ---------------------------------------------------------------------------
+echo -e "${BOLD}Step 3: Installing kyzn${RESET}"
+echo ""
 
 # Clone or update
 if [[ -d "$INSTALL_DIR" ]]; then
-    echo "Updating existing installation..."
+    info "Updating existing installation..."
     cd "$INSTALL_DIR" && git pull --quiet
+    ok "Updated $INSTALL_DIR"
 else
-    echo "Cloning repository..."
+    info "Cloning repository..."
     git clone --quiet "https://github.com/$REPO.git" "$INSTALL_DIR"
+    ok "Cloned to $INSTALL_DIR"
 fi
 
 # Make executable
@@ -23,18 +246,50 @@ chmod +x "$INSTALL_DIR/kyzn"
 # Create symlink
 mkdir -p "$BIN_DIR"
 ln -sf "$INSTALL_DIR/kyzn" "$BIN_DIR/kyzn"
+ok "Symlinked to $BIN_DIR/kyzn"
 
 # Check if BIN_DIR is in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^$BIN_DIR$"; then
     echo ""
-    echo "Add this to your shell profile (~/.bashrc or ~/.zshrc):"
-    echo "  export PATH=\"$BIN_DIR:\$PATH\""
-    echo ""
+    warn "$BIN_DIR is not in your PATH"
+    info "Add this to your shell profile (~/.bashrc or ~/.zshrc):"
+    echo -e "    ${CYAN}export PATH=\"$BIN_DIR:\$PATH\"${RESET}"
 fi
 
-echo "✓ kyzn installed to $BIN_DIR/kyzn"
+# ---------------------------------------------------------------------------
+# Step 4: Verify installation
+# ---------------------------------------------------------------------------
 echo ""
-echo "Next steps:"
-echo "  kyzn doctor    # check prerequisites"
-echo "  kyzn init      # set up a project"
-echo "  kyzn improve   # start improving"
+echo -e "${BOLD}Step 4: Verifying installation${RESET}"
+echo ""
+
+if has_cmd kyzn || [[ -x "$BIN_DIR/kyzn" ]]; then
+    local_ver=$("$BIN_DIR/kyzn" version 2>/dev/null || echo "unknown")
+    ok "kyzn installed ($local_ver)"
+else
+    err "kyzn not found in PATH after install"
+    exit 1
+fi
+
+# Quick sanity: can kyzn load its libraries?
+if "$BIN_DIR/kyzn" version &>/dev/null; then
+    ok "Library loading OK (symlink resolution works)"
+else
+    err "kyzn cannot load its libraries — symlink may be broken"
+fi
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+echo ""
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${GREEN}${BOLD}  kyzn installed successfully!${RESET}"
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+echo -e "  ${BOLD}Next steps:${RESET}"
+echo -e "    ${CYAN}kyzn doctor${RESET}     Verify full environment"
+echo -e "    ${CYAN}kyzn init${RESET}       Set up a project"
+echo -e "    ${CYAN}kyzn measure${RESET}    Check project health"
+echo -e "    ${CYAN}kyzn improve${RESET}    Start improving"
+echo -e "    ${CYAN}kyzn selftest${RESET}   Run test suite"
+echo ""
