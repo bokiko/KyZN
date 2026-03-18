@@ -2,6 +2,40 @@
 # kyzn/lib/verify.sh — Build/test verification
 
 # ---------------------------------------------------------------------------
+# Capture failing test names (for pre-existing failure comparison)
+# Returns newline-separated list of FAILED test identifiers
+# ---------------------------------------------------------------------------
+capture_failing_tests() {
+    local project_type="${KYZN_PROJECT_TYPE:-generic}"
+    local failures=""
+
+    case "$project_type" in
+        python)
+            if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
+                failures=$(pytest --tb=no -q 2>&1 | grep '^FAILED ' | sed 's/^FAILED //' | sort) || true
+            fi
+            ;;
+        node)
+            if [[ -f "package.json" ]] && jq -e '.scripts.test' package.json &>/dev/null 2>&1; then
+                failures=$(npm test 2>&1 | grep -E '(FAIL |✕ |✗ |× )' | sort) || true
+            fi
+            ;;
+        rust)
+            if command -v cargo &>/dev/null; then
+                failures=$(cargo test 2>&1 | grep '^test .* FAILED$' | sort) || true
+            fi
+            ;;
+        go)
+            if command -v go &>/dev/null; then
+                failures=$(go test ./... 2>&1 | grep '^--- FAIL:' | sort) || true
+            fi
+            ;;
+    esac
+
+    echo "$failures"
+}
+
+# ---------------------------------------------------------------------------
 # Verify build and tests pass
 # ---------------------------------------------------------------------------
 verify_build() {

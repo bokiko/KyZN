@@ -212,9 +212,17 @@ cmd_improve() {
 
     # Step 3.5: Pre-existing test failure detection
     local baseline_verify_ok=true
+    local baseline_failures=""
     if ! verify_build 2>/dev/null; then
         baseline_verify_ok=false
+        baseline_failures=$(capture_failing_tests 2>/dev/null) || true
         log_warn "Pre-existing build/test failures detected (will not block improvements)"
+        if [[ -n "$baseline_failures" ]]; then
+            log_dim "Known failures:"
+            echo "$baseline_failures" | while IFS= read -r f; do
+                [[ -n "$f" ]] && log_dim "  - $f"
+            done
+        fi
     fi
 
     # Step 4: Execute Claude
@@ -252,12 +260,36 @@ cmd_improve() {
         log_ok "Build and tests passed!"
     else
         if $baseline_verify_ok; then
-            # New failures introduced by Claude — abort
+            # Baseline was clean, Claude broke it — abort
             log_error "Build or tests failed after improvements."
             handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
         else
-            log_warn "Build/tests still failing, but failures are pre-existing. Continuing."
+            # Baseline had failures — check if Claude added NEW ones
+            local after_failures
+            after_failures=$(capture_failing_tests 2>/dev/null) || true
+
+            # Find tests that are in after but not in baseline
+            local new_failures=""
+            if [[ -n "$after_failures" ]]; then
+                while IFS= read -r test_name; do
+                    [[ -z "$test_name" ]] && continue
+                    if ! echo "$baseline_failures" | grep -qF "$test_name"; then
+                        new_failures+="$test_name"$'\n'
+                    fi
+                done <<< "$after_failures"
+            fi
+
+            if [[ -n "${new_failures//[$'\n']/}" ]]; then
+                log_error "Claude introduced NEW test failures:"
+                echo "$new_failures" | while IFS= read -r f; do
+                    [[ -n "$f" ]] && log_error "  - $f"
+                done
+                handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
+                return 1
+            else
+                log_warn "Build/tests still failing, but all failures are pre-existing. Continuing."
+            fi
         fi
     fi
 
