@@ -2,6 +2,9 @@
 .kyzn/history/
 .kyzn/reports/
 
+# Claude Code agent cache
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
