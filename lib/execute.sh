@@ -116,8 +116,9 @@ cmd_improve() {
 
     display_health_dashboard "$baseline_file"
 
-    # Step 2: Create branch
-    local branch_name="kyzn/$(date +%Y%m%d)-${focus}"
+    # Step 2: Create branch (use run_id suffix for uniqueness)
+    local run_suffix="${run_id##*-}"
+    local branch_name="kyzn/$(date +%Y%m%d)-${focus}-${run_suffix}"
     log_step "Creating branch: $branch_name"
     git checkout -b "$branch_name" 2>/dev/null || {
         log_error "Failed to create branch $branch_name"
