@@ -313,15 +313,15 @@ cmd_improve() {
         return 1
     fi
 
-    # Clean up temp dirs
-    rm -rf "$baseline_dir" "$after_dir" 2>/dev/null
-    # Clean up combined system prompt if it was a temp file
-    [[ "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
-
     # Step 8: Generate report and create PR
     if ! generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"; then
         log_warn "Report generation or PR creation had issues — check output above."
     fi
+
+    # Clean up temp dirs (after report generation reads them)
+    rm -rf "$baseline_dir" "$after_dir" 2>/dev/null
+    # Clean up combined system prompt if it was a temp file
+    [[ "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
 
     log_ok "Improvement cycle complete!"
     log_info "Run 'kyzn approve $run_id' to sign off, or 'kyzn reject $run_id' to discard."
