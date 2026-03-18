@@ -164,11 +164,15 @@ cmd_doctor() {
         fi
     done
 
-    # API key
+    # Claude auth (API key OR OAuth login)
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        log_ok "ANTHROPIC_API_KEY is set"
+        log_ok "Claude auth: API key"
+    elif claude auth status &>/dev/null 2>&1 || [[ -d "${HOME}/.claude" ]]; then
+        log_ok "Claude auth: logged in (no API key needed)"
     else
-        log_warn "ANTHROPIC_API_KEY not set (needed for claude CLI)"
+        log_warn "Claude not authenticated. Either:"
+        log_dim "  • Run 'claude' and log in via browser (recommended)"
+        log_dim "  • Or set ANTHROPIC_API_KEY environment variable"
     fi
 
     # GitHub auth

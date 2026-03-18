@@ -64,7 +64,7 @@ $ kyzn improve
 | `claude` | Yes | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
 | `jq` | Yes | JSON processing |
 | `yq` | Yes | YAML config |
-| `ANTHROPIC_API_KEY` | Yes | Claude API access |
+| Claude auth | Yes | Log in via `claude` CLI (OAuth) **or** set `ANTHROPIC_API_KEY` |
 
 ### Installation
 
