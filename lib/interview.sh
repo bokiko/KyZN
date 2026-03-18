@@ -172,13 +172,13 @@ interview_performance_depth() {
 interview_multiple_areas() {
     local -n _pri=$1
 
-    echo -e "\n${BOLD}Select all that apply (space-separated numbers):${RESET}"
-    echo -e "  ${CYAN}1)${RESET} Security"
-    echo -e "  ${CYAN}2)${RESET} Testing"
-    echo -e "  ${CYAN}3)${RESET} Performance"
-    echo -e "  ${CYAN}4)${RESET} Quality"
-    echo -e "  ${CYAN}5)${RESET} Documentation"
-    echo -en "\n${BOLD}Choices${RESET} [1 2 3]: "
+    echo -e "\n${BOLD}Select all that apply (space-separated numbers):${RESET}" >&2
+    echo -e "  ${CYAN}1)${RESET} Security" >&2
+    echo -e "  ${CYAN}2)${RESET} Testing" >&2
+    echo -e "  ${CYAN}3)${RESET} Performance" >&2
+    echo -e "  ${CYAN}4)${RESET} Quality" >&2
+    echo -e "  ${CYAN}5)${RESET} Documentation" >&2
+    echo -en "\n${BOLD}Choices${RESET} [1 2 3]: " >&2
 
     local choices
     read -r choices

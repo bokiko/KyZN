@@ -127,9 +127,9 @@ prompt_input() {
     local result
 
     if [[ -n "$default" ]]; then
-        echo -en "${BOLD}$prompt${RESET} [${DIM}$default${RESET}]: "
+        echo -en "${BOLD}$prompt${RESET} [${DIM}$default${RESET}]: " >&2
     else
-        echo -en "${BOLD}$prompt${RESET}: "
+        echo -en "${BOLD}$prompt${RESET}: " >&2
     fi
     read -r result
     echo "${result:-$default}"
@@ -142,9 +142,9 @@ prompt_yn() {
     local result
 
     if [[ "$default" == "y" ]]; then
-        echo -en "${BOLD}$prompt${RESET} [Y/n]: "
+        echo -en "${BOLD}$prompt${RESET} [Y/n]: " >&2
     else
-        echo -en "${BOLD}$prompt${RESET} [y/N]: "
+        echo -en "${BOLD}$prompt${RESET} [y/N]: " >&2
     fi
     read -r result
     result="${result:-$default}"
@@ -157,13 +157,13 @@ prompt_choice() {
     shift
     local -a options=("$@")
 
-    echo -e "\n${BOLD}$prompt${RESET}"
+    echo -e "\n${BOLD}$prompt${RESET}" >&2
     local i=1
     for opt in "${options[@]}"; do
-        echo -e "  ${CYAN}$i)${RESET} $opt"
+        echo -e "  ${CYAN}$i)${RESET} $opt" >&2
         ((i++))
     done
-    echo -en "\n${BOLD}Choice${RESET} [1]: "
+    echo -en "\n${BOLD}Choice${RESET} [1]: " >&2
 
     local choice
     read -r choice
