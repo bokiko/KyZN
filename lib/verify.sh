@@ -43,6 +43,28 @@ verify_build() {
 verify_node() {
     local ok=true
 
+    # Auto-install dependencies if node_modules is missing
+    if [[ -f "package.json" && ! -d "node_modules" ]]; then
+        log_step "Installing dependencies (node_modules not found)..."
+        if [[ -f "package-lock.json" ]]; then
+            npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
+        elif [[ -f "yarn.lock" ]]; then
+            yarn install --frozen-lockfile --silent 2>&1 | tail -3
+        elif [[ -f "pnpm-lock.yaml" ]]; then
+            pnpm install --frozen-lockfile --silent 2>&1 | tail -3
+        elif [[ -f "bun.lockb" ]]; then
+            bun install --frozen-lockfile 2>&1 | tail -3
+        else
+            npm install --silent 2>&1 | tail -3
+        fi
+
+        if [[ -d "node_modules" ]]; then
+            log_ok "Dependencies installed"
+        else
+            log_warn "Dependency install may have failed — continuing anyway"
+        fi
+    fi
+
     # Check if build script exists
     if [[ -f "package.json" ]] && jq -e '.scripts.build' package.json &>/dev/null; then
         log_step "Running npm build..."
@@ -84,6 +106,20 @@ verify_node() {
 # ---------------------------------------------------------------------------
 verify_python() {
     local ok=true
+
+    # Auto-install dependencies if no venv and project has deps
+    if [[ ! -d ".venv" && ! -d "venv" ]]; then
+        if [[ -f "pyproject.toml" ]] && command -v uv &>/dev/null; then
+            log_step "Installing dependencies (uv sync)..."
+            uv sync --quiet 2>&1 | tail -3
+            [[ -d ".venv" ]] && log_ok "Dependencies installed" || log_warn "uv sync may have failed"
+        elif [[ -f "requirements.txt" ]]; then
+            log_step "Installing dependencies (pip)..."
+            python3 -m venv .venv 2>/dev/null
+            .venv/bin/pip install -q -r requirements.txt 2>&1 | tail -3
+            log_ok "Dependencies installed"
+        fi
+    fi
 
     # Ruff check
     if command -v ruff &>/dev/null; then
