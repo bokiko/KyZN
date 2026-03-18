@@ -624,6 +624,258 @@ test_branch_cleanup_in_failure() {
 }
 
 # ---------------------------------------------------------------------------
+# v0.3 coverage gap tests (always run)
+# ---------------------------------------------------------------------------
+
+test_verify_build_generic() {
+    log_header "21. verify_build succeeds for generic project"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    create_sandbox generic
+    detect_project_type
+
+    if verify_build 2>/dev/null; then
+        pass "generic verify_build returns 0"
+    else
+        fail "generic verify_build" "returned non-zero for generic project"
+    fi
+
+    cleanup_sandbox
+}
+
+test_verify_build_dispatch() {
+    log_header "22. verify_build dispatches by project type"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    # Node project with passing test script
+    create_sandbox node
+    detect_project_type
+    assert_eq "node type detected" "node" "$KYZN_PROJECT_TYPE"
+
+    # Inject a failing test to confirm dispatch (test script exits 1)
+    jq '.scripts.test = "exit 1"' package.json > package.json.tmp && mv package.json.tmp package.json
+    git add -A && git commit -q -m "break tests"
+
+    if ! verify_build 2>/dev/null; then
+        pass "node verify_build dispatches and detects failure"
+    else
+        fail "node verify_build dispatch" "should fail when test script exits 1"
+    fi
+
+    cleanup_sandbox
+}
+
+test_build_failure_report_strategy() {
+    log_header "23. handle_build_failure report strategy writes file and cleans branch"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+    ensure_kyzn_dirs
+
+    # Create branch (simulate kyzn mid-run)
+    git checkout -b kyzn/test-report-branch 2>/dev/null
+
+    local KYZN_CLAUDE_COST="1.23"
+    handle_build_failure "report" "test-run-report" "kyzn/test-report-branch" "deep" "security"
+
+    assert_file_exists "failure report created" "$KYZN_REPORTS_DIR/test-run-report-failed.md"
+
+    local content
+    content=$(cat "$KYZN_REPORTS_DIR/test-run-report-failed.md")
+    assert_contains "report has cost" "$content" "1.23"
+    assert_contains "report has mode" "$content" "deep"
+    assert_contains "report has run_id" "$content" "test-run-report"
+
+    if ! git branch | grep -q "kyzn/test-report-branch"; then
+        pass "report strategy cleans orphan branch"
+    else
+        fail "report branch cleanup" "branch still exists"
+    fi
+
+    cleanup_sandbox
+}
+
+test_health_score_edge_cases() {
+    log_header "24. compute_health_score edge cases"
+
+    source "$KYZN_ROOT/lib/measure.sh"
+
+    # Empty measurements → score 0
+    local tmpfile
+    tmpfile=$(mktemp)
+    echo '[]' > "$tmpfile"
+    compute_health_score "$tmpfile"
+    assert_eq "empty measurements → score 0" "0" "$KYZN_HEALTH_SCORE"
+
+    # Single category at 100% → weighted score equals that category's weight percentage
+    echo '[{"category":"security","score":10,"max_score":10}]' > "$tmpfile"
+    compute_health_score "$tmpfile"
+    assert_eq "security-only perfect score" "100" "$KYZN_HEALTH_SCORE"
+
+    # Single category at 0%
+    echo '[{"category":"security","score":0,"max_score":10}]' > "$tmpfile"
+    compute_health_score "$tmpfile"
+    assert_eq "security-only zero score" "0" "$KYZN_HEALTH_SCORE"
+
+    rm -f "$tmpfile"
+}
+
+test_prompt_yn() {
+    log_header "25. prompt_yn handles y/n/defaults"
+
+    # "y" should return true
+    if echo "y" | prompt_yn "Continue?" "n" 2>/dev/null; then
+        pass "prompt_yn accepts y"
+    else
+        fail "prompt_yn y" "should return true for y"
+    fi
+
+    # "n" should return false
+    if echo "n" | prompt_yn "Continue?" "y" 2>/dev/null; then
+        fail "prompt_yn n" "should return false for n"
+    else
+        pass "prompt_yn rejects n"
+    fi
+
+    # Empty input uses default "y"
+    if echo "" | prompt_yn "Continue?" "y" 2>/dev/null; then
+        pass "prompt_yn default y"
+    else
+        fail "prompt_yn default y" "empty input should use default y"
+    fi
+
+    # Empty input uses default "n"
+    if echo "" | prompt_yn "Continue?" "n" 2>/dev/null; then
+        fail "prompt_yn default n" "empty input should use default n"
+    else
+        pass "prompt_yn default n"
+    fi
+}
+
+test_clean_full_mode_constraints() {
+    log_header "26. assemble_prompt clean and full mode constraints"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+
+    create_sandbox generic
+    detect_project_type
+    KYZN_HEALTH_SCORE=50
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    echo '[]' > "$tmpfile"
+
+    local clean_prompt
+    clean_prompt=$(assemble_prompt "$tmpfile" "clean" "auto" "generic")
+    assert_contains "clean has CLEANUP header" "$clean_prompt" "FOCUS ON CLEANUP"
+    assert_contains "clean forbids behavior change" "$clean_prompt" "Do NOT change behavior"
+
+    local full_prompt
+    full_prompt=$(assemble_prompt "$tmpfile" "full" "auto" "generic")
+    assert_contains "full has FULL IMPROVEMENT header" "$full_prompt" "FULL IMPROVEMENT MODE"
+
+    rm -f "$tmpfile"
+    cleanup_sandbox
+}
+
+test_approve_reject() {
+    log_header "27. cmd_approve and cmd_reject create correct history entries"
+
+    source "$KYZN_ROOT/lib/approve.sh"
+
+    create_sandbox generic
+    ensure_kyzn_dirs
+
+    # Approve with report present
+    echo "# Fake report" > "$KYZN_REPORTS_DIR/test-approve-001.md"
+    cmd_approve "test-approve-001" 2>/dev/null
+
+    assert_file_exists "approve history file created" "$KYZN_HISTORY_DIR/test-approve-001.json"
+    local status
+    status=$(jq -r '.status' "$KYZN_HISTORY_DIR/test-approve-001.json")
+    assert_eq "approve sets status approved" "approved" "$status"
+
+    # Reject with reason
+    echo "# Fake report" > "$KYZN_REPORTS_DIR/test-reject-001.md"
+    cmd_reject "test-reject-001" --reason "too aggressive" 2>/dev/null
+
+    assert_file_exists "reject history file created" "$KYZN_HISTORY_DIR/test-reject-001.json"
+    local rstatus
+    rstatus=$(jq -r '.status' "$KYZN_HISTORY_DIR/test-reject-001.json")
+    assert_eq "reject sets status rejected" "rejected" "$rstatus"
+
+    local reason
+    reason=$(jq -r '.rejection_reason' "$KYZN_HISTORY_DIR/test-reject-001.json")
+    assert_eq "reject stores reason" "too aggressive" "$reason"
+
+    cleanup_sandbox
+}
+
+test_approve_missing_report() {
+    log_header "28. cmd_approve fails gracefully without report"
+
+    source "$KYZN_ROOT/lib/approve.sh"
+
+    create_sandbox generic
+    ensure_kyzn_dirs
+
+    local exit_code=0
+    cmd_approve "nonexistent-run" 2>/dev/null || exit_code=$?
+    assert_eq "approve fails without report" "1" "$exit_code"
+
+    cleanup_sandbox
+}
+
+test_allowlist_rust_go() {
+    log_header "29. Allowlist generation for rust and go"
+
+    source "$KYZN_ROOT/lib/allowlist.sh"
+
+    local rust_list
+    rust_list=$(build_allowlist "rust")
+    assert_contains "rust has cargo" "$rust_list" "cargo"
+    assert_contains "rust has Read" "$rust_list" "Read"
+
+    local go_list
+    go_list=$(build_allowlist "go")
+    assert_contains "go has go" "$go_list" "go"
+    assert_contains "go has Read" "$go_list" "Read"
+}
+
+test_get_system_prompt() {
+    log_header "30. get_system_prompt returns file path"
+
+    source "$KYZN_ROOT/lib/prompt.sh"
+
+    # Without profile — should return templates/system-prompt.md
+    local sys
+    sys=$(get_system_prompt "")
+    assert_eq "no profile returns system-prompt.md" "$KYZN_ROOT/templates/system-prompt.md" "$sys"
+
+    # With valid profile — should return a temp file (combined)
+    local combined
+    combined=$(get_system_prompt "testing")
+    if [[ "$combined" != "$KYZN_ROOT/templates/system-prompt.md" && -f "$combined" ]]; then
+        pass "testing profile returns combined temp file"
+        local content
+        content=$(cat "$combined")
+        assert_contains "combined includes system prompt content" "$content" "kyzn"
+        rm -f "$combined"
+    else
+        fail "get_system_prompt with profile" "did not return a valid combined file"
+    fi
+
+    # With nonexistent profile — should fall back to system-prompt.md
+    local fallback
+    fallback=$(get_system_prompt "nonexistent")
+    assert_eq "nonexistent profile falls back" "$KYZN_ROOT/templates/system-prompt.md" "$fallback"
+}
+
+# ---------------------------------------------------------------------------
 # Stress tests (--full or --stress only)
 # ---------------------------------------------------------------------------
 
@@ -767,6 +1019,16 @@ main() {
     test_deep_mode_constraints
     test_score_regression_gate
     test_branch_cleanup_in_failure
+    test_verify_build_generic
+    test_verify_build_dispatch
+    test_build_failure_report_strategy
+    test_health_score_edge_cases
+    test_prompt_yn
+    test_clean_full_mode_constraints
+    test_approve_reject
+    test_approve_missing_report
+    test_allowlist_rust_go
+    test_get_system_prompt
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
