@@ -14,6 +14,8 @@ generate_report() {
     ensure_kyzn_dirs
 
     local report_file="$KYZN_REPORTS_DIR/$run_id.md"
+    # Compute before score fresh from before_file
+    compute_health_score "$before_file"
     local before_score="${KYZN_HEALTH_SCORE:-0}"
 
     # Re-compute after score
@@ -121,8 +123,10 @@ generate_category_comparison() {
         before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | (add / length) // "-"' "$before_file" 2>/dev/null)
         after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | (add / length) // "-"' "$after_file" 2>/dev/null)
 
-        if [[ "$before_val" != "-" && "$after_val" != "-" ]]; then
-            local d=$(( ${after_val%.*} - ${before_val%.*} ))
+        if [[ "$before_val" != "-" && "$after_val" != "-" && -n "$before_val" && -n "$after_val" ]]; then
+            local bv="${before_val%.*}"; bv="${bv:-0}"
+            local av="${after_val%.*}"; av="${av:-0}"
+            local d=$(( av - bv ))
             local t="→"
             (( d > 0 )) && t="↑ +$d"
             (( d < 0 )) && t="↓ $d"

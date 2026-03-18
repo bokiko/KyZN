@@ -4,7 +4,7 @@
 set -euo pipefail
 
 KYZN_VERSION="0.1.0"
-KYZN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KYZN_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Load core library
 # shellcheck source=lib/core.sh

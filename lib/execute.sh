@@ -37,9 +37,9 @@ execute_claude() {
     fi
 
     local cost session_id stop_reason
-    cost=$(echo "$result" | jq -r '.metadata.cost // "unknown"')
+    cost=$(echo "$result" | jq -r '.total_cost_usd // "unknown"')
     session_id=$(echo "$result" | jq -r '.session_id // "none"')
-    stop_reason=$(echo "$result" | jq -r '.metadata.stop_reason // "unknown"')
+    stop_reason=$(echo "$result" | jq -r '.stop_reason // "unknown"')
 
     log_ok "Claude finished (cost: \$$cost, reason: $stop_reason)"
 
