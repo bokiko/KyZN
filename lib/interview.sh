@@ -236,6 +236,7 @@ project:
 
 preferences:
   mode: $mode
+  model: sonnet
   budget: $budget
   max_turns: 30
   diff_limit: 2000

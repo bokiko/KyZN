@@ -17,11 +17,15 @@ execute_claude() {
 
     log_step "Invoking Claude Code (budget: \$$budget, max turns: $max_turns)..."
 
+    # Read model from config (default: sonnet)
+    local model
+    model=$(config_get '.preferences.model' 'sonnet')
+
     # Core invocation (allowlist is intentionally unquoted for word splitting)
     local result
     # shellcheck disable=SC2086
     result=$(claude -p "$prompt" \
-        --model sonnet \
+        --model "$model" \
         --max-budget-usd "$budget" \
         --max-turns "$max_turns" \
         $allowlist \
@@ -141,10 +145,19 @@ cmd_improve() {
     esac
     sys_prompt_file=$(get_system_prompt "$profile")
 
+    # Step 3.5: Pre-existing test failure detection
+    source "$KYZN_ROOT/lib/verify.sh"
+    local baseline_verify_ok=true
+    if ! verify_build 2>/dev/null; then
+        baseline_verify_ok=false
+        log_warn "Pre-existing build/test failures detected (will not block improvements)"
+    fi
+
     # Step 4: Execute Claude
     execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" || {
         log_error "Claude execution failed"
         git checkout - 2>/dev/null
+        git branch -D "$branch_name" 2>/dev/null || true
         return 1
     }
 
@@ -160,32 +173,50 @@ cmd_improve() {
     if (( total_diff > diff_limit )); then
         log_warn "Diff exceeds limit ($total_diff > $diff_limit lines). Aborting."
         git checkout - 2>/dev/null
+        git branch -D "$branch_name" 2>/dev/null || true
         return 1
     fi
 
     log_info "Changes: +$diff_lines -$del_lines ($total_diff lines)"
 
     # Step 6: Verify
-    source "$KYZN_ROOT/lib/verify.sh"
     if verify_build; then
         log_ok "Build and tests passed!"
-
-        # Step 7: Re-measure
-        local after_dir
-        after_dir=$(mktemp -d)
-        run_measurements "$KYZN_PROJECT_TYPE" "$after_dir"
-        local after_file="$KYZN_MEASUREMENTS_FILE"
-
-        # Step 8: Generate report and create PR
-        source "$KYZN_ROOT/lib/report.sh"
-        generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"
-
-        log_ok "Improvement cycle complete!"
-        log_info "Run 'kyzn approve $run_id' to sign off, or 'kyzn reject $run_id' to discard."
     else
-        log_error "Build or tests failed after improvements."
-        handle_build_failure "$on_fail" "$run_id"
+        if $baseline_verify_ok; then
+            # New failures introduced by Claude — abort
+            log_error "Build or tests failed after improvements."
+            handle_build_failure "$on_fail" "$run_id" "$branch_name"
+            return 1
+        else
+            log_warn "Build/tests still failing, but failures are pre-existing. Continuing."
+        fi
     fi
+
+    # Step 7: Re-measure
+    local after_dir
+    after_dir=$(mktemp -d)
+    run_measurements "$KYZN_PROJECT_TYPE" "$after_dir"
+    local after_file="$KYZN_MEASUREMENTS_FILE"
+
+    # Step 7.5: Score regression gate
+    compute_health_score "$after_file"
+    local after_score="${KYZN_HEALTH_SCORE:-0}"
+    compute_health_score "$baseline_file"
+    local baseline_score="${KYZN_HEALTH_SCORE:-0}"
+
+    if (( after_score < baseline_score )); then
+        log_warn "Score regressed ($baseline_score → $after_score). Aborting."
+        handle_build_failure "$on_fail" "$run_id" "$branch_name"
+        return 1
+    fi
+
+    # Step 8: Generate report and create PR
+    source "$KYZN_ROOT/lib/report.sh"
+    generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"
+
+    log_ok "Improvement cycle complete!"
+    log_info "Run 'kyzn approve $run_id' to sign off, or 'kyzn reject $run_id' to discard."
 }
 
 # ---------------------------------------------------------------------------
@@ -194,6 +225,7 @@ cmd_improve() {
 handle_build_failure() {
     local strategy="$1"
     local run_id="$2"
+    local branch_name="${3:-}"
 
     case "$strategy" in
         report)
@@ -219,10 +251,12 @@ $(git diff --stat 2>/dev/null || echo "No diff available")
 EOF
             log_info "Report saved to $KYZN_REPORTS_DIR/$run_id-failed.md"
             git checkout - 2>/dev/null
+            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         discard)
             log_info "Discarding branch..."
             git checkout - 2>/dev/null
+            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         draft-pr)
             log_info "Creating draft PR with failure report..."
@@ -234,6 +268,7 @@ EOF
                 --body "**WARNING: Build failed after these changes.**\n\nRun ID: $run_id\nCost: \$${KYZN_CLAUDE_COST:-unknown}" \
                 2>/dev/null || true
             git checkout - 2>/dev/null
+            if [[ -n "$branch_name" ]]; then git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
     esac
 }

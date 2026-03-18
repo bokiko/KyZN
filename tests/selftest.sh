@@ -486,6 +486,144 @@ test_unknown_command() {
 # Stress tests (--full or --stress only)
 # ---------------------------------------------------------------------------
 
+test_rust_workspace_detection() {
+    log_header "16. Rust workspace detection"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    # Standard Cargo.toml at root
+    create_sandbox rust
+    detect_project_type
+    assert_eq "detect root Cargo.toml" "rust" "$KYZN_PROJECT_TYPE"
+    cleanup_sandbox
+
+    # Workspace: Cargo.toml only in subdirectory (one level deep)
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p mylib
+    echo '[package]' > mylib/Cargo.toml
+    echo 'name = "mylib"' >> mylib/Cargo.toml
+    git add -A && git commit -q -m "rust workspace"
+    detect_project_type
+    assert_eq "detect workspace Cargo.toml" "rust" "$KYZN_PROJECT_TYPE"
+    cleanup_sandbox
+}
+
+test_configurable_model() {
+    log_header "17. Configurable model in config"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/interview.sh"
+
+    create_sandbox node
+
+    # Run interview with defaults
+    echo -e "1\n1\n2.50\n1\n1" | run_interview 2>/dev/null
+
+    # Config should have model field
+    local model
+    model=$(config_get '.preferences.model' '')
+    assert_eq "config has model" "sonnet" "$model"
+
+    cleanup_sandbox
+}
+
+test_deep_mode_constraints() {
+    log_header "18. Deep mode prompt strength"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+
+    create_sandbox generic
+    detect_project_type
+
+    # Create a fake measurements file
+    local tmpfile
+    tmpfile=$(mktemp)
+    echo '[]' > "$tmpfile"
+    KYZN_HEALTH_SCORE=50
+
+    local prompt
+    prompt=$(assemble_prompt "$tmpfile" "deep" "auto" "generic")
+
+    assert_contains "deep has CRITICAL" "$prompt" "CRITICAL CONSTRAINTS"
+    assert_contains "deep forbids UI text" "$prompt" "Do NOT change UI text"
+    assert_contains "deep requires named bug" "$prompt" "can't name the bug"
+
+    rm -f "$tmpfile"
+    cleanup_sandbox
+}
+
+test_score_regression_gate() {
+    log_header "19. Score regression gate logic"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+
+    # Create two measurement files: baseline better than after
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    cat > "$tmpdir/baseline.json" <<'JSON'
+[
+  {"category": "security", "score": 9, "max_score": 10},
+  {"category": "quality", "score": 8, "max_score": 10}
+]
+JSON
+
+    cat > "$tmpdir/after.json" <<'JSON'
+[
+  {"category": "security", "score": 7, "max_score": 10},
+  {"category": "quality", "score": 6, "max_score": 10}
+]
+JSON
+
+    # Compute scores
+    compute_health_score "$tmpdir/baseline.json"
+    local baseline_score="$KYZN_HEALTH_SCORE"
+
+    compute_health_score "$tmpdir/after.json"
+    local after_score="$KYZN_HEALTH_SCORE"
+
+    if (( after_score < baseline_score )); then
+        pass "score regression detected ($baseline_score → $after_score)"
+    else
+        fail "score regression" "expected after < baseline, got $after_score >= $baseline_score"
+    fi
+
+    rm -rf "$tmpdir"
+}
+
+test_branch_cleanup_in_failure() {
+    log_header "20. handle_build_failure cleans up branch"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Create a branch and stay on it (simulating kyzn mid-run)
+    git checkout -b kyzn/test-cleanup-branch 2>/dev/null
+
+    # Verify branch exists and we're on it
+    git branch | grep -q "kyzn/test-cleanup-branch" && pass "test branch created" || fail "test branch" "not created"
+
+    # Simulate failure handler (discard strategy) — checkout - goes back to master, then deletes branch
+    # Use local to avoid clobbering main()'s mode variable
+    local mode="deep" focus="test" KYZN_CLAUDE_COST="0.00"
+    handle_build_failure "discard" "test-run" "kyzn/test-cleanup-branch"
+
+    # Branch should be deleted
+    if ! git branch | grep -q "kyzn/test-cleanup-branch"; then
+        pass "orphan branch cleaned up"
+    else
+        fail "branch cleanup" "branch still exists"
+    fi
+
+    cleanup_sandbox
+}
+
 test_stress_rapid_ids() {
     log_header "S1. Stress: rapid run ID generation (100 IDs)"
 
@@ -621,6 +759,11 @@ main() {
     test_version
     test_help
     test_unknown_command
+    test_rust_workspace_detection
+    test_configurable_model
+    test_deep_mode_constraints
+    test_score_regression_gate
+    test_branch_cleanup_in_failure
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

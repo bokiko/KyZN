@@ -38,10 +38,14 @@ assemble_prompt() {
     local mode_constraints=""
     case "$mode" in
         deep)
-            mode_constraints="IMPORTANT CONSTRAINTS:
-- Make REAL improvements only: fix bugs, add error handling, improve performance, add tests for uncovered paths
-- Do NOT: rename variables for style, add comments, reformat code, reorganize imports
-- Every change must have measurable impact on code quality, security, or reliability"
+            mode_constraints="CRITICAL CONSTRAINTS — DEEP MODE:
+- ONLY fix real bugs, security issues, error handling gaps, or performance problems
+- ONLY add tests for code paths that have no coverage
+- Do NOT: rename variables, reformat code, reorganize imports, change string literals,
+  update comments, or make any change that doesn't fix a concrete problem
+- Do NOT change UI text, labels, descriptions, or user-facing strings
+- Every change must fix a specific, identifiable issue — if you can't name the bug, don't change it
+- Fewer high-impact changes are better than many cosmetic ones"
             ;;
         clean)
             mode_constraints="FOCUS ON CLEANUP:

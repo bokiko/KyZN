@@ -21,7 +21,7 @@ detect_project_type() {
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="python"
     fi
 
-    if [[ -f "$root/Cargo.toml" ]]; then
+    if [[ -f "$root/Cargo.toml" ]] || compgen -G "$root/*/Cargo.toml" >/dev/null 2>&1; then
         KYZN_PROJECT_TYPES+=("rust")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="rust"
     fi
