@@ -483,7 +483,7 @@ test_unknown_command() {
 }
 
 # ---------------------------------------------------------------------------
-# Stress tests (--full or --stress only)
+# v0.2.0 feature tests (always run)
 # ---------------------------------------------------------------------------
 
 test_rust_workspace_detection() {
@@ -623,6 +623,10 @@ test_branch_cleanup_in_failure() {
 
     cleanup_sandbox
 }
+
+# ---------------------------------------------------------------------------
+# Stress tests (--full or --stress only)
+# ---------------------------------------------------------------------------
 
 test_stress_rapid_ids() {
     log_header "S1. Stress: rapid run ID generation (100 IDs)"

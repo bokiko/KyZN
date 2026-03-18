@@ -26,7 +26,7 @@ execute_claude() {
     local result
     # shellcheck disable=SC2086
     if $verbose; then
-        # Stream last 5 lines of stderr to terminal in real-time
+        # Stream condensed progress lines to terminal in real-time
         result=$(claude -p "$prompt" \
             --model "$model" \
             --max-budget-usd "$budget" \
@@ -36,11 +36,11 @@ execute_claude() {
             --output-format json \
             --no-session-persistence \
             2> >(tee "$stderr_file" | while IFS= read -r line; do
-                # Show condensed progress lines
+                [[ -z "$line" ]] && continue
                 local short
                 short=$(truncate_str "$line" 100)
                 echo -e "  ${DIM}${short}${RESET}" >&2
-            done | tail -5 >&2)) || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
+            done)) || { log_error "Claude Code invocation failed"; rm -f "$stderr_file"; return 1; }
     else
         result=$(claude -p "$prompt" \
             --model "$model" \
@@ -89,15 +89,17 @@ cmd_improve() {
     local max_turns=""
     local model=""
     local verbose=false
+    local model_from_cli=false
+    local budget_from_cli=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --auto)     auto=true; shift ;;
             --focus)    focus="$2"; shift 2 ;;
             --mode)     mode="$2"; shift 2 ;;
-            --budget)   budget="$2"; shift 2 ;;
+            --budget)   budget="$2"; budget_from_cli=true; shift 2 ;;
             --turns)    max_turns="$2"; shift 2 ;;
-            --model)    model="$2"; shift 2 ;;
+            --model)    model="$2"; model_from_cli=true; shift 2 ;;
             -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
@@ -143,21 +145,25 @@ cmd_improve() {
         echo -e "  Focus:  ${CYAN}$focus${RESET}"
         echo ""
 
-        # Let user adjust model
-        local model_choice
-        model_choice=$(prompt_choice "Model to use?" \
-            "sonnet  — fast, cost-effective (recommended)" \
-            "opus    — highest quality, slower" \
-            "haiku   — cheapest, basic improvements")
+        # Let user adjust model (skip if --model was passed)
+        if ! $model_from_cli; then
+            local model_choice
+            model_choice=$(prompt_choice "Model to use?" \
+                "sonnet  — fast, cost-effective (recommended)" \
+                "opus    — highest quality, slower" \
+                "haiku   — cheapest, basic improvements")
 
-        case "$model_choice" in
-            1) model="sonnet" ;;
-            2) model="opus" ;;
-            3) model="haiku" ;;
-        esac
+            case "$model_choice" in
+                1) model="sonnet" ;;
+                2) model="opus" ;;
+                3) model="haiku" ;;
+            esac
+        fi
 
-        # Let user adjust budget
-        budget=$(prompt_input "Budget per run (USD)" "$budget")
+        # Let user adjust budget (skip if --budget was passed)
+        if ! $budget_from_cli; then
+            budget=$(prompt_input "Budget per run (USD)" "$budget")
+        fi
     fi
 
     # Generate run ID
