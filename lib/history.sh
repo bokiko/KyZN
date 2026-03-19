@@ -79,7 +79,7 @@ cmd_diff() {
 
     # Try to find the branch
     local branch
-    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep "$run_id" | head -1 | tr -d ' *')
+    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep "$run_id" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||')
 
     if [[ -n "$branch" ]]; then
         git diff "main...$branch" 2>/dev/null || git diff "master...$branch" 2>/dev/null

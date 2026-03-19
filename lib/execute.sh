@@ -15,7 +15,7 @@ unstage_secrets() {
     local staged_secrets
     staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc' || true)
     if [[ -n "$staged_secrets" ]]; then
-        echo "$staged_secrets" | xargs -r git reset HEAD -- 2>/dev/null || true
+        echo "$staged_secrets" | xargs git reset HEAD -- 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"
         echo "$staged_secrets" | while IFS= read -r f; do
             [[ -n "$f" ]] && log_dim "  - $f"
@@ -41,7 +41,7 @@ check_dangerous_files() {
             echo "$dangerous" | while IFS= read -r f; do
                 [[ -n "$f" ]] && log_warn "  - $f"
             done
-            echo "$dangerous" | xargs -r git reset HEAD -- 2>/dev/null || true
+            echo "$dangerous" | xargs git reset HEAD -- 2>/dev/null || true
         fi
     fi
 }
@@ -50,22 +50,27 @@ check_dangerous_files() {
 # Safety: enforce hard ceilings on config values
 # ---------------------------------------------------------------------------
 enforce_config_ceilings() {
-    local -n _budget=$1 _turns=$2 _diff_limit=$3
+    local _var_budget=$1 _var_turns=$2 _var_diff_limit=$3
 
     # Hard ceilings (cannot be overridden by config)
     local max_budget=25 max_turns=100 max_diff=10000
 
-    if (( $(echo "$_budget > $max_budget" | bc -l 2>/dev/null || echo 0) )); then
-        log_warn "Budget $_budget exceeds max ($max_budget). Capping."
-        _budget="$max_budget"
+    local _cur_budget _cur_turns _cur_diff
+    eval "_cur_budget=\$$_var_budget"
+    eval "_cur_turns=\$$_var_turns"
+    eval "_cur_diff=\$$_var_diff_limit"
+
+    if (( $(awk "BEGIN {print ($_cur_budget > $max_budget) ? 1 : 0}") )); then
+        log_warn "Budget $_cur_budget exceeds max ($max_budget). Capping."
+        eval "$_var_budget=$max_budget"
     fi
-    if (( _turns > max_turns )); then
-        log_warn "Max turns $_turns exceeds max ($max_turns). Capping."
-        _turns=$max_turns
+    if (( _cur_turns > max_turns )); then
+        log_warn "Max turns $_cur_turns exceeds max ($max_turns). Capping."
+        eval "$_var_turns=$max_turns"
     fi
-    if (( _diff_limit > max_diff )); then
-        log_warn "Diff limit $_diff_limit exceeds max ($max_diff). Capping."
-        _diff_limit=$max_diff
+    if (( _cur_diff > max_diff )); then
+        log_warn "Diff limit $_cur_diff exceeds max ($max_diff). Capping."
+        eval "$_var_diff_limit=$max_diff"
     fi
 }
 
@@ -183,13 +188,22 @@ execute_claude() {
 cmd_improve() {
     require_git_repo
 
-    # Prevent concurrent runs on the same repo
+    # Prevent concurrent runs on the same repo (mkdir is atomic and cross-platform)
     ensure_kyzn_dirs
-    exec 9>"$KYZN_DIR/.improve.lock"
-    if ! flock -n 9; then
-        log_error "Another kyzn improve is already running on this repo."
-        return 1
+    local lockdir="$KYZN_DIR/.improve.lock"
+    if ! mkdir "$lockdir" 2>/dev/null; then
+        # Check for stale lock (PID file inside)
+        local stale_pid
+        stale_pid=$(cat "$lockdir/pid" 2>/dev/null || echo "")
+        if [[ -n "$stale_pid" ]] && ! kill -0 "$stale_pid" 2>/dev/null; then
+            rm -rf "$lockdir"
+            mkdir "$lockdir" 2>/dev/null || { log_error "Another kyzn improve is already running on this repo."; return 1; }
+        else
+            log_error "Another kyzn improve is already running on this repo."
+            return 1
+        fi
     fi
+    echo $$ > "$lockdir/pid"
 
     # Parse args
     local auto=false
@@ -294,8 +308,8 @@ cmd_improve() {
         [[ -d "${baseline_dir:-}" ]] && rm -rf "$baseline_dir" 2>/dev/null
         [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null
         [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
-        # Release flock
-        exec 9>&- 2>/dev/null
+        # Release lock
+        rm -rf "${lockdir:-}" 2>/dev/null
         trap - EXIT INT TERM
     }
     trap _kyzn_cleanup EXIT INT TERM
@@ -305,8 +319,8 @@ cmd_improve() {
 
     display_health_dashboard "$baseline_file"
 
-    # Persist model choice to config for next run
-    if has_config; then
+    # Persist model choice to config (only if chosen interactively, not from CLI override)
+    if has_config && ! $model_from_cli; then
         VALUE="$model" yq eval -i '.preferences.model = strenv(VALUE)' "$KYZN_CONFIG"
     fi
 
@@ -450,8 +464,8 @@ cmd_improve() {
     local category_regression=false
     for cat in security testing performance quality documentation; do
         local before_cat after_cat
-        before_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$baseline_file" 2>/dev/null) || true
-        after_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add * 100 / ([.[]] | length * 10)) else empty end' "$after_file" 2>/dev/null) || true
+        before_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add)) else empty end' "$baseline_file" 2>/dev/null) || true
+        after_cat=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add)) else empty end' "$after_file" 2>/dev/null) || true
 
         if [[ -n "$before_cat" && -n "$after_cat" ]]; then
             local b_int="${before_cat%.*}" a_int="${after_cat%.*}"

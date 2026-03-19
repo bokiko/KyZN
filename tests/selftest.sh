@@ -3,7 +3,17 @@
 # Usage: kyzn selftest [--quick|--full|--stress]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Portable symlink resolution (readlink -f doesn't exist on macOS)
+_resolve() {
+    local f="$1"; local d=0
+    while [[ -L "$f" ]]; do
+        (( d++ > 20 )) && break
+        local dir; dir="$(cd "$(dirname "$f")" && pwd)"
+        f="$(readlink "$f")"; [[ "$f" != /* ]] && f="$dir/$f"
+    done
+    echo "$f"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_resolve "${BASH_SOURCE[0]}")")" && pwd)"
 KYZN_ROOT="$(dirname "$SCRIPT_DIR")"
 source "$KYZN_ROOT/lib/core.sh"
 
@@ -435,11 +445,11 @@ test_claude_json_parsing() {
 test_symlink_resolution() {
     log_header "11. Symlink resolution"
 
-    # Check that kyzn script uses readlink -f
+    # Check that kyzn script uses portable _kyzn_resolve (not readlink -f)
     local kyzn_script="$KYZN_ROOT/kyzn"
     local content
     content=$(cat "$kyzn_script")
-    assert_contains "uses readlink -f" "$content" 'readlink -f'
+    assert_contains "uses _kyzn_resolve" "$content" '_kyzn_resolve'
 }
 
 test_doctor() {
@@ -1178,16 +1188,18 @@ test_reject_no_learn_message() {
 test_stress_rapid_ids() {
     log_header "S1. Stress: rapid run ID generation (100 IDs)"
 
-    local -A seen=()
+    local tmpfile
+    tmpfile=$(mktemp)
     local collisions=0
     for _ in $(seq 1 100); do
-        local rid
-        rid=$(generate_run_id)
-        if [[ -n "${seen[$rid]:-}" ]]; then
-            collisions=$((collisions + 1))
-        fi
-        seen[$rid]=1
+        generate_run_id >> "$tmpfile"
     done
+
+    local total unique
+    total=$(wc -l < "$tmpfile")
+    unique=$(sort -u "$tmpfile" | wc -l)
+    collisions=$(( total - unique ))
+    rm -f "$tmpfile"
 
     if (( collisions == 0 )); then
         pass "100 unique run IDs"

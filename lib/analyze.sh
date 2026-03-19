@@ -420,7 +420,10 @@ display_findings() {
             short_title=$(_trunc "$title" "$title_col")
             short_file=$(_trunc "$(_short_file "$file")" "$file_col")
 
-            printf "    ${BOLD}%s${RESET}  %-${title_col}s  ${DIM}%s${RESET}\n" "$short_id" "$short_title" "$short_file"
+            # Print columns separately to avoid ANSI codes misaligning printf width
+            local padded_title
+            printf -v padded_title "%-${title_col}s" "$short_title"
+            echo -e "    ${BOLD}${short_id}${RESET}  ${padded_title}  ${DIM}${short_file}${RESET}"
 
             ((j++))
         done
@@ -442,8 +445,13 @@ generate_fix_prompt() {
     local max_findings="${2:-10}"
     local min_severity="${3:-LOW}"
 
-    local -A sev_rank=(["CRITICAL"]=4 ["HIGH"]=3 ["MEDIUM"]=2 ["LOW"]=1)
-    local min_rank="${sev_rank[$min_severity]:-1}"
+    local min_rank
+    case "$min_severity" in
+        CRITICAL) min_rank=4 ;;
+        HIGH)     min_rank=3 ;;
+        MEDIUM)   min_rank=2 ;;
+        *)        min_rank=1 ;;
+    esac
 
     local selected
     selected=$(jq --argjson min "$min_rank" '
@@ -544,7 +552,18 @@ cmd_analyze() {
 
     # Model profile selection (unless --auto or --profile passed)
     local analysis_model="opus"
-    local -A agent_models=( ["security"]="opus" ["correctness"]="opus" ["performance"]="opus" ["architecture"]="opus" ["consensus"]="opus" )
+    local _model_security="opus" _model_correctness="opus" _model_performance="opus" _model_architecture="opus" _model_consensus="opus"
+
+    # Helper to get model for a specialist
+    _agent_model() {
+        case "$1" in
+            security)     echo "$_model_security" ;;
+            correctness)  echo "$_model_correctness" ;;
+            performance)  echo "$_model_performance" ;;
+            architecture) echo "$_model_architecture" ;;
+            consensus)    echo "$_model_consensus" ;;
+        esac
+    }
 
     if [[ -z "$profile" ]] && ! $auto && ! $single && [[ -z "$focus" ]]; then
         local profile_choice
@@ -565,14 +584,14 @@ cmd_analyze() {
         opus)
             ;; # all opus, default
         hybrid)
-            agent_models["performance"]="sonnet"
-            agent_models["architecture"]="sonnet"
-            agent_models["consensus"]="sonnet"
+            _model_performance="sonnet"
+            _model_architecture="sonnet"
+            _model_consensus="sonnet"
             ;;
         sonnet)
-            for k in security correctness performance architecture consensus; do
-                agent_models[$k]="sonnet"
-            done
+            _model_security="sonnet"; _model_correctness="sonnet"
+            _model_performance="sonnet"; _model_architecture="sonnet"
+            _model_consensus="sonnet"
             analysis_model="sonnet"
             ;;
     esac
@@ -590,7 +609,7 @@ cmd_analyze() {
     if $single; then
         per_agent_budget="$budget"
     else
-        per_agent_budget=$(echo "scale=2; $budget / 5" | bc)
+        per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $budget / 5}")
     fi
 
     # Confirm (no dollar amounts shown)
@@ -694,17 +713,24 @@ cmd_analyze() {
 
         local pids=()
         local specialists=("security" "correctness" "performance" "architecture")
-        local -A pid_map=()
+        # Parallel arrays: pid_specs[i] matches pids[i]
+        local pid_specs=()
+        # Status tracking: _status_security, _status_correctness, etc.
+        local _status_security="running" _status_correctness="running" _status_performance="running" _status_architecture="running"
+
+        # Helper: get/set status for a specialist
+        _get_status() { eval "echo \$_status_$1"; }
+        _set_status() { eval "_status_$1=$2"; }
 
         for spec in "${specialists[@]}"; do
             local spec_prompt
             spec_prompt=$(build_specialist_prompt "$spec" "$(project_name)" \
                 "$(project_type_name "$KYZN_PROJECT_TYPE")" "${KYZN_HEALTH_SCORE:-0}" "$measurements_json")
 
-            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "${agent_models[$spec]}" &
+            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "$(_agent_model "$spec")" &
             local pid=$!
             pids+=($pid)
-            pid_map[$pid]="$spec"
+            pid_specs+=("$spec")
         done
 
         echo ""
@@ -713,14 +739,10 @@ cmd_analyze() {
         local start_time completed_count
         start_time=$(date +%s)
         completed_count=0
-        local -A agent_status=()
-        for spec in "${specialists[@]}"; do
-            agent_status[$spec]="running"
-        done
 
         # Spinner frames and phase hint messages
         local spinner_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-        local -a phase_hints=(
+        local phase_hints=(
             "Reading entry points and imports..."
             "Tracing function call chains..."
             "Analyzing error handling paths..."
@@ -736,13 +758,14 @@ cmd_analyze() {
 
         while (( completed_count < ${#specialists[@]} )); do
             # Check which pids have finished
-            for pid in "${pids[@]}"; do
-                local spec_name="${pid_map[$pid]}"
-                if [[ "${agent_status[$spec_name]}" == "running" ]] && ! kill -0 "$pid" 2>/dev/null; then
-                    if wait "$pid" 2>/dev/null; then
-                        agent_status[$spec_name]="done"
+            local pi
+            for pi in "${!pids[@]}"; do
+                local spec_name="${pid_specs[$pi]}"
+                if [[ "$(_get_status "$spec_name")" == "running" ]] && ! kill -0 "${pids[$pi]}" 2>/dev/null; then
+                    if wait "${pids[$pi]}" 2>/dev/null; then
+                        _set_status "$spec_name" "done"
                     else
-                        agent_status[$spec_name]="failed"
+                        _set_status "$spec_name" "failed"
                     fi
                     completed_count=$((completed_count + 1))
                 fi
@@ -759,7 +782,7 @@ cmd_analyze() {
             # Line 1: spinner + time + agent dots
             local status_line="  ${CYAN}${frame}${RESET} ${DIM}[${mins}m$(printf '%02d' $secs)s]${RESET} "
             for spec in "${specialists[@]}"; do
-                case "${agent_status[$spec]}" in
+                case "$(_get_status "$spec")" in
                     running) status_line+="${YELLOW}◌${RESET} $spec  " ;;
                     done)    status_line+="${GREEN}●${RESET} $spec  " ;;
                     failed)  status_line+="${RED}✗${RESET} $spec  " ;;
@@ -779,7 +802,7 @@ cmd_analyze() {
 
         local any_failed=false
         for spec in "${specialists[@]}"; do
-            if [[ "${agent_status[$spec]}" == "failed" ]]; then
+            if [[ "$(_get_status "$spec")" == "failed" ]]; then
                 any_failed=true
             fi
         done
@@ -814,15 +837,15 @@ cmd_analyze() {
 
         local consensus_result
         consensus_result=$(timeout "$claude_timeout" claude -p "$consensus_prompt" \
-            --model "${agent_models[consensus]}" \
+            --model "$(_agent_model consensus)" \
             --max-budget-usd "$per_agent_budget" \
             --max-turns 10 \
             --output-format json \
             --no-session-persistence \
             2>"$consensus_stderr") || {
             log_warn "Consensus merge failed — using raw concatenated findings"
-            # Fallback: just concatenate all findings
-            jq -s 'add | sort_by(-.severity)' \
+            # Fallback: just concatenate all findings (sort by severity rank, not string)
+            jq -s 'add | sort_by(if .severity == "CRITICAL" then 0 elif .severity == "HIGH" then 1 elif .severity == "MEDIUM" then 2 else 3 end)' \
                 "$tmp_dir/security.json" "$tmp_dir/correctness.json" \
                 "$tmp_dir/performance.json" "$tmp_dir/architecture.json" \
                 > "$findings_file" 2>/dev/null || echo '[]' > "$findings_file"
@@ -844,7 +867,7 @@ cmd_analyze() {
         rm -rf "$tmp_dir"
 
         # Total cost is approximate (we can't easily sum parallel costs)
-        total_cost="~$(echo "scale=2; $per_agent_budget * 5" | bc)"
+        total_cost="~$(awk "BEGIN {printf \"%.2f\", $per_agent_budget * 5}")"
     fi
 
     rm -f "$sys_prompt_file"
@@ -1139,12 +1162,16 @@ run_fix_phase() {
         return 1
     fi
 
+    # Commit the fixes
     safe_git add -A 2>/dev/null
-    local diff_stat
-    diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
-    git reset HEAD 2>/dev/null || true
+    unstage_secrets
+    check_dangerous_files
+    safe_git commit -m "kyzn: apply analysis fixes ($run_id)" 2>/dev/null || true
 
-    log_info "Changes applied:"
+    local diff_stat
+    diff_stat=$(git diff --stat HEAD~1 HEAD 2>/dev/null || echo "No changes")
+
+    log_info "Changes committed:"
     echo "$diff_stat"
     echo ""
     log_info "Review the fixes, then:"

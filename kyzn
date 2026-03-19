@@ -3,11 +3,24 @@
 # https://github.com/bokiko/kyzn
 set -euo pipefail
 
-KYZN_VERSION="0.3.0"
+# Require bash 4.3+ for associative arrays and namerefs
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    echo "kyzn requires bash 4.3 or later (you have $BASH_VERSION)." >&2
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "  Install with: brew install bash" >&2
+        echo "  Then run: /opt/homebrew/bin/bash $(readlink -f "$0" 2>/dev/null || echo "$0") $*" >&2
+    fi
+    exit 1
+fi
+
+KYZN_VERSION="0.4.0"
 # Resolve symlinks portably (readlink -f doesn't exist on macOS)
 _kyzn_resolve() {
     local f="$1"
+    local max_depth=20
+    local depth=0
     while [[ -L "$f" ]]; do
+        (( depth++ >= max_depth )) && { echo "kyzn: symlink loop detected resolving $1" >&2; echo "$f"; return 1; }
         local dir
         dir="$(cd "$(dirname "$f")" && pwd)"
         f="$(readlink "$f")"
@@ -45,6 +58,7 @@ Commands:
   history         Show all runs with scores and trends
 
   schedule        Set up recurring runs (cron)
+  selftest        Run the test suite
   update          Pull latest version
   version         Show version
 
@@ -109,8 +123,11 @@ check_for_updates() {
 main() {
     local cmd="${1:-}"
 
-    # Check for updates (non-blocking, once per day)
-    check_for_updates "$cmd"
+    # Check for updates (non-blocking, once per day) — skip for fast/local commands
+    case "$cmd" in
+        version|--version|-v|help|--help|-h|""|doctor|selftest) ;;
+        *) check_for_updates ;;
+    esac
 
     case "$cmd" in
         improve)
@@ -266,24 +283,23 @@ cmd_doctor() {
     echo ""
     log_info "Optional tools (per project type):"
 
-    local -A optional_tools=(
-        ["npm"]="Node.js"
-        ["npx"]="Node.js"
-        ["eslint"]="Node.js linting"
-        ["tsc"]="TypeScript"
-        ["ruff"]="Python linting"
-        ["mypy"]="Python types"
-        ["pytest"]="Python testing"
-        ["cargo"]="Rust"
-        ["go"]="Go"
-        ["govulncheck"]="Go security"
-    )
-
-    for tool in npm npx eslint tsc ruff mypy pytest cargo go govulncheck; do
-        if command -v "$tool" &>/dev/null; then
-            log_ok "$tool (${optional_tools[$tool]})"
+    local _opt_tool _opt_desc
+    for _opt_tool in npm npx eslint tsc ruff mypy pytest cargo go govulncheck; do
+        case "$_opt_tool" in
+            npm|npx)     _opt_desc="Node.js" ;;
+            eslint)      _opt_desc="Node.js linting" ;;
+            tsc)         _opt_desc="TypeScript" ;;
+            ruff)        _opt_desc="Python linting" ;;
+            mypy)        _opt_desc="Python types" ;;
+            pytest)      _opt_desc="Python testing" ;;
+            cargo)       _opt_desc="Rust" ;;
+            go)          _opt_desc="Go" ;;
+            govulncheck) _opt_desc="Go security" ;;
+        esac
+        if command -v "$_opt_tool" &>/dev/null; then
+            log_ok "$_opt_tool ($_opt_desc)"
         else
-            log_dim "$tool (${optional_tools[$tool]}) — not installed"
+            log_dim "$_opt_tool ($_opt_desc) — not installed"
         fi
     done
 

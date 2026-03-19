@@ -19,13 +19,17 @@ fi
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
+fi
 
 ok()   { echo -e "  ${GREEN}✓${RESET} $*"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET} $*"; }
@@ -67,7 +71,9 @@ prompt_sudo() {
     local answer
     read -r answer
     answer="${answer:-y}"
-    if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+    local lower_answer
+    lower_answer=$(echo "$answer" | tr '[:upper:]' '[:lower:]')
+    if [[ "$lower_answer" == "y" || "$lower_answer" == "yes" ]]; then
         return 0
     else
         info "Skipping. Install manually: sudo apt-get install $pkg_name (or equivalent)"
@@ -105,14 +111,21 @@ install_jq() {
             local arch
             arch=$(uname -m)
             case "$arch" in
-                x86_64)  arch="amd64" ;;
-                aarch64) arch="arm64" ;;
+                x86_64)       arch="amd64" ;;
+                aarch64|arm64) arch="arm64" ;;
             esac
             local url="https://github.com/jqlang/jq/releases/latest/download/jq-linux-${arch}"
             if [[ "$(uname)" == "Darwin" ]]; then
                 url="https://github.com/jqlang/jq/releases/latest/download/jq-macos-${arch}"
             fi
-            wget -qO "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+            mkdir -p "$BIN_DIR"
+            if has_cmd curl; then
+                curl -fsSL -o "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+            elif has_cmd wget; then
+                wget -qO "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+            else
+                err "Neither curl nor wget found — cannot download jq"
+            fi
             ;;
     esac
     has_cmd jq && ok "jq installed" || err "jq install failed"
@@ -339,7 +352,8 @@ if $FROM_REPO; then
     info "Updates: just run ${CYAN}git pull${RESET} in this directory"
 
     # Clean up stale ~/.kyzn-cli clone if it exists and we're not in it
-    if [[ -d "$HOME/.kyzn-cli/.git" && "$INSTALL_DIR" != "$HOME/.kyzn-cli" ]]; then
+    if [[ -d "$HOME/.kyzn-cli/.git" && "$INSTALL_DIR" != "$HOME/.kyzn-cli" ]] \
+       && [[ -f "$HOME/.kyzn-cli/kyzn" && -f "$HOME/.kyzn-cli/lib/core.sh" ]]; then
         info "Removing old clone at ~/.kyzn-cli (no longer needed)"
         rm -rf "$HOME/.kyzn-cli"
     fi

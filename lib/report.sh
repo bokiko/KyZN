@@ -34,7 +34,7 @@ generate_report() {
     diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
     local files_changed
     files_changed=$(git diff --cached --name-only HEAD 2>/dev/null | wc -l)
-    git reset HEAD 2>/dev/null || true
+    safe_git reset HEAD 2>/dev/null || true
 
     # Write report
     cat > "$report_file" <<EOF
@@ -84,7 +84,7 @@ Health: $before_score → $after_score ($trend$delta)
 Cost: \$${KYZN_CLAUDE_COST:-unknown}" 2>/dev/null || true
 
     # Push and create PR
-    git push -u origin HEAD 2>/dev/null || {
+    safe_git push -u origin HEAD 2>/dev/null || {
         log_warn "Could not push to remote. Create PR manually."
         return 1
     }
@@ -124,8 +124,8 @@ generate_category_comparison() {
 
     for cat in security testing performance quality documentation; do
         local before_val after_val
-        before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | (add / length) // "-"' "$before_file" 2>/dev/null)
-        after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | (add / length) // "-"' "$after_file" 2>/dev/null)
+        before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add / length) else "-" end' "$before_file" 2>/dev/null)
+        after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add / length) else "-" end' "$after_file" 2>/dev/null)
 
         if [[ "$before_val" != "-" && "$after_val" != "-" && -n "$before_val" && -n "$after_val" ]]; then
             local bv="${before_val%.*}"; bv="${bv:-0}"

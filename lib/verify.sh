@@ -102,7 +102,7 @@ verify_node() {
     # Check if build script exists
     if [[ -f "package.json" ]] && jq -e '.scripts.build' package.json &>/dev/null; then
         log_step "Running npm build..."
-        if ! npm run build 2>&1 | tail -5; then
+        if ! npm run build 2>&1 | tail -20; then
             log_error "Build failed"
             ok=false
         else
@@ -113,7 +113,7 @@ verify_node() {
     # TypeScript check
     if [[ -f "tsconfig.json" ]] && command -v npx &>/dev/null; then
         log_step "Running TypeScript check..."
-        if ! npx tsc --noEmit 2>&1 | tail -5; then
+        if ! npx tsc --noEmit 2>&1 | tail -20; then
             log_error "TypeScript check failed"
             ok=false
         else
@@ -158,7 +158,7 @@ verify_python() {
     # Ruff check
     if command -v ruff &>/dev/null; then
         log_step "Running ruff check..."
-        if ! ruff check . 2>&1 | tail -5; then
+        if ! ruff check . 2>&1 | tail -20; then
             log_warn "Ruff found issues (non-blocking)"
         else
             log_ok "Ruff check passed"
@@ -168,7 +168,7 @@ verify_python() {
     # Mypy
     if command -v mypy &>/dev/null; then
         log_step "Running mypy..."
-        if ! mypy . 2>&1 | tail -5; then
+        if ! mypy . 2>&1 | tail -20; then
             log_warn "Mypy found issues (non-blocking)"
         else
             log_ok "Mypy check passed"
@@ -197,7 +197,7 @@ verify_rust() {
 
     if command -v cargo &>/dev/null; then
         log_step "Running cargo check..."
-        if ! cargo check 2>&1 | tail -5; then
+        if ! cargo check 2>&1 | tail -20; then
             log_error "Build failed"
             ok=false
         else
@@ -224,7 +224,7 @@ verify_go() {
 
     if command -v go &>/dev/null; then
         log_step "Running go build..."
-        if ! go build ./... 2>&1 | tail -5; then
+        if ! go build ./... 2>&1 | tail -20; then
             log_error "Build failed"
             ok=false
         else
@@ -240,7 +240,7 @@ verify_go() {
         fi
 
         log_step "Running go vet..."
-        if ! go vet ./... 2>&1 | tail -5; then
+        if ! go vet ./... 2>&1 | tail -20; then
             log_warn "go vet found issues (non-blocking)"
         else
             log_ok "go vet passed"

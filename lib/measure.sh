@@ -91,25 +91,24 @@ run_measurer() {
 compute_health_score() {
     local results_file="$1"
 
-    # Default weights
-    local -A weights=(
-        ["security"]=25
-        ["testing"]=25
-        ["performance"]=15
-        ["quality"]=25
-        ["documentation"]=10
-    )
-
-    # Override with config if available
-    if has_config; then
-        for cat in security testing performance quality documentation; do
+    # Default weights (use function to look up)
+    _kyzn_weight() {
+        local cat="$1"
+        # Check config override first
+        if has_config; then
             local w
             w=$(config_get ".scoring.weights.$cat" "")
-            if [[ -n "$w" ]]; then
-                weights[$cat]=$w
-            fi
-        done
-    fi
+            if [[ -n "$w" ]]; then echo "$w"; return; fi
+        fi
+        case "$cat" in
+            security)      echo 25 ;;
+            testing)       echo 25 ;;
+            performance)   echo 15 ;;
+            quality)       echo 25 ;;
+            documentation) echo 10 ;;
+            *)             echo 10 ;;
+        esac
+    }
 
     # Calculate per-category averages using jq, then weighted score
     local category_scores
@@ -128,9 +127,11 @@ compute_health_score() {
         local pct
         pct=$(echo "$category_scores" | jq -r --arg c "$cat" '.[$c] // empty')
         if [[ -n "$pct" ]]; then
-            local weight=${weights[$cat]:-10}
-            # jq may return floats, truncate
-            local pct_int=${pct%.*}
+            local weight
+            weight=$(_kyzn_weight "$cat")
+            # jq may return floats, round properly
+            local pct_int
+            pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo "${pct%.*}")
             total_score=$(( total_score + (pct_int * weight) ))
             total_weight=$(( total_weight + weight ))
         fi

@@ -93,7 +93,7 @@ local_config_get() {
     fi
 }
 
-# Set a config value via yq
+# Set a config value via yq (always quotes the value for safety)
 config_set() {
     local key="$1"
     local value="$2"
@@ -101,7 +101,7 @@ config_set() {
     if [[ ! -f "$KYZN_CONFIG" ]]; then
         echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
     fi
-    yq eval -i "$key = $value" "$KYZN_CONFIG"
+    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
 }
 
 # Set a string config value (properly quoted)
@@ -124,7 +124,7 @@ generate_run_id() {
     local date_part
     date_part=$(date +%Y%m%d-%H%M%S)
     local rand_part
-    rand_part=$(head -c 4 /dev/urandom | xxd -p)
+    rand_part=$(od -A n -t x1 -N 4 /dev/urandom | tr -d ' \n')
     echo "${date_part}-${rand_part}"
 }
 
@@ -166,7 +166,9 @@ prompt_yn() {
     fi
     read -r result
     result="${result:-$default}"
-    [[ "${result,,}" == "y" || "${result,,}" == "yes" ]]
+    local lower_result
+    lower_result=$(echo "$result" | tr '[:upper:]' '[:lower:]')
+    [[ "$lower_result" == "y" || "$lower_result" == "yes" ]]
 }
 
 # Prompt user to pick from numbered options

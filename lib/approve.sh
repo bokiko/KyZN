@@ -15,8 +15,17 @@ cmd_approve() {
     require_git_repo
     ensure_kyzn_dirs
 
-    # Find the report
+    # Validate run_id (prevent path traversal — reject slashes and ..)
+    if [[ "$run_id" == */* || "$run_id" == *..* ]]; then
+        log_error "Invalid run ID: $run_id"
+        return 1
+    fi
+
+    # Find the report (improve creates $run_id.md, analyze creates $run_id-analysis.md)
     local report="$KYZN_REPORTS_DIR/$run_id.md"
+    if [[ ! -f "$report" ]]; then
+        report="$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    fi
     if [[ ! -f "$report" ]]; then
         log_error "No report found for run $run_id"
         log_info "Run 'kyzn history' to see available runs."

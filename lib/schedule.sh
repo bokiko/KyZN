@@ -42,10 +42,12 @@ schedule_cron() {
     local kyzn_path
     kyzn_path=$(command -v kyzn 2>/dev/null || echo "$KYZN_ROOT/kyzn")
 
-    local cron_line="$cron_expr cd \"$project_dir\" && \"$kyzn_path\" improve --auto >> \"$project_dir/.kyzn/reports/cron.log\" 2>&1 # kyzn:$label"
+    local project_tag
+    project_tag=$(basename "$project_dir")
+    local cron_line="$cron_expr cd \"$project_dir\" && \"$kyzn_path\" improve --auto >> \"$project_dir/.kyzn/reports/cron.log\" 2>&1 # kyzn:${project_tag}:$label"
 
-    # Remove existing kyzn entry for this project, then add new one
-    (crontab -l 2>/dev/null | grep -v "# kyzn:"; echo "$cron_line") | crontab -
+    # Remove existing kyzn entry for THIS project only, then add new one
+    (crontab -l 2>/dev/null | grep -vF "# kyzn:${project_tag}:"; echo "$cron_line") | crontab -
 
     log_ok "Scheduled $label runs for $(project_name)"
     log_dim "Cron: $cron_expr"
@@ -59,8 +61,10 @@ schedule_cron() {
 remove_cron() {
     local project_dir
     project_dir=$(project_root)
+    local project_tag
+    project_tag=$(basename "$project_dir")
 
-    crontab -l 2>/dev/null | grep -v "# kyzn:" | crontab - 2>/dev/null
+    crontab -l 2>/dev/null | grep -vF "# kyzn:${project_tag}:" | crontab - 2>/dev/null
 
-    log_ok "Removed kyzn schedule"
+    log_ok "Removed kyzn schedule for $(project_name)"
 }

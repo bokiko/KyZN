@@ -73,7 +73,7 @@ run_interview() {
 # Specific goals interview branch
 # ---------------------------------------------------------------------------
 interview_specific_goals() {
-    local -n _priorities=$1
+    local _var_priorities=$1
 
     local area
     area=$(prompt_choice "Which area do you want to focus on?" \
@@ -85,20 +85,20 @@ interview_specific_goals() {
         "Multiple areas")
 
     case "$area" in
-        1) _priorities+=("security")
-           interview_security_depth _priorities
+        1) eval "$_var_priorities+=(\"security\")"
+           interview_security_depth "$_var_priorities"
            ;;
-        2) _priorities+=("testing")
-           interview_testing_depth _priorities
+        2) eval "$_var_priorities+=(\"testing\")"
+           interview_testing_depth "$_var_priorities"
            ;;
-        3) _priorities+=("performance")
-           interview_performance_depth _priorities
+        3) eval "$_var_priorities+=(\"performance\")"
+           interview_performance_depth "$_var_priorities"
            ;;
-        4) _priorities+=("quality")
+        4) eval "$_var_priorities+=(\"quality\")"
            ;;
-        5) _priorities+=("documentation")
+        5) eval "$_var_priorities+=(\"documentation\")"
            ;;
-        6) interview_multiple_areas _priorities
+        6) interview_multiple_areas "$_var_priorities"
            ;;
     esac
 }
@@ -107,7 +107,7 @@ interview_specific_goals() {
 # Sub-interview: security depth
 # ---------------------------------------------------------------------------
 interview_security_depth() {
-    local -n _pri=$1
+    local _var_pri=$1
 
     local depth
     depth=$(prompt_choice "Security focus?" \
@@ -117,9 +117,9 @@ interview_security_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) _pri+=("security-deps") ;;
-        2) _pri+=("security-code") ;;
-        3) _pri+=("security-deps" "security-code") ;;
+        1) eval "$_var_pri+=(\"security-deps\")" ;;
+        2) eval "$_var_pri+=(\"security-code\")" ;;
+        3) eval "$_var_pri+=(\"security-deps\" \"security-code\")" ;;
         4) ;; # already has "security"
     esac
 }
@@ -128,7 +128,7 @@ interview_security_depth() {
 # Sub-interview: testing depth
 # ---------------------------------------------------------------------------
 interview_testing_depth() {
-    local -n _pri=$1
+    local _var_pri=$1
 
     local depth
     depth=$(prompt_choice "Testing focus?" \
@@ -138,9 +138,9 @@ interview_testing_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) _pri+=("testing-coverage") ;;
-        2) _pri+=("testing-flaky") ;;
-        3) _pri+=("testing-integration") ;;
+        1) eval "$_var_pri+=(\"testing-coverage\")" ;;
+        2) eval "$_var_pri+=(\"testing-flaky\")" ;;
+        3) eval "$_var_pri+=(\"testing-integration\")" ;;
         4) ;; # already has "testing"
     esac
 }
@@ -149,7 +149,7 @@ interview_testing_depth() {
 # Sub-interview: performance depth
 # ---------------------------------------------------------------------------
 interview_performance_depth() {
-    local -n _pri=$1
+    local _var_pri=$1
 
     local depth
     depth=$(prompt_choice "Performance focus?" \
@@ -159,9 +159,9 @@ interview_performance_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) _pri+=("perf-bundle") ;;
-        2) _pri+=("perf-hotpath") ;;
-        3) _pri+=("perf-memory") ;;
+        1) eval "$_var_pri+=(\"perf-bundle\")" ;;
+        2) eval "$_var_pri+=(\"perf-hotpath\")" ;;
+        3) eval "$_var_pri+=(\"perf-memory\")" ;;
         4) ;; # already has "performance"
     esac
 }
@@ -170,7 +170,7 @@ interview_performance_depth() {
 # Sub-interview: multiple areas
 # ---------------------------------------------------------------------------
 interview_multiple_areas() {
-    local -n _pri=$1
+    local _var_pri=$1
 
     echo -e "\n${BOLD}Select all that apply (space-separated numbers):${RESET}" >&2
     echo -e "  ${CYAN}1)${RESET} Security" >&2
@@ -186,11 +186,11 @@ interview_multiple_areas() {
 
     for c in $choices; do
         case "$c" in
-            1) _pri+=("security") ;;
-            2) _pri+=("testing") ;;
-            3) _pri+=("performance") ;;
-            4) _pri+=("quality") ;;
-            5) _pri+=("documentation") ;;
+            1) eval "$_var_pri+=(\"security\")" ;;
+            2) eval "$_var_pri+=(\"testing\")" ;;
+            3) eval "$_var_pri+=(\"performance\")" ;;
+            4) eval "$_var_pri+=(\"quality\")" ;;
+            5) eval "$_var_pri+=(\"documentation\")" ;;
         esac
     done
 }
@@ -231,7 +231,7 @@ save_interview_config() {
 # Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 project:
-  name: $(project_name)
+  name: "$(project_name)"
   type: $KYZN_PROJECT_TYPE
 
 preferences:
