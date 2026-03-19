@@ -1,6 +1,6 @@
 <div align="center">
 
-# kyzn
+# KyZN
 
 <strong>Autonomous code improvement CLI — measure, analyze, improve, verify, ship</strong>
 
