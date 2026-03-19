@@ -4,7 +4,18 @@
 set -euo pipefail
 
 KYZN_VERSION="0.3.0"
-KYZN_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Resolve symlinks portably (readlink -f doesn't exist on macOS)
+_kyzn_resolve() {
+    local f="$1"
+    while [[ -L "$f" ]]; do
+        local dir
+        dir="$(cd "$(dirname "$f")" && pwd)"
+        f="$(readlink "$f")"
+        [[ "$f" != /* ]] && f="$dir/$f"
+    done
+    echo "$f"
+}
+KYZN_ROOT="$(cd "$(dirname "$(_kyzn_resolve "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Load core library
 # shellcheck source=lib/core.sh
