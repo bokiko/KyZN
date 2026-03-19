@@ -371,7 +371,7 @@ display_findings() {
         printf "  ${sev_color}[%s]${RESET}%s ${BOLD}%s${RESET} — %-50s ${DIM}%s${RESET}\n" \
             "$severity" "$sev_pad" "$id" "$title" "$file"
 
-        ((i++))
+        ((i++)) || true
     done
     echo ""
 }
@@ -991,7 +991,7 @@ generate_detailed_report() {
                 echo "---"
                 echo ""
 
-                ((i++))
+                ((i++)) || true
             done
         done
 
@@ -1026,8 +1026,8 @@ generate_detailed_report() {
                     fix_line=$(echo "$sev_items" | jq -r ".[$si].line // \"?\"")
                     fix_title=$(echo "$sev_items" | jq -r ".[$si].title // \"?\"")
                     echo "| $fix_num | $fix_id | $fix_sev | \`$fix_file:$fix_line\` | $fix_title |"
-                    ((fix_num++))
-                    ((si++))
+                    ((fix_num++)) || true
+                    ((si++)) || true
                 done
             done
 

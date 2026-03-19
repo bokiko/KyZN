@@ -128,7 +128,7 @@ cmd_status() {
             run_id=$(jq -r '.run_id // "unknown"' "$f")
             status=$(jq -r '.status // "pending"' "$f")
             echo -e "  $run_id  ($status)"
-            ((count++))
+            ((count++)) || true
         done
     fi
 }
