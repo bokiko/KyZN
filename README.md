@@ -2,7 +2,7 @@
 
 # kyzn
 
-<strong>Autonomous code improvement CLI — measure, improve, verify, ship</strong>
+<strong>Autonomous code improvement CLI — measure, analyze, improve, verify, ship</strong>
 
 <p>
   <a href="https://github.com/bokiko/kyzn"><img src="https://img.shields.io/badge/GitHub-kyzn-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/github/last-commit/bokiko/kyzn?style=flat-square" alt="Last Commit">
   <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
   <img src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-142%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-146%20passing-brightgreen?style=flat-square" alt="Tests">
 </p>
 
 </div>
@@ -106,22 +106,31 @@ kyzn improve    # Run improvement cycle
 </td>
 <td width="50%">
 
-### Improve
-- Interactive model selection (sonnet/opus/haiku)
-- Configurable budget cap per run
-- Deep, clean, or full improvement modes
-- Focus targeting (security, testing, quality)
+### Analyze
+- **Opus deep analysis** — finds bugs linters miss
+- Structured JSON findings with severity and fix suggestions
+- `--fix` mode: Opus finds, Sonnet implements
+- Focus targeting (security, performance, architecture)
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
+### Improve
+- Sonnet-powered incremental improvements
+- Deep, clean, or full improvement modes
+- Configurable budget cap per run
+- Focus targeting (security, testing, quality)
+
+</td>
+<td width="50%">
+
 ### Verify
 - Runs build + tests after every change
 - Pre-existing failure detection
 - Score regression gate — aborts if score drops
-- Diff guard — aborts if changes too large
+- Per-category floor — aborts if any area drops > 5pts
 
 </td>
 <td width="50%">
@@ -140,7 +149,17 @@ kyzn improve    # Run improvement cycle
 
 ## Usage
 
-### Improve
+### Analyze (Opus deep analysis)
+
+```bash
+kyzn analyze                        # Opus reads codebase, reports findings
+kyzn analyze --fix                  # Opus finds issues, Sonnet fixes them
+kyzn analyze --focus security       # Focus analysis on security
+kyzn analyze --budget 15.00         # Higher budget for large codebases
+kyzn analyze --min-severity HIGH    # Only fix HIGH+ severity in --fix mode
+```
+
+### Improve (Sonnet incremental)
 
 ```bash
 kyzn improve                        # Interactive — choose model & budget
@@ -175,18 +194,31 @@ kyzn schedule off                   # Remove schedule
 
 ## How It Works
 
+### `kyzn improve` — Sonnet incremental improvements
+
 ```
  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
  │  Detect  │───▶│ Measure  │───▶│ Improve  │───▶│  Verify  │───▶│  Score   │───▶│    PR    │
- │          │    │          │    │          │    │          │    │  Gate    │    │          │
+ │          │    │          │    │ (Sonnet) │    │          │    │  Gate    │    │          │
  │ language │    │ run real │    │ Claude   │    │ build +  │    │ abort   │    │ before/  │
  │ features │    │ tools    │    │ Code     │    │ tests    │    │ if drop │    │ after    │
  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
 ```
 
+### `kyzn analyze` — Opus deep analysis
+
+```
+ ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+ │  Detect  │───▶│ Measure  │───▶│ Analyze  │───▶│ Findings │───▶│   Fix    │
+ │          │    │          │    │ (Opus)   │    │  Report  │    │ (Sonnet) │
+ │ language │    │ run real │    │ deep     │    │ JSON +   │    │ optional │
+ │ features │    │ tools    │    │ review   │    │ markdown │    │ --fix    │
+ └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
+```
+
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
 2. **Measure** — runs real tools and computes a health score out of 100
-3. **Improve** — invokes Claude Code in headless mode with measurements and constraints
+3. **Improve/Analyze** — Sonnet for incremental fixes, Opus for deep code review
 4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
 5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
 6. **PR** — commits, pushes, and creates PR with before/after health comparison
@@ -266,8 +298,8 @@ preferences:
   budget: 2.50          # USD per run
   max_turns: 30         # Claude conversation turns
   diff_limit: 2000      # max lines changed
-  trust: guardian       # guardian (PR) | autopilot (auto-merge)
   on_build_fail: report # report | discard | draft-pr
+  # trust level is in .kyzn/local.yaml (gitignored, not committable)
 
 focus:
   priorities: [auto]    # auto | security | testing | quality | performance | documentation
@@ -308,6 +340,7 @@ kyzn/
 │   ├── execute.sh          # Claude invocation + improve orchestration
 │   ├── verify.sh           # Build/test verification per language
 │   ├── allowlist.sh        # Per-language tool permissions
+│   ├── analyze.sh          # Opus deep analysis + Sonnet fix execution
 │   ├── report.sh           # Report generation + PR creation
 │   ├── approve.sh          # Approve/reject handling
 │   ├── history.sh          # Run history + status dashboard
@@ -321,7 +354,7 @@ kyzn/
 ├── templates/              # Prompt templates
 ├── profiles/               # Focus-specific system prompts
 └── tests/
-    └── selftest.sh         # 142 tests (37 core + 4 stress)
+    └── selftest.sh         # 146 tests (42 core + 4 stress)
 ```
 
 ---
@@ -329,8 +362,8 @@ kyzn/
 ## Self-Test
 
 ```bash
-kyzn selftest              # Quick tests (133 cases)
-kyzn selftest --full       # Full suite with stress tests (142 cases)
+kyzn selftest              # Quick tests (137 cases)
+kyzn selftest --full       # Full suite with stress tests (146 cases)
 ```
 
 ---
@@ -343,12 +376,14 @@ kyzn selftest --full       # Full suite with stress tests (142 cases)
 - [x] Score regression gate
 - [x] Pre-existing test failure detection
 - [x] Branch cleanup on all failure paths
-- [x] 142-test self-test suite
+- [x] 146-test self-test suite
+- [x] Opus deep analysis (`kyzn analyze`)
+- [x] Two-model architecture (Opus thinks, Sonnet executes)
+- [x] Security hardening (file restrictions, CI blocking, timeouts, checksums)
 - [ ] Parallel runs across multiple focus areas
 - [ ] Learning from rejection feedback
 - [ ] Coverage-aware test generation
 - [ ] Custom measurer plugins
-- [ ] GitHub Actions integration
 
 ---
 
