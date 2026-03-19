@@ -5,16 +5,16 @@
 <strong>Autonomous code improvement CLI — measure, analyze, improve, verify, ship</strong>
 
 <p>
-  <a href="https://github.com/bokiko/kyzn"><img src="https://img.shields.io/badge/GitHub-kyzn-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
+  <a href="https://github.com/bokiko/KyZN"><img src="https://img.shields.io/badge/GitHub-KyZN-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
   <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Powered_by-Claude_Code-6B4FBB?style=for-the-badge" alt="Claude Code"></a>
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
-  <img src="https://img.shields.io/github/license/bokiko/kyzn?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/last-commit/bokiko/kyzn?style=flat-square" alt="Last Commit">
+  <img src="https://img.shields.io/github/license/bokiko/KyZN?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square" alt="Last Commit">
   <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
-  <img src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.0-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/tests-156%20passing-brightgreen?style=flat-square" alt="Tests">
 </p>
 
@@ -24,7 +24,7 @@
 
 ## Overview
 
-**KyZN** (from _kaizen_ — continuous improvement) points at any project, measures its health with real tools, sends measurements to Claude Code with strict constraints, verifies the result, and opens a PR — all autonomously.
+**KyZN** (from _kaizen_ — continuous improvement) measures your project's health with real tools, sends the results to Claude Code with strict safety constraints, verifies the changes, and opens a PR — all autonomously. Supports Node.js, Python, Rust, and Go out of the box.
 
 ```
 $ kyzn improve
@@ -70,10 +70,10 @@ $ kyzn improve
 
 ```bash
 # One-liner (recommended)
-curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bokiko/KyZN/main/install.sh | bash
 
 # Or clone manually
-git clone https://github.com/bokiko/kyzn.git ~/.kyzn-cli
+git clone https://github.com/bokiko/KyZN.git ~/.kyzn-cli
 ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
 
 # Verify
@@ -239,9 +239,9 @@ kyzn schedule off                   # Remove schedule
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
 2. **Measure** — runs real tools and computes a health score out of 100
 3. **Improve/Analyze** — Sonnet for incremental fixes, 4 parallel Opus specialists for deep code review
-4. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root (archived in `.kyzn/reports/`)
-5. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
-6. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
+4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
+5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
+6. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root (archived in `.kyzn/reports/`)
 7. **PR** — commits, pushes, and creates PR with before/after health comparison
 
 ---

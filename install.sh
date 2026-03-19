@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# kyzn installer — curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
+# KyZN installer — curl -fsSL https://raw.githubusercontent.com/bokiko/KyZN/main/install.sh | bash
 set -euo pipefail
 
-REPO="bokiko/kyzn"
+REPO="bokiko/KyZN"
 BIN_DIR="${KYZN_BIN_DIR:-$HOME/.local/bin}"
 
 # Detect if running from inside a kyzn repo clone
