@@ -531,7 +531,7 @@ cmd_analyze() {
         # ---------------------------------------------------------------
         # Single-agent mode (--single flag or --focus narrows to one area)
         # ---------------------------------------------------------------
-        log_step "Opus is reading your codebase..."
+        log_step "Opus is reading your codebase... (this may take several minutes)"
 
         local prompt
         prompt=$(build_specialist_prompt "${focus:-correctness}" "$(project_name)" \
@@ -587,21 +587,68 @@ cmd_analyze() {
 
         local pids=()
         local specialists=("security" "correctness" "performance" "architecture")
+        local -A pid_map=()
 
         for spec in "${specialists[@]}"; do
             local spec_prompt
             spec_prompt=$(build_specialist_prompt "$spec" "$(project_name)" \
                 "$(project_type_name "$KYZN_PROJECT_TYPE")" "${KYZN_HEALTH_SCORE:-0}" "$measurements_json")
 
-            log_step "Launching $spec reviewer..."
             run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" &
-            pids+=($!)
+            local pid=$!
+            pids+=($pid)
+            pid_map[$pid]="$spec"
         done
 
-        # Wait for all specialists
+        echo ""
+
+        # Progress monitor — show live status while agents run
+        local start_time completed_count
+        start_time=$(date +%s)
+        completed_count=0
+        local -A agent_status=()
+        for spec in "${specialists[@]}"; do
+            agent_status[$spec]="running"
+        done
+
+        while (( completed_count < ${#specialists[@]} )); do
+            # Check which pids have finished
+            for pid in "${pids[@]}"; do
+                local spec_name="${pid_map[$pid]}"
+                if [[ "${agent_status[$spec_name]}" == "running" ]] && ! kill -0 "$pid" 2>/dev/null; then
+                    if wait "$pid" 2>/dev/null; then
+                        agent_status[$spec_name]="done"
+                    else
+                        agent_status[$spec_name]="failed"
+                    fi
+                    completed_count=$((completed_count + 1))
+                fi
+            done
+
+            # Build status line
+            local elapsed=$(( $(date +%s) - start_time ))
+            local mins=$(( elapsed / 60 ))
+            local secs=$(( elapsed % 60 ))
+            local status_line="  ${DIM}[${mins}m${secs}s]${RESET} "
+            for spec in "${specialists[@]}"; do
+                case "${agent_status[$spec]}" in
+                    running) status_line+="${YELLOW}◌${RESET} $spec  " ;;
+                    done)    status_line+="${GREEN}●${RESET} $spec  " ;;
+                    failed)  status_line+="${RED}✗${RESET} $spec  " ;;
+                esac
+            done
+            status_line+=" ${DIM}(${completed_count}/${#specialists[@]})${RESET}"
+
+            # Print status (overwrite previous line)
+            echo -en "\r\033[K${status_line}"
+
+            (( completed_count < ${#specialists[@]} )) && sleep 2
+        done
+        echo "" # newline after progress
+
         local any_failed=false
-        for pid in "${pids[@]}"; do
-            if ! wait "$pid"; then
+        for spec in "${specialists[@]}"; do
+            if [[ "${agent_status[$spec]}" == "failed" ]]; then
                 any_failed=true
             fi
         done
@@ -626,6 +673,7 @@ cmd_analyze() {
         # Phase 2: Consensus merge
         # ---------------------------------------------------------------
         log_header "Phase 2: Consensus merge (dedup + rank)"
+        log_step "Opus is merging and ranking findings..."
 
         local consensus_prompt
         consensus_prompt=$(build_consensus_prompt "$sec_findings" "$cor_findings" "$perf_findings" "$arch_findings")
