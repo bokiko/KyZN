@@ -58,52 +58,38 @@ EOF
 # Update check — notify user if a newer version exists
 # ---------------------------------------------------------------------------
 check_for_updates() {
-    # Skip for non-interactive commands and selftest
-    [[ "${1:-}" =~ ^(version|--version|-v|selftest|help|--help|-h)$ ]] && return
+    # Check if install dir is a git repo
+    [[ -d "$KYZN_ROOT/.git" ]] || return
 
-    # Only check once per day (cache in global dir)
+    # Quick check: is local HEAD behind remote? (fetch once per day)
     local check_file="${HOME}/.kyzn/last-update-check"
+    local needs_fetch=true
     mkdir -p "${HOME}/.kyzn"
+
     if [[ -f "$check_file" ]]; then
-        local last_check
+        local last_check now
         last_check=$(cat "$check_file" 2>/dev/null || echo 0)
-        local now
         now=$(date +%s)
-        # Skip if checked less than 24h ago
-        if (( now - last_check < 86400 )); then
-            return
-        fi
+        (( now - last_check < 86400 )) && needs_fetch=false
     fi
 
-    # Record this check
-    date +%s > "$check_file" 2>/dev/null || true
-
-    # Fetch latest version from GitHub (quick, non-blocking)
-    local remote_version
-    remote_version=$(timeout 5 git -C "$KYZN_ROOT" ls-remote --tags origin 2>/dev/null \
-        | awk '{print $2}' | sed 's|refs/tags/||;s|\^{}||' | sort -V | tail -1) || true
-
-    # If no tags, try checking the remote main branch commit
-    if [[ -z "$remote_version" ]]; then
-        local local_head remote_head
-        local_head=$(git -C "$KYZN_ROOT" rev-parse HEAD 2>/dev/null) || return
-        remote_head=$(timeout 5 git -C "$KYZN_ROOT" ls-remote origin HEAD 2>/dev/null | awk '{print $1}') || return
-        if [[ -n "$remote_head" && "$local_head" != "$remote_head" ]]; then
-            echo ""
-            echo -e "${YELLOW}⚠${RESET} ${BOLD}kyzn update available${RESET}"
-            echo -e "  Your version may be outdated. Update for improved accuracy and security."
-            echo -e "  Run: ${CYAN}cd ~/.kyzn-cli && git pull${RESET}"
-            echo ""
-        fi
-        return
+    if $needs_fetch; then
+        timeout 5 git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || return
+        date +%s > "$check_file" 2>/dev/null || true
     fi
 
-    # Compare versions if tag-based
-    if [[ -n "$remote_version" && "$remote_version" != "v${KYZN_VERSION}" && "$remote_version" > "v${KYZN_VERSION}" ]]; then
+    # Compare local vs remote
+    local local_head remote_head
+    local_head=$(git -C "$KYZN_ROOT" rev-parse HEAD 2>/dev/null) || return
+    remote_head=$(git -C "$KYZN_ROOT" rev-parse origin/main 2>/dev/null) || return
+
+    if [[ "$local_head" != "$remote_head" ]]; then
+        local behind
+        behind=$(git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
         echo ""
-        echo -e "${YELLOW}⚠${RESET} ${BOLD}kyzn $remote_version available${RESET} (you have v${KYZN_VERSION})"
-        echo -e "  Newer versions include improved analysis accuracy and security fixes."
-        echo -e "  Update: ${CYAN}cd ~/.kyzn-cli && git pull${RESET}"
+        echo -e "${RED}✗ kyzn is outdated${RESET} (${behind} commits behind)"
+        echo -e "  ${RED}Update now for better analysis accuracy and security fixes.${RESET}"
+        echo -e "  Run: ${CYAN}cd ~/.kyzn-cli && git pull${RESET}"
         echo ""
     fi
 }
