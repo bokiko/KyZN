@@ -261,6 +261,18 @@ cmd_doctor() {
             log_ok "$tool ($ver)"
         else
             log_fail "$tool — not found"
+            case "$tool" in
+                git)
+                    log_dim "  Install: sudo apt install git  (or brew install git)" ;;
+                gh)
+                    log_dim "  Install: https://cli.github.com" ;;
+                claude)
+                    log_dim "  Install: npm install -g @anthropic-ai/claude-code" ;;
+                jq)
+                    log_dim "  Install: sudo apt install jq  (or brew install jq)" ;;
+                yq)
+                    log_dim "  Install: https://github.com/mikefarah/yq#install" ;;
+            esac
             ok=false
         fi
     done
@@ -314,6 +326,8 @@ cmd_doctor() {
         echo -e "  ${DIM}Next:${RESET} Run ${CYAN}kyzn init${RESET} to set up a project, or ${CYAN}kyzn measure${RESET} to check health."
     else
         log_fail "Missing required tools. Install them and re-run kyzn doctor."
+        echo -e "  ${DIM}Tip: The installer auto-installs jq and yq:${RESET}"
+        echo -e "  ${CYAN}bash install.sh${RESET}  (from the KyZN repo directory)"
         exit 1
     fi
 }

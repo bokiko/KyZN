@@ -70,7 +70,7 @@ $ kyzn improve
 
 ```bash
 # One-liner (recommended)
-curl -fsSL https://raw.githubusercontent.com/bokiko/KyZN/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
 
 # Or clone manually
 git clone https://github.com/bokiko/KyZN.git ~/.kyzn-cli

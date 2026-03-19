@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KyZN installer — curl -fsSL https://raw.githubusercontent.com/bokiko/KyZN/main/install.sh | bash
+# KyZN installer — curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
 set -euo pipefail
 
 REPO="bokiko/KyZN"
