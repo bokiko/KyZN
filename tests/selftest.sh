@@ -1045,8 +1045,101 @@ JSON
     rm -rf "$tmpdir"
 }
 
+test_analyze_prompt_assembly() {
+    log_header "38. Analysis prompt assembly"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    create_sandbox generic
+    detect_project_type
+    KYZN_HEALTH_SCORE=50
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    echo '[]' > "$tmpfile"
+
+    local prompt
+    prompt=$(assemble_analysis_prompt "$tmpfile" "security" "generic")
+
+    assert_contains "analysis prompt has findings format" "$prompt" '"severity"'
+    assert_contains "analysis prompt has JSON output" "$prompt" "JSON array"
+    assert_contains "analysis prompt has focus" "$prompt" "security"
+    assert_contains "analysis prompt has project name" "$prompt" "$(project_name)"
+
+    rm -f "$tmpfile"
+    cleanup_sandbox
+}
+
+test_analysis_system_prompt() {
+    log_header "39. Analysis system prompt exists and has personality"
+
+    local analysis_prompt="$KYZN_ROOT/templates/analysis-prompt.md"
+    assert_file_exists "analysis-prompt.md exists" "$analysis_prompt"
+
+    local content
+    content=$(cat "$analysis_prompt")
+    assert_contains "has personality" "$content" "senior staff engineer"
+    assert_contains "has methodology" "$content" "entry points"
+    assert_contains "has output quality" "$content" "self-contained"
+}
+
+test_extract_findings() {
+    log_header "40. extract_findings parses JSON from Claude response"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    # Simulate Claude response with embedded JSON
+    local fake_result
+    fake_result=$(jq -n '{result: "Here are my findings:\n```json\n[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]\n```"}')
+
+    local findings
+    findings=$(extract_findings "$fake_result")
+
+    if echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
+        pass "extract_findings returns array"
+    else
+        fail "extract_findings" "did not return JSON array"
+    fi
+}
+
+test_generate_fix_prompt() {
+    log_header "41. Fix prompt generation from findings"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile" <<'JSON'
+[
+  {"id":"BUG-001","severity":"CRITICAL","category":"bug","title":"Null deref","file":"src/main.ts","line":10,"fix":"Add null check"},
+  {"id":"SEC-001","severity":"HIGH","category":"security","title":"SQL injection","file":"src/db.ts","line":20,"fix":"Use parameterized query"},
+  {"id":"STYLE-001","severity":"LOW","category":"quality","title":"Naming","file":"src/utils.ts","line":5,"fix":"Rename"}
+]
+JSON
+
+    local prompt
+    prompt=$(generate_fix_prompt "$tmpfile" 10 "HIGH")
+
+    assert_contains "fix prompt has BUG-001" "$prompt" "BUG-001"
+    assert_contains "fix prompt has SEC-001" "$prompt" "SEC-001"
+    # LOW severity should be filtered out when min is HIGH
+    assert_not_contains "fix prompt excludes LOW" "$prompt" "STYLE-001"
+
+    rm -f "$tmpfile"
+}
+
+test_analyze_wired_in_kyzn() {
+    log_header "42. analyze command is wired into kyzn"
+
+    local help_output
+    help_output=$("$KYZN_ROOT/kyzn" help 2>&1)
+    assert_contains "help shows analyze" "$help_output" "analyze"
+}
+
 test_reject_no_learn_message() {
-    log_header "37. Reject says 'recorded' not 'will learn'"
+    log_header "43. Reject says 'recorded' not 'will learn'"
 
     local src
     src=$(cat "$KYZN_ROOT/lib/approve.sh")
@@ -1214,6 +1307,11 @@ main() {
     test_tightened_allowlist
     test_trust_in_local_yaml
     test_per_category_floor
+    test_analyze_prompt_assembly
+    test_analysis_system_prompt
+    test_extract_findings
+    test_generate_fix_prompt
+    test_analyze_wired_in_kyzn
     test_reject_no_learn_message
 
     # Stress tests

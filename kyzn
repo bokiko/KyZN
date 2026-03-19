@@ -22,6 +22,7 @@ Usage:
 
 Commands:
   improve         Run an improvement cycle (measure → improve → verify → PR)
+  analyze         Deep analysis with Opus — finds real bugs, security issues, arch problems
   measure         Measure project health (no changes)
   status          Show health score dashboard
   init            Interactive setup (creates .kyzn/config.yaml)
@@ -68,6 +69,18 @@ main() {
             source "$KYZN_ROOT/lib/allowlist.sh"
             source "$KYZN_ROOT/lib/report.sh"
             cmd_improve "$@"
+            ;;
+        analyze)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/measure.sh"
+            source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/execute.sh"
+            source "$KYZN_ROOT/lib/verify.sh"
+            source "$KYZN_ROOT/lib/allowlist.sh"
+            source "$KYZN_ROOT/lib/report.sh"
+            source "$KYZN_ROOT/lib/analyze.sh"
+            cmd_analyze "$@"
             ;;
         measure)
             shift
