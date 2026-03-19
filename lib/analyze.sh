@@ -332,7 +332,7 @@ cmd_analyze() {
 
     local allowlist='--allowedTools Read --allowedTools Edit --allowedTools Write --allowedTools Glob --allowedTools Grep'
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
-    local disallowed_globs="~/.ssh/**,~/.aws/**,~/.config/gh/**,~/.gnupg/**,**/.env,**/.env.*,**/*.pem,**/*.key"
+    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
 
     local stderr_file
     stderr_file=$(mktemp)
@@ -344,7 +344,7 @@ cmd_analyze() {
         --max-budget-usd "$budget" \
         --max-turns 40 \
         $allowlist \
-        --disallowedFileGlobs "$disallowed_globs" \
+        --settings "$settings_json" \
         --append-system-prompt-file "$sys_prompt_file" \
         --output-format json \
         --no-session-persistence \
@@ -353,9 +353,15 @@ cmd_analyze() {
         if (( exit_code == 124 )); then
             log_error "Analysis timed out after ${claude_timeout}s"
         else
-            log_error "Analysis failed"
+            log_error "Analysis failed (exit code: $exit_code)"
+            if [[ -s "$stderr_file" ]]; then
+                log_error "Claude stderr:"
+                head -20 "$stderr_file" | while IFS= read -r line; do
+                    log_dim "  $line"
+                done
+            fi
         fi
-        rm -f "$stderr_file"
+        rm -f "$stderr_file" "$sys_prompt_file"
         rm -rf "$measure_dir"
         return 1
     }
@@ -444,8 +450,8 @@ cmd_analyze() {
             --max-budget-usd "$fix_budget" \
             --max-turns 30 \
             $fix_allowlist \
-            --disallowedFileGlobs "$disallowed_globs" \
-            --append-system-prompt-file "$sys_prompt_file" \
+            --settings "$settings_json" \
+            --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
             --output-format json \
             --no-session-persistence \
             2>"$fix_stderr") || {

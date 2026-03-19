@@ -889,11 +889,12 @@ test_disallowed_file_globs() {
     # Read the function source and verify it contains disallowedFileGlobs
     local src
     src=$(cat "$KYZN_ROOT/lib/execute.sh")
-    assert_contains "execute.sh has disallowedFileGlobs" "$src" "disallowedFileGlobs"
+    assert_contains "execute.sh has disallowedFileGlobs in settings" "$src" "disallowedFileGlobs"
     assert_contains "blocks ~/.ssh" "$src" "~/.ssh/**"
     assert_contains "blocks ~/.aws" "$src" "~/.aws/**"
     assert_contains "blocks .env files" "$src" "**/.env"
     assert_contains "blocks .pem files" "$src" "**/*.pem"
+    assert_contains "uses --settings flag" "$src" '--settings "$settings_json"'
 }
 
 test_ci_blocking() {

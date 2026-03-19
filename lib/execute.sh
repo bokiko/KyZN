@@ -100,8 +100,8 @@ execute_claude() {
     local stderr_file
     stderr_file=$(mktemp)
 
-    # Sensitive file access restrictions
-    local disallowed_globs="~/.ssh/**,~/.aws/**,~/.config/gh/**,~/.gnupg/**,**/.env,**/.env.*,**/*.pem,**/*.key"
+    # Sensitive file access restrictions (passed via --settings since no CLI flag exists)
+    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
 
     # Timeout (default 10 minutes)
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-600}"
@@ -116,7 +116,7 @@ execute_claude() {
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
             $allowlist \
-            --disallowedFileGlobs "$disallowed_globs" \
+            --settings "$settings_json" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
@@ -140,7 +140,7 @@ execute_claude() {
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
             $allowlist \
-            --disallowedFileGlobs "$disallowed_globs" \
+            --settings "$settings_json" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
