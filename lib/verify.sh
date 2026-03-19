@@ -41,7 +41,7 @@ capture_failing_tests() {
 verify_build() {
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
 
-    log_header "kyzn verify — checking build & tests"
+    log_header "KyZN verify — checking build & tests"
 
     local build_ok=true
     # tests_ok reserved for future per-step tracking

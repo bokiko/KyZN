@@ -14,7 +14,7 @@ cmd_history() {
         esac
     done
 
-    log_header "kyzn history"
+    log_header "KyZN history"
 
     local history_dir
     if $global; then
@@ -107,7 +107,7 @@ cmd_status() {
     detect_project_type
     detect_project_features
 
-    log_header "kyzn status — $(project_name)"
+    log_header "KyZN status — $(project_name)"
 
     print_detection
     echo ""

@@ -12,7 +12,7 @@ run_measurements() {
         output_dir=$(mktemp -d)
     fi
 
-    log_header "kyzn measure — analyzing project health"
+    log_header "KyZN measure — analyzing project health"
 
     local results_file="$output_dir/measurements.json"
     echo '[]' > "$results_file"

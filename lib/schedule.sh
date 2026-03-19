@@ -66,5 +66,5 @@ remove_cron() {
 
     crontab -l 2>/dev/null | grep -vF "# kyzn:${project_tag}:" | crontab - 2>/dev/null
 
-    log_ok "Removed kyzn schedule for $(project_name)"
+    log_ok "Removed KyZN schedule for $(project_name)"
 }

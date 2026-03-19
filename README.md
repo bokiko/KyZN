@@ -24,7 +24,7 @@
 
 ## Overview
 
-**kyzn** (from _kaizen_ — continuous improvement) points at any project, measures its health with real tools, sends measurements to Claude Code with strict constraints, verifies the result, and opens a PR — all autonomously.
+**KyZN** (from _kaizen_ — continuous improvement) points at any project, measures its health with real tools, sends measurements to Claude Code with strict constraints, verifies the result, and opens a PR — all autonomously.
 
 ```
 $ kyzn improve

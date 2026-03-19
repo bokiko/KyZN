@@ -470,7 +470,7 @@ test_version() {
 
     local output
     output=$("$KYZN_ROOT/kyzn" version 2>&1)
-    assert_contains "version output" "$output" "kyzn v"
+    assert_contains "version output" "$output" "KyZN v"
 }
 
 test_help() {

@@ -66,7 +66,7 @@ detect_pkg_manager() {
 # ---------------------------------------------------------------------------
 prompt_sudo() {
     local pkg_name="$1"
-    warn "kyzn needs to install: $pkg_name"
+    warn "KyZN needs to install: $pkg_name"
     echo -en "  ${BOLD}Allow sudo to install dependencies?${RESET} [Y/n]: "
     local answer
     read -r answer
@@ -227,7 +227,7 @@ install_yq() {
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${BOLD}  kyzn installer${RESET}"
+echo -e "${BOLD}  KyZN installer${RESET}"
 echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 
@@ -401,9 +401,9 @@ echo ""
 
 if has_cmd kyzn || [[ -x "$BIN_DIR/kyzn" ]]; then
     local_ver=$("$BIN_DIR/kyzn" version 2>/dev/null || echo "unknown")
-    ok "kyzn installed ($local_ver)"
+    ok "KyZN installed ($local_ver)"
 else
-    err "kyzn not found in PATH after install"
+    err "KyZN not found in PATH after install"
     exit 1
 fi
 
@@ -411,7 +411,7 @@ fi
 if "$BIN_DIR/kyzn" version &>/dev/null; then
     ok "Library loading OK (symlink resolution works)"
 else
-    err "kyzn cannot load its libraries — symlink may be broken"
+    err "KyZN cannot load its libraries — symlink may be broken"
 fi
 
 # ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${GREEN}${BOLD}  kyzn installed successfully!${RESET}"
+echo -e "${GREEN}${BOLD}  KyZN installed successfully!${RESET}"
 echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
 echo -e "  ${BOLD}Typical workflow:${RESET}"

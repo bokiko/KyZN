@@ -5,7 +5,7 @@ set -euo pipefail
 
 # Require bash 4.3+ for associative arrays and namerefs
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
-    echo "kyzn requires bash 4.3 or later (you have $BASH_VERSION)." >&2
+    echo "KyZN requires bash 4.3 or later (you have $BASH_VERSION)." >&2
     if [[ "$(uname)" == "Darwin" ]]; then
         echo "  Install with: brew install bash" >&2
         echo "  Then run: /opt/homebrew/bin/bash $(readlink -f "$0" 2>/dev/null || echo "$0") $*" >&2
@@ -39,7 +39,7 @@ source "$KYZN_ROOT/lib/core.sh"
 # ---------------------------------------------------------------------------
 usage() {
     cat <<'EOF'
-kyzn — Autonomous Code Improvement CLI (kaizen)
+KyZN — Autonomous Code Improvement CLI (kaizen)
 
 Usage:
   kyzn <command> [options]
@@ -117,7 +117,7 @@ check_for_updates() {
         local behind
         behind=$(git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
         echo ""
-        echo -e "${RED}✗ kyzn is outdated${RESET} (${behind} commits behind)"
+        echo -e "${RED}✗ KyZN is outdated${RESET} (${behind} commits behind)"
         echo -e "  ${RED}Update now for better analysis accuracy and security fixes.${RESET}"
         echo -e "  Run: ${CYAN}kyzn update${RESET}"
         echo ""
@@ -225,7 +225,7 @@ main() {
             bash "$KYZN_ROOT/tests/selftest.sh" "$@"
             ;;
         version|--version|-v)
-            echo "kyzn v${KYZN_VERSION}"
+            echo "KyZN v${KYZN_VERSION}"
             ;;
         help|--help|-h|"")
             usage
@@ -243,7 +243,7 @@ main() {
 # Doctor — prerequisite checker
 # ---------------------------------------------------------------------------
 cmd_doctor() {
-    log_header "kyzn doctor — checking prerequisites"
+    log_header "KyZN doctor — checking prerequisites"
     local ok=true
 
     # Required tools
@@ -309,7 +309,7 @@ cmd_doctor() {
 
     echo ""
     if $ok; then
-        log_ok "All required tools found. kyzn is ready."
+        log_ok "All required tools found. KyZN is ready."
         echo ""
         echo -e "  ${DIM}Next:${RESET} Run ${CYAN}kyzn init${RESET} to set up a project, or ${CYAN}kyzn measure${RESET} to check health."
     else

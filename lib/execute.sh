@@ -197,9 +197,9 @@ cmd_improve() {
         stale_pid=$(cat "$lockdir/pid" 2>/dev/null || echo "")
         if [[ -n "$stale_pid" ]] && ! kill -0 "$stale_pid" 2>/dev/null; then
             rm -rf "$lockdir"
-            mkdir "$lockdir" 2>/dev/null || { log_error "Another kyzn improve is already running on this repo."; return 1; }
+            mkdir "$lockdir" 2>/dev/null || { log_error "Another KyZN improve is already running on this repo."; return 1; }
         else
-            log_error "Another kyzn improve is already running on this repo."
+            log_error "Another KyZN improve is already running on this repo."
             return 1
         fi
     fi
@@ -513,7 +513,7 @@ handle_build_failure() {
             log_info "Writing failure report..."
             ensure_kyzn_dirs
             cat > "$KYZN_REPORTS_DIR/$run_id-failed.md" <<EOF
-# kyzn Run Failed: $run_id
+# KyZN Run Failed: $run_id
 
 **Date:** $(date -u)
 **Mode:** $fail_mode
@@ -544,10 +544,10 @@ EOF
             safe_git add -A 2>/dev/null
             unstage_secrets
             check_dangerous_files
-            safe_git commit -m "kyzn: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
+            safe_git commit -m "KyZN: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
             git push -u origin HEAD 2>/dev/null || true
             gh pr create --draft \
-                --title "kyzn: attempted improvements (build failed)" \
+                --title "KyZN: attempted improvements (build failed)" \
                 --body "**WARNING: Build failed after these changes.**\n\nRun ID: $run_id\nCost: \$${KYZN_CLAUDE_COST:-unknown}" \
                 2>/dev/null || true
             safe_checkout_back
