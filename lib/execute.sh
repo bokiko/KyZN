@@ -195,11 +195,14 @@ cmd_improve() {
         # Check for stale lock (PID file inside)
         local stale_pid
         stale_pid=$(cat "$lockdir/pid" 2>/dev/null || echo "")
-        if [[ -n "$stale_pid" ]] && ! kill -0 "$stale_pid" 2>/dev/null; then
+        if [[ -z "$stale_pid" ]] || ! kill -0 "$stale_pid" 2>/dev/null; then
+            # Stale lock — previous run crashed or was interrupted
+            log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
             rm -rf "$lockdir"
             mkdir "$lockdir" 2>/dev/null || { log_error "Another KyZN improve is already running on this repo."; return 1; }
         else
-            log_error "Another KyZN improve is already running on this repo."
+            log_error "Another KyZN improve is already running on this repo (PID: $stale_pid)."
+            log_dim "  If this is wrong, remove the lock: rm -rf $lockdir"
             return 1
         fi
     fi

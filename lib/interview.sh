@@ -303,24 +303,27 @@ cmd_init() {
 check_missing_tooling() {
     local missing=()
 
+    local -a install_hints=()
+
     case "$KYZN_PROJECT_TYPE" in
         node)
-            has_cmd eslint || missing+=("eslint (linting)")
-            has_cmd tsc || missing+=("tsc (type checking)")
+            has_cmd eslint || { missing+=("eslint (linting)"); install_hints+=("npx eslint --init"); }
+            has_cmd tsc || { missing+=("tsc (type checking)"); install_hints+=("npm install -g typescript"); }
             ;;
         python)
-            has_cmd ruff || missing+=("ruff (linting)")
-            has_cmd mypy || missing+=("mypy (type checking)")
-            has_cmd pytest || missing+=("pytest (testing)")
+            has_cmd ruff || { missing+=("ruff (linting)"); install_hints+=("pip install ruff"); }
+            has_cmd mypy || { missing+=("mypy (type checking)"); install_hints+=("pip install mypy"); }
+            has_cmd pytest || { missing+=("pytest (testing)"); install_hints+=("pip install pytest"); }
             ;;
         rust)
             # cargo clippy is a subcommand, check differently
             if has_cmd cargo && ! cargo clippy --version &>/dev/null; then
                 missing+=("clippy (linting)")
+                install_hints+=("rustup component add clippy")
             fi
             ;;
         go)
-            has_cmd govulncheck || missing+=("govulncheck (security)")
+            has_cmd govulncheck || { missing+=("govulncheck (security)"); install_hints+=("go install golang.org/x/vuln/cmd/govulncheck@latest"); }
             ;;
     esac
 
@@ -329,7 +332,11 @@ check_missing_tooling() {
         for tool in "${missing[@]}"; do
             log_dim "  - $tool"
         done
-        echo -e "  ${DIM}kyzn will skip measurements for missing tools.${RESET}"
+        echo -e "  ${DIM}KyZN will skip measurements for missing tools.${RESET}"
+        echo -e "  ${DIM}To install:${RESET}"
+        for hint in "${install_hints[@]}"; do
+            echo -e "    ${CYAN}$hint${RESET}"
+        done
         echo ""
     fi
 }
