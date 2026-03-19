@@ -230,6 +230,7 @@ run_specialist() {
     local sys_prompt_file="$3"
     local budget="$4"
     local output_file="$5"
+    local model="${6:-opus}"
 
     local allowlist='--allowedTools Read --allowedTools Glob --allowedTools Grep'
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
@@ -241,7 +242,7 @@ run_specialist() {
     local result
     # shellcheck disable=SC2086
     result=$(timeout "$claude_timeout" claude -p "$prompt" \
-        --model opus \
+        --model "$model" \
         --max-budget-usd "$budget" \
         --max-turns 30 \
         $allowlist \
@@ -443,6 +444,9 @@ cmd_analyze() {
     local fix_budget=""
     local min_severity="LOW"
     local single=false
+    local profile=""
+    local export_path=""
+    local auto=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -452,11 +456,13 @@ cmd_analyze() {
             --fix-budget)   fix_budget="$2"; shift 2 ;;
             --min-severity) min_severity="$2"; shift 2 ;;
             --single)       single=true; shift ;;
+            --profile)      profile="$2"; shift 2 ;;
+            --export)       export_path="$2"; shift 2 ;;
+            --auto)         auto=true; shift ;;
             *)              log_error "Unknown option: $1"; return 1 ;;
         esac
     done
 
-    budget="${budget:-20.00}"
     fix_budget="${fix_budget:-5.00}"
 
     # Detect project
@@ -472,33 +478,70 @@ cmd_analyze() {
 
     display_health_dashboard "$measurements_file"
 
-    # Budget split for multi-agent
+    # Model profile selection (unless --auto or --profile passed)
+    local analysis_model="opus"
+    local -A agent_models=( ["security"]="opus" ["correctness"]="opus" ["performance"]="opus" ["architecture"]="opus" ["consensus"]="opus" )
+
+    if [[ -z "$profile" ]] && ! $auto && ! $single && [[ -z "$focus" ]]; then
+        local profile_choice
+        profile_choice=$(prompt_choice "Model profile?" \
+            "All Opus    — maximum accuracy (recommended)" \
+            "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
+            "All Sonnet  — fastest, cheapest")
+
+        case "$profile_choice" in
+            1) profile="opus" ;;
+            2) profile="hybrid" ;;
+            3) profile="sonnet" ;;
+        esac
+    fi
+    profile="${profile:-opus}"
+
+    case "$profile" in
+        opus)
+            ;; # all opus, default
+        hybrid)
+            agent_models["performance"]="sonnet"
+            agent_models["architecture"]="sonnet"
+            agent_models["consensus"]="sonnet"
+            ;;
+        sonnet)
+            for k in security correctness performance architecture consensus; do
+                agent_models[$k]="sonnet"
+            done
+            analysis_model="sonnet"
+            ;;
+    esac
+
+    # Set budgets based on profile (hidden from user)
+    if [[ -z "$budget" ]]; then
+        case "$profile" in
+            opus)   budget="20.00" ;;
+            hybrid) budget="12.00" ;;
+            sonnet) budget="8.00" ;;
+        esac
+    fi
+
     local per_agent_budget
     if $single; then
         per_agent_budget="$budget"
     else
-        # Split: 4 agents get 20% each, consensus gets 20%
         per_agent_budget=$(echo "scale=2; $budget / 5" | bc)
     fi
 
-    # Confirm
+    # Confirm (no dollar amounts shown)
     echo ""
     echo -e "${BOLD}Analysis settings:${RESET}"
-    echo -e "  Model:   ${CYAN}opus${RESET} (all sessions)"
-    echo -e "  Budget:  ${CYAN}\$$budget${RESET} total"
-    if ! $single; then
-        echo -e "  Agents:  ${CYAN}4 specialists + consensus${RESET} (\$$per_agent_budget each)"
+    echo -e "  Profile: ${CYAN}$profile${RESET}"
+    if ! $single && [[ -z "$focus" ]]; then
+        echo -e "  Agents:  ${CYAN}4 specialists + consensus${RESET}"
         echo -e "           security | correctness | performance | architecture"
-    fi
-    if [[ -n "$focus" ]]; then
-        echo -e "  Focus:   ${CYAN}$focus${RESET}"
-    fi
-    if $fix; then
-        echo -e "  Fix:     ${CYAN}yes (sonnet, \$$fix_budget)${RESET}"
+    elif [[ -n "$focus" ]]; then
+        echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
     echo ""
 
-    if ! prompt_yn "Run deep analysis?"; then
+    if ! $auto && ! prompt_yn "Run deep analysis?"; then
         log_info "Cancelled."
         rm -rf "$measure_dir"
         return 0
@@ -594,7 +637,7 @@ cmd_analyze() {
             spec_prompt=$(build_specialist_prompt "$spec" "$(project_name)" \
                 "$(project_type_name "$KYZN_PROJECT_TYPE")" "${KYZN_HEALTH_SCORE:-0}" "$measurements_json")
 
-            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" &
+            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "${agent_models[$spec]}" &
             local pid=$!
             pids+=($pid)
             pid_map[$pid]="$spec"
@@ -683,7 +726,7 @@ cmd_analyze() {
 
         local consensus_result
         consensus_result=$(timeout "$claude_timeout" claude -p "$consensus_prompt" \
-            --model opus \
+            --model "${agent_models[consensus]}" \
             --max-budget-usd "$per_agent_budget" \
             --max-turns 10 \
             --output-format json \
@@ -723,122 +766,248 @@ cmd_analyze() {
     finding_count=$(jq 'length' "$findings_file")
     log_info "Final findings: $finding_count issues"
 
-    # Display findings
+    # Display findings summary
     display_findings "$findings_file"
 
-    # Save human-readable report
+    # Generate detailed markdown report
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
-    {
-        echo "# kyzn Deep Analysis Report"
-        echo ""
-        echo "**Run ID:** $run_id"
-        echo "**Date:** $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        echo "**Model:** opus (multi-agent)"
-        echo "**Cost:** \$$total_cost"
-        echo "**Findings:** $finding_count"
-        if ! $single && [[ -z "$focus" ]]; then
-            echo "**Reviewers:** security, correctness, performance, architecture + consensus"
-        fi
-        echo ""
-        echo "## Findings"
-        echo ""
-        echo '```json'
-        jq '.' "$findings_file"
-        echo '```'
-        echo ""
-        echo "---"
-        echo "*Generated by [kyzn](https://github.com/bokiko/kyzn) — multi-agent analysis*"
-    } > "$report_file"
+    generate_detailed_report "$findings_file" "$report_file" "$run_id" "$profile" "$total_cost" "$finding_count"
 
     log_ok "Report saved to $report_file"
     log_ok "Findings saved to $findings_file"
 
-    # If --fix, run Sonnet to implement fixes
-    if $fix && (( finding_count > 0 )); then
-        echo ""
-        log_header "Phase 3: Fixing issues with Sonnet"
-
-        local fix_prompt
-        fix_prompt=$(generate_fix_prompt "$findings_file" 10 "$min_severity")
-
-        if [[ -z "$fix_prompt" ]]; then
-            log_info "No findings at or above $min_severity severity to fix."
-            return 0
-        fi
-
-        # Create branch for fixes
-        local run_suffix="${run_id##*-}"
-        local branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
-        log_step "Creating branch: $branch_name"
-        safe_git checkout -b "$branch_name" || {
-            log_error "Failed to create branch"
-            return 1
-        }
-
-        local fix_allowlist
-        fix_allowlist=$(build_allowlist "$KYZN_PROJECT_TYPE")
-
-        local fix_stderr
-        fix_stderr=$(mktemp)
-
-        local fix_result
-        # shellcheck disable=SC2086
-        fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
-            --model sonnet \
-            --max-budget-usd "$fix_budget" \
-            --max-turns 30 \
-            $fix_allowlist \
-            --settings "$settings_json" \
-            --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
-            --output-format json \
-            --no-session-persistence \
-            2>"$fix_stderr") || {
-            local exit_code=$?
-            if (( exit_code == 124 )); then
-                log_error "Fix phase timed out"
-            else
-                log_error "Fix phase failed"
-            fi
-            rm -f "$fix_stderr"
-            safe_checkout_back
-            safe_git branch -D "$branch_name" 2>/dev/null || true
-            return 1
-        }
-        rm -f "$fix_stderr"
-
-        local fix_cost
-        fix_cost=$(echo "$fix_result" | jq -r '.total_cost_usd // "unknown"')
-        log_ok "Fixes applied (cost: \$$fix_cost)"
-
-        if verify_build; then
-            log_ok "Build and tests passed after fixes!"
-        else
-            log_error "Build/tests failed after fixes."
-            handle_build_failure "report" "$run_id" "$branch_name" "analyze" "fix"
-            return 1
-        fi
-
-        safe_git add -A 2>/dev/null
-        local diff_stat
-        diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
-        git reset HEAD 2>/dev/null || true
-
-        log_info "Changes applied:"
-        echo "$diff_stat"
-        echo ""
-        log_info "Review the fixes, then:"
-        echo -e "  ${CYAN}kyzn approve $run_id${RESET}   — sign off"
-        echo -e "  ${CYAN}kyzn reject $run_id${RESET}    — discard"
-        echo ""
-        log_info "Total cost: \$$total_cost (analysis) + \$$fix_cost (fixes)"
-    else
-        echo ""
-        if (( finding_count > 0 )); then
-            log_info "To fix these issues automatically:"
-            echo -e "  ${CYAN}kyzn analyze --fix${RESET}"
-            echo ""
-            log_info "Or use the findings file with improve:"
-            echo -e "  ${CYAN}kyzn improve${RESET}  (Sonnet will reference findings)"
-        fi
+    # Export if requested
+    if [[ -n "$export_path" ]]; then
+        cp "$report_file" "$export_path"
+        log_ok "Report exported to $export_path"
     fi
+
+    # If no findings, we're done
+    if (( finding_count == 0 )); then
+        return 0
+    fi
+
+    # Count by severity for the menu
+    local critical high medium low
+    critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
+    high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
+    medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
+    low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+
+    # Interactive fix menu (unless --fix or --auto)
+    if $fix; then
+        # --fix flag: use min_severity from CLI
+        run_fix_phase "$findings_file" "$min_severity" "$run_id" "$fix_budget"
+    elif ! $auto; then
+        echo ""
+        local fix_choice
+        fix_choice=$(prompt_choice "What would you like to do?" \
+            "Export report only — review findings manually" \
+            "Fix critical + high ($((critical + high)) issues)" \
+            "Fix all ($finding_count issues)" \
+            "Pick severity to fix")
+
+        case "$fix_choice" in
+            1)
+                echo ""
+                log_info "Report: $report_file"
+                log_info "Findings JSON: $findings_file"
+                ;;
+            2)
+                run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget"
+                ;;
+            3)
+                run_fix_phase "$findings_file" "LOW" "$run_id" "$fix_budget"
+                ;;
+            4)
+                local sev_choice
+                sev_choice=$(prompt_choice "Minimum severity to fix?" \
+                    "CRITICAL only ($critical issues)" \
+                    "HIGH and above ($((critical + high)) issues)" \
+                    "MEDIUM and above ($((critical + high + medium)) issues)" \
+                    "All including LOW ($finding_count issues)")
+                case "$sev_choice" in
+                    1) run_fix_phase "$findings_file" "CRITICAL" "$run_id" "$fix_budget" ;;
+                    2) run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget" ;;
+                    3) run_fix_phase "$findings_file" "MEDIUM" "$run_id" "$fix_budget" ;;
+                    4) run_fix_phase "$findings_file" "LOW" "$run_id" "$fix_budget" ;;
+                esac
+                ;;
+        esac
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Generate detailed markdown report with full descriptions
+# ---------------------------------------------------------------------------
+generate_detailed_report() {
+    local findings_file="$1"
+    local report_file="$2"
+    local run_id="$3"
+    local profile="$4"
+    local total_cost="$5"
+    local finding_count="$6"
+
+    local critical high medium low
+    critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
+    high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
+    medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
+    low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+
+    {
+        echo "# kyzn Deep Analysis Report"
+        echo ""
+        echo "**Run ID:** \`$run_id\`"
+        echo "**Date:** $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "**Profile:** $profile"
+        echo "**Total Findings:** $finding_count"
+        echo ""
+        echo "## Summary"
+        echo ""
+        echo "| Severity | Count |"
+        echo "|----------|-------|"
+        (( critical > 0 )) && echo "| CRITICAL | $critical |"
+        (( high > 0 )) && echo "| HIGH | $high |"
+        (( medium > 0 )) && echo "| MEDIUM | $medium |"
+        (( low > 0 )) && echo "| LOW | $low |"
+        echo ""
+
+        # Group findings by category
+        local categories
+        categories=$(jq -r '[.[].category] | unique | .[]' "$findings_file" 2>/dev/null)
+
+        for cat in $categories; do
+            local cat_upper
+            cat_upper=$(echo "$cat" | tr '[:lower:]' '[:upper:]' | tr '-' ' ')
+            echo "## $cat_upper"
+            echo ""
+
+            local cat_count
+            cat_count=$(jq --arg c "$cat" '[.[] | select(.category == $c)] | length' "$findings_file")
+            local i=0
+
+            while (( i < cat_count )); do
+                local id severity title file line description fix effort
+                id=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].id // "?"' "$findings_file")
+                severity=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].severity // "?"' "$findings_file")
+                title=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].title // "?"' "$findings_file")
+                file=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].file // "?"' "$findings_file")
+                line=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].line // "?"' "$findings_file")
+                description=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].description // ""' "$findings_file")
+                fix=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].fix // ""' "$findings_file")
+                effort=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].effort // "?"' "$findings_file")
+
+                echo "### $id — $title"
+                echo ""
+                echo "- **Severity:** $severity"
+                echo "- **File:** \`$file:$line\`"
+                echo "- **Effort:** $effort"
+                echo ""
+                if [[ -n "$description" && "$description" != "null" ]]; then
+                    echo "$description"
+                    echo ""
+                fi
+                if [[ -n "$fix" && "$fix" != "null" ]]; then
+                    echo "**Suggested fix:** $fix"
+                    echo ""
+                fi
+                echo "---"
+                echo ""
+
+                ((i++))
+            done
+        done
+
+        echo "*Generated by [kyzn](https://github.com/bokiko/kyzn) — multi-agent analysis ($profile profile)*"
+    } > "$report_file"
+}
+
+# ---------------------------------------------------------------------------
+# Run the fix phase (Sonnet implements findings)
+# ---------------------------------------------------------------------------
+run_fix_phase() {
+    local findings_file="$1"
+    local min_severity="$2"
+    local run_id="$3"
+    local fix_budget="$4"
+
+    local fix_prompt
+    fix_prompt=$(generate_fix_prompt "$findings_file" 10 "$min_severity")
+
+    if [[ -z "$fix_prompt" ]]; then
+        log_info "No findings at or above $min_severity severity to fix."
+        return 0
+    fi
+
+    echo ""
+    log_header "Fixing issues (min severity: $min_severity)"
+
+    # Create branch for fixes
+    local run_suffix="${run_id##*-}"
+    local branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
+    log_step "Creating branch: $branch_name"
+    safe_git checkout -b "$branch_name" || {
+        log_error "Failed to create branch"
+        return 1
+    }
+
+    local fix_allowlist
+    fix_allowlist=$(build_allowlist "$KYZN_PROJECT_TYPE")
+
+    local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
+    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
+
+    local fix_stderr
+    fix_stderr=$(mktemp)
+
+    log_step "Sonnet is implementing fixes..."
+
+    local fix_result
+    # shellcheck disable=SC2086
+    fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
+        --model sonnet \
+        --max-budget-usd "$fix_budget" \
+        --max-turns 30 \
+        $fix_allowlist \
+        --settings "$settings_json" \
+        --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
+        --output-format json \
+        --no-session-persistence \
+        2>"$fix_stderr") || {
+        local exit_code=$?
+        if (( exit_code == 124 )); then
+            log_error "Fix phase timed out"
+        else
+            log_error "Fix phase failed"
+        fi
+        rm -f "$fix_stderr"
+        safe_checkout_back
+        safe_git branch -D "$branch_name" 2>/dev/null || true
+        return 1
+    }
+    rm -f "$fix_stderr"
+
+    local fix_cost
+    fix_cost=$(echo "$fix_result" | jq -r '.total_cost_usd // "unknown"')
+    log_ok "Fixes applied (cost: \$$fix_cost)"
+
+    if verify_build; then
+        log_ok "Build and tests passed after fixes!"
+    else
+        log_error "Build/tests failed after fixes."
+        handle_build_failure "report" "$run_id" "$branch_name" "analyze" "fix"
+        return 1
+    fi
+
+    safe_git add -A 2>/dev/null
+    local diff_stat
+    diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
+    git reset HEAD 2>/dev/null || true
+
+    log_info "Changes applied:"
+    echo "$diff_stat"
+    echo ""
+    log_info "Review the fixes, then:"
+    echo -e "  ${CYAN}kyzn approve $run_id${RESET}   — sign off"
+    echo -e "  ${CYAN}kyzn reject $run_id${RESET}    — discard"
 }
