@@ -645,7 +645,7 @@ cmd_analyze() {
 
         echo ""
 
-        # Progress monitor — show live status while agents run
+        # Progress monitor — spinner + agent dots + phase hints
         local start_time completed_count
         start_time=$(date +%s)
         completed_count=0
@@ -653,6 +653,22 @@ cmd_analyze() {
         for spec in "${specialists[@]}"; do
             agent_status[$spec]="running"
         done
+
+        # Spinner frames and phase hint messages
+        local spinner_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+        local -a phase_hints=(
+            "Reading entry points and imports..."
+            "Tracing function call chains..."
+            "Analyzing error handling paths..."
+            "Checking data flow and validation..."
+            "Reviewing authentication logic..."
+            "Scanning for edge cases..."
+            "Examining test coverage gaps..."
+            "Inspecting dependency usage..."
+            "Evaluating API boundaries..."
+            "Cross-referencing module dependencies..."
+        )
+        local spin_idx=0
 
         while (( completed_count < ${#specialists[@]} )); do
             # Check which pids have finished
@@ -668,11 +684,16 @@ cmd_analyze() {
                 fi
             done
 
-            # Build status line
+            # Build status display
             local elapsed=$(( $(date +%s) - start_time ))
             local mins=$(( elapsed / 60 ))
             local secs=$(( elapsed % 60 ))
-            local status_line="  ${DIM}[${mins}m${secs}s]${RESET} "
+            local frame="${spinner_frames[$((spin_idx % ${#spinner_frames[@]}))]}"
+            local hint="${phase_hints[$((elapsed / 12 % ${#phase_hints[@]}))]}"
+            spin_idx=$((spin_idx + 1))
+
+            # Line 1: spinner + time + agent dots
+            local status_line="  ${CYAN}${frame}${RESET} ${DIM}[${mins}m$(printf '%02d' $secs)s]${RESET} "
             for spec in "${specialists[@]}"; do
                 case "${agent_status[$spec]}" in
                     running) status_line+="${YELLOW}◌${RESET} $spec  " ;;
@@ -680,14 +701,17 @@ cmd_analyze() {
                     failed)  status_line+="${RED}✗${RESET} $spec  " ;;
                 esac
             done
-            status_line+=" ${DIM}(${completed_count}/${#specialists[@]})${RESET}"
 
-            # Print status (overwrite previous line)
-            echo -en "\r\033[K${status_line}"
+            # Line 2: phase hint
+            local hint_line="  ${DIM}${hint}${RESET}"
 
-            (( completed_count < ${#specialists[@]} )) && sleep 2
+            # Move up, clear, print both lines
+            echo -en "\033[2K\r${status_line}\n\033[2K\r${hint_line}\033[1A"
+
+            (( completed_count < ${#specialists[@]} )) && sleep 0.5
         done
-        echo "" # newline after progress
+        # Clear the hint line and move past it
+        echo -en "\n\033[2K\r"
 
         local any_failed=false
         for spec in "${specialists[@]}"; do
