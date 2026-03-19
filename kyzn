@@ -100,7 +100,11 @@ check_for_updates() {
     fi
 
     if $needs_fetch; then
-        timeout 5 git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || return
+        if command -v timeout &>/dev/null; then
+            timeout 5 git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
+        else
+            git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
+        fi
         date +%s > "$check_file" 2>/dev/null || true
     fi
 

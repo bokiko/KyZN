@@ -201,6 +201,22 @@ has_cmd() {
     command -v "$1" &>/dev/null
 }
 
+# Portable timeout wrapper (macOS lacks GNU timeout)
+if ! command -v timeout &>/dev/null; then
+    timeout() {
+        local secs="$1"; shift
+        "$@" &
+        local pid=$!
+        ( sleep "$secs" && kill "$pid" 2>/dev/null ) &
+        local watcher=$!
+        wait "$pid" 2>/dev/null
+        local ret=$?
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        return $ret
+    }
+fi
+
 # Get current timestamp
 timestamp() {
     date -u +%Y-%m-%dT%H:%M:%SZ
