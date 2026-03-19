@@ -836,6 +836,7 @@ cmd_analyze() {
     log_info "Final findings: $finding_count issues"
 
     # Generate detailed markdown report (before display, so we can reference the path)
+    ensure_kyzn_dirs
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
     local report_basename
     report_basename=$(basename "$report_file")
@@ -843,7 +844,7 @@ cmd_analyze() {
 
     # Copy report to project root for easy access (archive stays in .kyzn/)
     local root_report="kyzn-report.md"
-    cp "$report_file" "$root_report"
+    cp "$report_file" "$root_report" || log_warn "Could not copy report to project root"
 
     echo ""
     log_ok "Full report: ${BOLD}$root_report${RESET}"
@@ -885,6 +886,9 @@ cmd_analyze() {
 
         case "$fix_choice" in
             1)
+                echo ""
+                echo -e "  ${DIM}Tip: Feed the report to Claude for guided fixes:${RESET}"
+                echo -e "  ${CYAN}cat kyzn-report.md | claude${RESET}"
                 ;;
             2)
                 run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget"

@@ -291,9 +291,10 @@ cmd_init() {
 
     echo ""
     log_ok "kyzn is ready! Next steps:"
-    echo -e "  ${CYAN}kyzn doctor${RESET}   — verify prerequisites"
-    echo -e "  ${CYAN}kyzn measure${RESET}  — see your project health score"
-    echo -e "  ${CYAN}kyzn improve${RESET}  — start your first improvement cycle"
+    echo -e "  ${CYAN}kyzn doctor${RESET}    — verify prerequisites"
+    echo -e "  ${CYAN}kyzn measure${RESET}   — see your project health score"
+    echo -e "  ${CYAN}kyzn analyze${RESET}   — deep multi-agent code review"
+    echo -e "  ${CYAN}kyzn improve${RESET}   — start your first improvement cycle"
 }
 
 # ---------------------------------------------------------------------------

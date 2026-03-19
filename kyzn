@@ -310,6 +310,8 @@ cmd_doctor() {
     echo ""
     if $ok; then
         log_ok "All required tools found. kyzn is ready."
+        echo ""
+        echo -e "  ${DIM}Next:${RESET} Run ${CYAN}kyzn init${RESET} to set up a project, or ${CYAN}kyzn measure${RESET} to check health."
     else
         log_fail "Missing required tools. Install them and re-run kyzn doctor."
         exit 1

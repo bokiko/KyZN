@@ -233,5 +233,6 @@ cmd_measure() {
         weakest_score=$(echo "$KYZN_CATEGORY_SCORES" | jq -r --arg c "$weakest" '.[$c]')
         log_info "Weakest area: ${BOLD}$weakest${RESET} ($weakest_score%)"
         echo -e "  Run ${CYAN}kyzn improve --focus $weakest${RESET} to improve it."
+        echo -e "  Run ${CYAN}kyzn analyze${RESET} for a deep multi-agent code review."
     fi
 }

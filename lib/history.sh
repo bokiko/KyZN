@@ -64,6 +64,8 @@ cmd_history() {
     done
 
     echo ""
+    echo -e "  ${DIM}Tip:${RESET} Run ${CYAN}kyzn diff <run-id>${RESET} to see what a run changed."
+    echo ""
 }
 
 # ---------------------------------------------------------------------------
