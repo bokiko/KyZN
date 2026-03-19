@@ -45,6 +45,7 @@ Commands:
   history         Show all runs with scores and trends
 
   schedule        Set up recurring runs (cron)
+  update          Pull latest version
   version         Show version
 
 Options:
@@ -100,7 +101,7 @@ check_for_updates() {
         echo ""
         echo -e "${RED}✗ kyzn is outdated${RESET} (${behind} commits behind)"
         echo -e "  ${RED}Update now for better analysis accuracy and security fixes.${RESET}"
-        echo -e "  Run: ${CYAN}cd ~/.kyzn-cli && git pull${RESET}"
+        echo -e "  Run: ${CYAN}kyzn update${RESET}"
         echo ""
     fi
 }
@@ -185,6 +186,18 @@ main() {
             shift
             source "$KYZN_ROOT/lib/schedule.sh"
             cmd_schedule "$@"
+            ;;
+        update)
+            shift
+            log_step "Updating kyzn..."
+            if git -C "$KYZN_ROOT" pull --quiet 2>/dev/null; then
+                local new_ver
+                new_ver=$(bash "$KYZN_ROOT/kyzn" version 2>/dev/null || echo "unknown")
+                log_ok "Updated to $new_ver"
+            else
+                log_error "Update failed — check git status in $KYZN_ROOT"
+                exit 1
+            fi
             ;;
         selftest)
             shift

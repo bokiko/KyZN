@@ -3,8 +3,18 @@
 set -euo pipefail
 
 REPO="bokiko/kyzn"
-INSTALL_DIR="${KYZN_INSTALL_DIR:-$HOME/.kyzn-cli}"
 BIN_DIR="${KYZN_BIN_DIR:-$HOME/.local/bin}"
+
+# Detect if running from inside a kyzn repo clone
+# If so, use it directly — no second clone needed
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/kyzn" && -d "$SCRIPT_DIR/lib" && -f "$SCRIPT_DIR/lib/core.sh" ]]; then
+    INSTALL_DIR="$SCRIPT_DIR"
+    FROM_REPO=true
+else
+    INSTALL_DIR="${KYZN_INSTALL_DIR:-$HOME/.kyzn-cli}"
+    FROM_REPO=false
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -323,15 +333,33 @@ echo ""
 echo -e "${BOLD}Step 3: Installing kyzn${RESET}"
 echo ""
 
-# Clone or update
-if [[ -d "$INSTALL_DIR" ]]; then
-    info "Updating existing installation..."
-    cd "$INSTALL_DIR" && git pull --quiet
-    ok "Updated $INSTALL_DIR"
+if $FROM_REPO; then
+    # Running from inside a kyzn clone — use it directly
+    ok "Using local repo: $INSTALL_DIR"
+    info "Updates: just run ${CYAN}git pull${RESET} in this directory"
+
+    # Clean up stale ~/.kyzn-cli clone if it exists and we're not in it
+    if [[ -d "$HOME/.kyzn-cli/.git" && "$INSTALL_DIR" != "$HOME/.kyzn-cli" ]]; then
+        info "Removing old clone at ~/.kyzn-cli (no longer needed)"
+        rm -rf "$HOME/.kyzn-cli"
+    fi
 else
-    info "Cloning repository..."
-    git clone --quiet "https://github.com/$REPO.git" "$INSTALL_DIR"
-    ok "Cloned to $INSTALL_DIR"
+    # Remote install (curl | bash) — clone to ~/.kyzn-cli
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        info "Updating existing installation..."
+        git -C "$INSTALL_DIR" pull --quiet
+        ok "Updated $INSTALL_DIR"
+    elif [[ -d "$INSTALL_DIR" ]]; then
+        # Directory exists but isn't a git repo — replace it
+        warn "Replacing non-git installation at $INSTALL_DIR"
+        rm -rf "$INSTALL_DIR"
+        git clone --quiet "https://github.com/$REPO.git" "$INSTALL_DIR"
+        ok "Cloned to $INSTALL_DIR"
+    else
+        info "Cloning repository..."
+        git clone --quiet "https://github.com/$REPO.git" "$INSTALL_DIR"
+        ok "Cloned to $INSTALL_DIR"
+    fi
 fi
 
 # Make executable
@@ -340,7 +368,7 @@ chmod +x "$INSTALL_DIR/kyzn"
 # Create symlink
 mkdir -p "$BIN_DIR"
 ln -sf "$INSTALL_DIR/kyzn" "$BIN_DIR/kyzn"
-ok "Symlinked to $BIN_DIR/kyzn"
+ok "Symlinked $BIN_DIR/kyzn → $INSTALL_DIR/kyzn"
 
 # Check if BIN_DIR is in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "^$BIN_DIR$"; then
@@ -390,4 +418,7 @@ echo -e "    ${CYAN}kyzn improve${RESET}    AI-powered code improvement"
 echo -e "    ${CYAN}kyzn history${RESET}    View past runs"
 echo -e "    ${CYAN}kyzn doctor${RESET}     Verify environment"
 echo -e "    ${CYAN}kyzn selftest${RESET}   Run test suite"
+echo ""
+echo -e "  ${BOLD}Update:${RESET}"
+echo -e "    ${CYAN}cd $INSTALL_DIR && git pull${RESET}"
 echo ""
