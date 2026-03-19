@@ -1047,7 +1047,7 @@ JSON
 }
 
 test_analyze_prompt_assembly() {
-    log_header "38. Analysis prompt assembly"
+    log_header "38. Specialist prompt assembly"
 
     source "$KYZN_ROOT/lib/detect.sh"
     source "$KYZN_ROOT/lib/prompt.sh"
@@ -1057,24 +1057,47 @@ test_analyze_prompt_assembly() {
     detect_project_type
     KYZN_HEALTH_SCORE=50
 
-    local tmpfile
-    tmpfile=$(mktemp)
-    echo '[]' > "$tmpfile"
+    # Test each specialist prompt
+    local sec_prompt
+    sec_prompt=$(build_specialist_prompt "security" "test-proj" "Generic" "50" "[]")
+    assert_contains "security prompt has injection" "$sec_prompt" "Injection"
+    assert_contains "security prompt has SEC prefix" "$sec_prompt" "SEC-001"
 
-    local prompt
-    prompt=$(assemble_analysis_prompt "$tmpfile" "security" "generic")
+    local cor_prompt
+    cor_prompt=$(build_specialist_prompt "correctness" "test-proj" "Generic" "50" "[]")
+    assert_contains "correctness prompt has logic errors" "$cor_prompt" "Logic errors"
+    assert_contains "correctness prompt has BUG prefix" "$cor_prompt" "BUG-001"
 
-    assert_contains "analysis prompt has findings format" "$prompt" '"severity"'
-    assert_contains "analysis prompt has JSON output" "$prompt" "JSON array"
-    assert_contains "analysis prompt has focus" "$prompt" "security"
-    assert_contains "analysis prompt has project name" "$prompt" "$(project_name)"
+    local perf_prompt
+    perf_prompt=$(build_specialist_prompt "performance" "test-proj" "Generic" "50" "[]")
+    assert_contains "performance prompt has N+1" "$perf_prompt" "N+1"
+    assert_contains "performance prompt has PERF prefix" "$perf_prompt" "PERF-001"
 
-    rm -f "$tmpfile"
+    local arch_prompt
+    arch_prompt=$(build_specialist_prompt "architecture" "test-proj" "Generic" "50" "[]")
+    assert_contains "architecture prompt has circular deps" "$arch_prompt" "Circular dependencies"
+    assert_contains "architecture prompt has ARCH prefix" "$arch_prompt" "ARCH-001"
+
     cleanup_sandbox
 }
 
+test_consensus_prompt() {
+    log_header "39a. Consensus prompt merges specialist findings"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local prompt
+    prompt=$(build_consensus_prompt '[{"id":"SEC-001"}]' '[{"id":"BUG-001"}]' '[{"id":"PERF-001"}]' '[{"id":"ARCH-001"}]')
+
+    assert_contains "consensus has security section" "$prompt" "Security Reviewer"
+    assert_contains "consensus has correctness section" "$prompt" "Correctness Reviewer"
+    assert_contains "consensus has performance section" "$prompt" "Performance Reviewer"
+    assert_contains "consensus has architecture section" "$prompt" "Architecture Reviewer"
+    assert_contains "consensus has dedup instruction" "$prompt" "Deduplicate"
+}
+
 test_analysis_system_prompt() {
-    log_header "39. Analysis system prompt exists and has personality"
+    log_header "39b. Analysis system prompt exists and has personality"
 
     local analysis_prompt="$KYZN_ROOT/templates/analysis-prompt.md"
     assert_file_exists "analysis-prompt.md exists" "$analysis_prompt"
@@ -1309,6 +1332,7 @@ main() {
     test_trust_in_local_yaml
     test_per_category_floor
     test_analyze_prompt_assembly
+    test_consensus_prompt
     test_analysis_system_prompt
     test_extract_findings
     test_generate_fix_prompt
