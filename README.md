@@ -109,8 +109,8 @@ kyzn improve    # Run improvement cycle
 ### Analyze
 - **4 Opus specialists in parallel** — security, correctness, performance, architecture
 - Consensus engine deduplicates and ranks findings
-- Live progress indicator during analysis
-- `--fix` mode: Opus finds, Sonnet implements
+- Compact one-liner terminal output + detailed `kyzn-report.md`
+- `--fix` mode: full report context passed to Sonnet for accurate fixes
 
 </td>
 </tr>
@@ -169,7 +169,10 @@ kyzn analyze --focus security       # Single specialist (security only)
 kyzn analyze --single               # Single general reviewer (cheaper)
 kyzn analyze --budget 30.00         # Higher budget for large codebases
 kyzn analyze --min-severity HIGH    # Only fix HIGH+ severity in --fix mode
+kyzn analyze --export report.md     # Export report to custom path
 ```
+
+Terminal output is compact (one line per finding). Full details are saved to `kyzn-report.md` in the project root and archived in `.kyzn/reports/`. When `--fix` runs, the full report is passed to Sonnet so it has complete context for each fix.
 
 ### Improve (Sonnet incremental)
 
@@ -223,12 +226,12 @@ kyzn schedule off                   # Remove schedule
                                   ┌────────────┐
                                   │  Security  │──┐
  ┌──────────┐    ┌──────────┐    ├────────────┤  │    ┌───────────┐    ┌──────────┐
- │  Detect  │───▶│ Measure  │───▶│Correctness │──┼───▶│ Consensus │───▶│   Fix    │
- │          │    │          │    ├────────────┤  │    │  (Opus)   │    │ (Sonnet) │
- │ language │    │ run real │    │Performance │──┤    │ dedup +   │    │ optional │
- │ features │    │ tools    │    ├────────────┤  │    │ rank      │    │ --fix    │
- └──────────┘    └──────────┘    │Architecture│──┘    └───────────┘    └──────────┘
-                                  └────────────┘
+ │  Detect  │───▶│ Measure  │───▶│Correctness │──┼───▶│ Consensus │───▶│  Report  │───▶│   Fix    │
+ │          │    │          │    ├────────────┤  │    │  (Opus)   │    │          │    │ (Sonnet) │
+ │ language │    │ run real │    │Performance │──┤    │ dedup +   │    │ kyzn-    │    │ optional │
+ │ features │    │ tools    │    ├────────────┤  │    │ rank      │    │ report   │    │ --fix    │
+ └──────────┘    └──────────┘    │Architecture│──┘    └───────────┘    │ .md      │    └──────────┘
+                                  └────────────┘                       └──────────┘
                                    4 Opus sessions
                                    (parallel)
 ```
@@ -236,9 +239,10 @@ kyzn schedule off                   # Remove schedule
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
 2. **Measure** — runs real tools and computes a health score out of 100
 3. **Improve/Analyze** — Sonnet for incremental fixes, 4 parallel Opus specialists for deep code review
-4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
-5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
-6. **PR** — commits, pushes, and creates PR with before/after health comparison
+4. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root (archived in `.kyzn/reports/`)
+5. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
+6. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
+7. **PR** — commits, pushes, and creates PR with before/after health comparison
 
 ---
 
@@ -398,6 +402,8 @@ kyzn selftest --full       # Full suite with stress tests (156 cases)
 - [x] Two-model architecture (Opus thinks, Sonnet executes)
 - [x] Live progress indicator during analysis
 - [x] Security hardening (file restrictions, CI blocking, timeouts, checksums)
+- [x] Compact terminal output + `kyzn-report.md` detailed report
+- [x] Full report context passed to fix phase for accurate Sonnet fixes
 - [ ] Reflexion loop (retry with self-reflection on failure)
 - [ ] Multi-candidate patches (generate 3, pick best)
 - [ ] Experience bank (store/retrieve successful fix patterns)
