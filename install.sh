@@ -118,11 +118,18 @@ install_yq() {
         prompt_sudo "snap remove yq" && sudo snap remove yq 2>/dev/null || true
     fi
 
+    # macOS: use brew if available (avoids bash 3.2 associative array issues)
+    if [[ "$(uname)" == "Darwin" ]] && has_cmd brew; then
+        brew install yq --quiet 2>/dev/null || brew upgrade yq --quiet 2>/dev/null || true
+        has_cmd yq && ok "yq installed (brew)" || err "yq install failed"
+        return
+    fi
+
     local arch
     arch=$(uname -m)
     case "$arch" in
         x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
+        aarch64|arm64) arch="arm64" ;;
     esac
 
     local os="linux"
@@ -131,37 +138,58 @@ install_yq() {
     # Pinned version + SHA256 checksums for supply chain safety
     local YQ_VERSION="v4.44.1"
     # checksums from https://github.com/mikefarah/yq/releases/tag/v4.44.1
-    local -A YQ_CHECKSUMS=(
-        ["linux_amd64"]="a8bd3bd4e1871b37028a1e89ddc16fec10e62586e4a1053e0c4666abb559f029"
-        ["linux_arm64"]="47025f24e1b752fdf340e48cdeab56bdd2a6a7f2cf7b2d48b6fae83a4e724c8c"
-        ["darwin_amd64"]="2ff786273b7a5f2d1c9df9e4c932a4fb38cf6d44f553573a1d53ed9108d661db"
-        ["darwin_arm64"]="de22118250c2eb8e87d8720d4101990fc66c3ddd1dda29f0b3a83bf6f7c3a699"
-    )
+    local expected_checksum=""
+    case "${os}_${arch}" in
+        linux_amd64)  expected_checksum="a8bd3bd4e1871b37028a1e89ddc16fec10e62586e4a1053e0c4666abb559f029" ;;
+        linux_arm64)  expected_checksum="47025f24e1b752fdf340e48cdeab56bdd2a6a7f2cf7b2d48b6fae83a4e724c8c" ;;
+        darwin_amd64) expected_checksum="2ff786273b7a5f2d1c9df9e4c932a4fb38cf6d44f553573a1d53ed9108d661db" ;;
+        darwin_arm64) expected_checksum="de22118250c2eb8e87d8720d4101990fc66c3ddd1dda29f0b3a83bf6f7c3a699" ;;
+    esac
 
     local platform_key="${os}_${arch}"
-    local expected_checksum="${YQ_CHECKSUMS[$platform_key]:-}"
 
     mkdir -p "$BIN_DIR"
     local tmp
     tmp=$(mktemp)
-    wget -qO "$tmp" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${platform_key}" || {
-        err "Failed to download yq"
+
+    # Use curl on macOS, wget on Linux
+    if has_cmd curl; then
+        curl -fsSL -o "$tmp" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${platform_key}" || {
+            err "Failed to download yq"
+            rm -f "$tmp"
+            return 1
+        }
+    elif has_cmd wget; then
+        wget -qO "$tmp" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${platform_key}" || {
+            err "Failed to download yq"
+            rm -f "$tmp"
+            return 1
+        }
+    else
+        err "Neither curl nor wget found — cannot download yq"
         rm -f "$tmp"
         return 1
-    }
+    fi
 
     # Verify checksum if available for this platform
     if [[ -n "$expected_checksum" ]]; then
         local actual_checksum
-        actual_checksum=$(sha256sum "$tmp" | awk '{print $1}')
-        if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+        if has_cmd sha256sum; then
+            actual_checksum=$(sha256sum "$tmp" | awk '{print $1}')
+        elif has_cmd shasum; then
+            actual_checksum=$(shasum -a 256 "$tmp" | awk '{print $1}')
+        else
+            warn "No sha256 tool found — skipping checksum verification"
+            actual_checksum=""
+        fi
+        if [[ -n "$actual_checksum" && "$actual_checksum" != "$expected_checksum" ]]; then
             err "yq checksum verification failed!"
             err "  Expected: $expected_checksum"
             err "  Got:      $actual_checksum"
             rm -f "$tmp"
             return 1
         fi
-        ok "yq checksum verified"
+        [[ -n "$actual_checksum" ]] && ok "yq checksum verified"
     else
         warn "No checksum available for $platform_key — skipping verification"
     fi

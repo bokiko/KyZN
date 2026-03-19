@@ -317,6 +317,7 @@ extract_findings() {
 # ---------------------------------------------------------------------------
 display_findings() {
     local findings_file="$1"
+    local report_path="${2:-kyzn-report.md}"
     local count
     count=$(jq 'length' "$findings_file")
 
@@ -325,49 +326,112 @@ display_findings() {
         return
     fi
 
-    log_header "Analysis Findings ($count issues)"
+    # Terminal width (capped at 120)
+    local term_width
+    term_width=$(tput cols 2>/dev/null || echo 80)
+    (( term_width > 120 )) && term_width=120
 
+    # Column widths: 2 indent + 10 ID + 2 gap + title (adaptive) + 2 gap + 30 file
+    local id_col=10
+    local file_col=30
+    local gap=2
+    local indent=4
+    local title_col=$(( term_width - indent - id_col - gap - file_col - gap ))
+    (( title_col < 20 )) && title_col=20
+
+    # Severity counts
     local critical high medium low
     critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
     high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
     medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
     low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
 
-    echo -e "  ${RED}CRITICAL: $critical${RESET}  ${YELLOW}HIGH: $high${RESET}  ${CYAN}MEDIUM: $medium${RESET}  ${DIM}LOW: $low${RESET}"
+    echo ""
+    echo -e "  ${BOLD}Analysis Findings${RESET} — $count issues"
     echo ""
 
-    local i=0
-    while (( i < count )); do
-        local id severity category title file line description fix effort
-        id=$(jq -r ".[$i].id // \"F-$((i+1))\"" "$findings_file")
-        severity=$(jq -r ".[$i].severity // \"MEDIUM\"" "$findings_file")
-        category=$(jq -r ".[$i].category // \"unknown\"" "$findings_file")
-        title=$(jq -r ".[$i].title // \"Untitled\"" "$findings_file")
-        file=$(jq -r ".[$i].file // \"unknown\"" "$findings_file")
-        line=$(jq -r ".[$i].line // \"?\"" "$findings_file")
-        description=$(jq -r ".[$i].description // \"\"" "$findings_file")
-        fix=$(jq -r ".[$i].fix // \"\"" "$findings_file")
-        effort=$(jq -r ".[$i].effort // \"unknown\"" "$findings_file")
+    # Summary dots — dim zero counts
+    local dots=""
+    if (( critical > 0 )); then dots+="${RED}● $critical critical${RESET}   "; else dots+="${DIM}● 0 critical${RESET}   "; fi
+    if (( high > 0 )); then dots+="${YELLOW}● $high high${RESET}   "; else dots+="${DIM}● 0 high${RESET}   "; fi
+    if (( medium > 0 )); then dots+="${CYAN}● $medium medium${RESET}   "; else dots+="${DIM}● 0 medium${RESET}   "; fi
+    if (( low > 0 )); then dots+="${DIM}● $low low${RESET}"; else dots+="${DIM}● 0 low${RESET}"; fi
+    echo -e "  $dots"
 
-        local sev_color="$DIM"
-        case "$severity" in
-            CRITICAL) sev_color="$RED" ;;
-            HIGH)     sev_color="$YELLOW" ;;
-            MEDIUM)   sev_color="$CYAN" ;;
-        esac
+    # Helper: build horizontal rule to fill terminal width
+    _hr() {
+        local label="$1"
+        local color="$2"
+        local prefix="  ─── "
+        local suffix=" "
+        local label_len=${#label}
+        local fill_len=$(( term_width - 6 - label_len - 1 ))
+        (( fill_len < 4 )) && fill_len=4
+        local fill=""
+        for (( _i=0; _i<fill_len; _i++ )); do fill+="─"; done
+        echo -e "\n  ${color}───${RESET} ${color}${BOLD}${label}${RESET} ${color}${fill}${RESET}"
+    }
 
-        echo -e "  ${sev_color}[$severity]${RESET} ${BOLD}$id${RESET} — $title"
-        echo -e "  ${DIM}$file:$line | $category | effort: $effort${RESET}"
-        if [[ -n "$description" && "$description" != "null" ]]; then
-            echo -e "  $description"
+    # Helper: truncate string with ellipsis
+    _trunc() {
+        local str="$1"
+        local max="$2"
+        if (( ${#str} > max )); then
+            echo "${str:0:$((max-1))}…"
+        else
+            echo "$str"
         fi
-        if [[ -n "$fix" && "$fix" != "null" ]]; then
-            echo -e "  ${GREEN}Fix:${RESET} $fix"
-        fi
+    }
+
+    # Helper: shorten file path (strip common prefixes)
+    _short_file() {
+        local f="$1"
+        f="${f#./}"
+        f="${f#src/}"
+        echo "$f"
+    }
+
+    # Display each severity group
+    local severities=("CRITICAL" "HIGH" "MEDIUM" "LOW")
+    local sev_colors=("$RED" "$YELLOW" "$CYAN" "$DIM")
+    local sev_counts=("$critical" "$high" "$medium" "$low")
+
+    for si in 0 1 2 3; do
+        local sev="${severities[$si]}"
+        local sev_color="${sev_colors[$si]}"
+        local sev_count="${sev_counts[$si]}"
+
+        # Skip empty groups
+        (( sev_count == 0 )) && continue
+
+        _hr "$sev" "$sev_color"
         echo ""
 
-        ((i++))
+        # Get findings for this severity
+        local j=0
+        while (( j < sev_count )); do
+            local id title file
+            id=$(jq -r --arg s "$sev" '[.[] | select(.severity == $s)] | .['$j'].id // "?"' "$findings_file")
+            title=$(jq -r --arg s "$sev" '[.[] | select(.severity == $s)] | .['$j'].title // "Untitled"' "$findings_file")
+            file=$(jq -r --arg s "$sev" '[.[] | select(.severity == $s)] | .['$j'].file // ""' "$findings_file")
+
+            local short_id short_title short_file
+            short_id=$(printf "%-${id_col}s" "$id")
+            short_title=$(_trunc "$title" "$title_col")
+            short_file=$(_trunc "$(_short_file "$file")" "$file_col")
+
+            printf "    ${BOLD}%s${RESET}  %-${title_col}s  ${DIM}%s${RESET}\n" "$short_id" "$short_title" "$short_file"
+
+            ((j++))
+        done
     done
+
+    # Footer
+    local footer_hr=""
+    for (( _i=0; _i<term_width-2; _i++ )); do footer_hr+="─"; done
+    echo -e "\n  ${DIM}${footer_hr}${RESET}"
+    echo -e "  Full report: ${BOLD}$report_path${RESET}"
+    echo -e "  Paste into Claude:  ${CYAN}cat $report_path | claude${RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -790,15 +854,17 @@ cmd_analyze() {
     finding_count=$(jq 'length' "$findings_file")
     log_info "Final findings: $finding_count issues"
 
-    # Display findings summary
-    display_findings "$findings_file"
-
-    # Generate detailed markdown report
+    # Generate detailed markdown report (before display, so we can reference the path)
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    local report_basename
+    report_basename=$(basename "$report_file")
     generate_detailed_report "$findings_file" "$report_file" "$run_id" "$profile" "$total_cost" "$finding_count"
 
-    log_ok "Report saved to $report_file"
-    log_ok "Findings saved to $findings_file"
+    # Also copy to working directory for easy access
+    cp "$report_file" "kyzn-report.md" 2>/dev/null || true
+
+    # Display findings summary (with report path for Claude hint)
+    display_findings "$findings_file" "kyzn-report.md"
 
     # Export if requested
     if [[ -n "$export_path" ]]; then
@@ -826,7 +892,7 @@ cmd_analyze() {
         echo ""
         local fix_choice
         fix_choice=$(prompt_choice "What would you like to do?" \
-            "Export report only — review findings manually" \
+            "Done — read report or paste into Claude" \
             "Fix critical + high ($((critical + high)) issues)" \
             "Fix all ($finding_count issues)" \
             "Pick severity to fix")
@@ -834,8 +900,8 @@ cmd_analyze() {
         case "$fix_choice" in
             1)
                 echo ""
-                log_info "Report: $report_file"
-                log_info "Findings JSON: $findings_file"
+                log_ok "Full report: kyzn-report.md"
+                echo -e "  Paste into Claude:  ${CYAN}cat kyzn-report.md | claude${RESET}"
                 ;;
             2)
                 run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget"
@@ -943,6 +1009,56 @@ generate_detailed_report() {
         done
 
         echo "*Generated by [kyzn](https://github.com/bokiko/kyzn) — multi-agent analysis ($profile profile)*"
+        echo ""
+
+        # AI Fix Instructions section
+        if (( finding_count > 0 )); then
+            echo "## Fix Instructions"
+            echo ""
+            echo "Paste this entire report into Claude Code to fix the findings above."
+            echo ""
+            echo "### Findings to Fix (ordered by severity)"
+            echo ""
+            echo "| # | ID | Severity | File | Title |"
+            echo "|---|-----|----------|------|-------|"
+
+            # Build ranked table from findings sorted by severity
+            local fix_num=1
+            local sev_order
+            for sev_level in CRITICAL HIGH MEDIUM LOW; do
+                local sev_items
+                sev_items=$(jq --arg s "$sev_level" '[.[] | select(.severity == $s)]' "$findings_file")
+                local sev_len
+                sev_len=$(echo "$sev_items" | jq 'length')
+                local si=0
+                while (( si < sev_len )); do
+                    local fix_id fix_sev fix_file fix_line fix_title
+                    fix_id=$(echo "$sev_items" | jq -r ".[$si].id // \"?\"")
+                    fix_sev=$(echo "$sev_items" | jq -r ".[$si].severity // \"?\"")
+                    fix_file=$(echo "$sev_items" | jq -r ".[$si].file // \"?\"")
+                    fix_line=$(echo "$sev_items" | jq -r ".[$si].line // \"?\"")
+                    fix_title=$(echo "$sev_items" | jq -r ".[$si].title // \"?\"")
+                    echo "| $fix_num | $fix_id | $fix_sev | \`$fix_file:$fix_line\` | $fix_title |"
+                    ((fix_num++))
+                    ((si++))
+                done
+            done
+
+            echo ""
+            echo "### Rules for AI"
+            echo ""
+            echo "- Fix each issue in the order listed (highest severity first)"
+            echo "- Read the file before making changes — verify you're editing the right code"
+            echo "- After each fix, ensure the code still compiles/passes tests"
+            echo "- If a fix is too risky or you're not confident, skip it and explain why"
+            echo "- Do NOT make changes beyond what's listed — no drive-by refactoring"
+            echo "- Refer to the detailed finding sections above for full context and suggested fixes"
+            echo ""
+            echo "### Output Format"
+            echo ""
+            echo "After fixing, summarize:"
+            echo "- Finding ID → what you changed → file and line"
+        fi
     } > "$report_file"
 }
 
