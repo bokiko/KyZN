@@ -36,22 +36,22 @@ cmd_approve() {
     local history_file="$KYZN_HISTORY_DIR/$run_id.json"
     if [[ -f "$history_file" ]]; then
         local updated
-        updated=$(jq '.status = "approved" | .approved_at = "'"$(timestamp)"'"' "$history_file")
+        updated=$(jq --arg ts "$(timestamp)" --arg proj "$(project_name)" \
+            '.status = "approved" | .approved_at = $ts | .project = $proj' "$history_file")
         echo "$updated" > "$history_file"
     else
         # Create history entry (use jq to avoid JSON injection from run_id)
         jq -n \
             --arg id "$run_id" \
             --arg ts "$(timestamp)" \
-            '{"run_id":$id,"status":"approved","approved_at":$ts,"created_at":$ts}' \
+            --arg proj "$(project_name)" \
+            '{"run_id":$id,"status":"approved","approved_at":$ts,"created_at":$ts,"project":$proj}' \
             > "$history_file"
     fi
 
-    # Also save to global history
+    # Also save to global history (use run_id.json for new entries)
     mkdir -p "$KYZN_GLOBAL_HISTORY"
-    local project
-    project=$(project_name)
-    cp "$history_file" "$KYZN_GLOBAL_HISTORY/${project}-${run_id}.json"
+    cp "$history_file" "$KYZN_GLOBAL_HISTORY/$run_id.json"
 
     log_ok "Run $run_id approved!"
     log_info "The improvements are part of the project now."
@@ -84,22 +84,22 @@ cmd_reject() {
     local history_file="$KYZN_HISTORY_DIR/$run_id.json"
     if [[ -f "$history_file" ]]; then
         local updated
-        updated=$(jq --arg r "$reason" '.status = "rejected" | .rejected_at = "'"$(timestamp)"'" | .rejection_reason = $r' "$history_file")
+        updated=$(jq --arg r "$reason" --arg ts "$(timestamp)" --arg proj "$(project_name)" \
+            '.status = "rejected" | .rejected_at = $ts | .rejection_reason = $r | .project = $proj' "$history_file")
         echo "$updated" > "$history_file"
     else
         jq -n \
             --arg id "$run_id" \
             --arg reason "$reason" \
             --arg ts "$(timestamp)" \
-            '{"run_id":$id,"status":"rejected","rejected_at":$ts,"rejection_reason":$reason,"created_at":$ts}' \
+            --arg proj "$(project_name)" \
+            '{"run_id":$id,"status":"rejected","rejected_at":$ts,"rejection_reason":$reason,"created_at":$ts,"project":$proj}' \
             > "$history_file"
     fi
 
-    # Save to global history
+    # Save to global history (use run_id.json for new entries)
     mkdir -p "$KYZN_GLOBAL_HISTORY"
-    local project
-    project=$(project_name)
-    cp "$history_file" "$KYZN_GLOBAL_HISTORY/${project}-${run_id}.json"
+    cp "$history_file" "$KYZN_GLOBAL_HISTORY/$run_id.json"
 
     log_ok "Run $run_id rejected."
     if [[ -n "$reason" ]]; then

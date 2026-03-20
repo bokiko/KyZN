@@ -593,6 +593,10 @@ cmd_analyze() {
     run_id=$(generate_run_id)
     ensure_kyzn_dirs
 
+    # Write initial "running" history entry
+    declare -A _hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
+    write_history "$run_id" "analyze" "running" _hist
+
     local measurements_json
     measurements_json=$(cat "$measurements_file" 2>/dev/null || echo '[]')
 
@@ -834,6 +838,10 @@ cmd_analyze() {
     local finding_count
     finding_count=$(jq 'length' "$findings_file")
     log_info "Final findings: $finding_count issues"
+
+    # Write completed history entry
+    declare -A _hist_done=([finding_count]="$finding_count" [health_score]="${KYZN_HEALTH_SCORE:-0}")
+    write_history "$run_id" "analyze" "completed" _hist_done
 
     # Generate detailed markdown report (before display, so we can reference the path)
     ensure_kyzn_dirs

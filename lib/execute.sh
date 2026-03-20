@@ -308,6 +308,18 @@ cmd_improve() {
 
     # Cleanup function — handles Ctrl+C, errors, and normal exit
     _kyzn_cleanup() {
+        # Mark run as failed if still running
+        if [[ -n "${run_id:-}" ]]; then
+            local _hist_file="$KYZN_HISTORY_DIR/$run_id.json"
+            if [[ -f "$_hist_file" ]]; then
+                local _cur_status
+                _cur_status=$(jq -r '.status // ""' "$_hist_file" 2>/dev/null) || true
+                if [[ "$_cur_status" == "running" ]]; then
+                    declare -A _cleanup_hist=([focus]="${focus:-}")
+                    write_history "$run_id" "improve" "failed" _cleanup_hist 2>/dev/null || true
+                fi
+            fi
+        fi
         [[ -d "${baseline_dir:-}" ]] && rm -rf "$baseline_dir" 2>/dev/null
         [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null
         [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
@@ -319,6 +331,14 @@ cmd_improve() {
 
     run_measurements "$KYZN_PROJECT_TYPE" "$baseline_dir"
     local baseline_file="$KYZN_MEASUREMENTS_FILE"
+
+    # Compute baseline score for history
+    compute_health_score "$baseline_file"
+    local _baseline_health="${KYZN_HEALTH_SCORE:-0}"
+
+    # Write initial "running" history entry
+    declare -A _hist=([health_before]="$_baseline_health" [focus]="$focus")
+    write_history "$run_id" "improve" "running" _hist
 
     display_health_dashboard "$baseline_file"
 
@@ -371,6 +391,8 @@ cmd_improve() {
     # Step 4: Execute Claude
     execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
         log_error "Claude execution failed"
+        declare -A _hist_fail=([health_before]="$_baseline_health" [focus]="$focus")
+        write_history "$run_id" "improve" "failed" _hist_fail
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         return 1
@@ -496,6 +518,10 @@ cmd_improve() {
     rm -rf "$baseline_dir" "$after_dir" 2>/dev/null
     # Clean up combined system prompt if it was a temp file
     [[ "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+
+    # Write completed history entry with scores
+    declare -A _hist_done=([health_before]="$baseline_score" [health_after]="$after_score" [focus]="$focus")
+    write_history "$run_id" "improve" "completed" _hist_done
 
     log_ok "Improvement cycle complete!"
     log_info "Run 'kyzn approve $run_id' to sign off, or 'kyzn reject $run_id' to discard."

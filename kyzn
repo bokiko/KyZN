@@ -56,6 +56,7 @@ Commands:
   reject <id>     Reject with reason
   diff <id>       Show what a run changed
   history         Show all runs with scores and trends
+  dashboard       Machine-wide activity summary (all projects)
 
   schedule        Set up recurring runs (cron)
   selftest        Run the test suite
@@ -202,6 +203,11 @@ main() {
             shift
             source "$KYZN_ROOT/lib/history.sh"
             cmd_history "$@"
+            ;;
+        dashboard)
+            shift
+            source "$KYZN_ROOT/lib/history.sh"
+            cmd_dashboard "$@"
             ;;
         schedule)
             shift

@@ -1182,6 +1182,194 @@ test_reject_no_learn_message() {
 }
 
 # ---------------------------------------------------------------------------
+# Dashboard & write_history tests
+# ---------------------------------------------------------------------------
+
+test_relative_time() {
+    log_header "44. relative_time() formatting"
+
+    source "$KYZN_ROOT/lib/history.sh"
+
+    # "just now" — current timestamp
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local result
+    result=$(relative_time "$now")
+    assert_eq "current time → just now" "just now" "$result"
+
+    # "Xm ago" — 5 minutes ago
+    local five_min_ago
+    five_min_ago=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || {
+        skip "relative_time minutes" "BSD date not supported in test"
+        return
+    }
+    result=$(relative_time "$five_min_ago")
+    assert_eq "5 min ago" "5m ago" "$result"
+
+    # "Xh ago" — 2 hours ago
+    local two_hours_ago
+    two_hours_ago=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+    result=$(relative_time "$two_hours_ago")
+    assert_eq "2 hours ago" "2h ago" "$result"
+
+    # "Xd ago" — 3 days ago
+    local three_days_ago
+    three_days_ago=$(date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)
+    result=$(relative_time "$three_days_ago")
+    assert_eq "3 days ago" "3d ago" "$result"
+
+    # Empty/null
+    result=$(relative_time "")
+    assert_eq "empty → dash" "-" "$result"
+    result=$(relative_time "null")
+    assert_eq "null → dash" "-" "$result"
+}
+
+test_write_history() {
+    log_header "45. write_history() dual-write"
+
+    create_sandbox generic
+
+    # write_history writes to both local and global
+    declare -A _test_hist=([health_before]="42" [focus]="testing")
+    write_history "test-run-001" "improve" "running" _test_hist
+
+    # Check local file exists
+    assert_file_exists "local history file" "$KYZN_HISTORY_DIR/test-run-001.json"
+
+    # Check global file exists
+    assert_file_exists "global history file" "$KYZN_GLOBAL_HISTORY/test-run-001.json"
+
+    # Check JSON fields
+    local json
+    json=$(cat "$KYZN_HISTORY_DIR/test-run-001.json")
+    local id type status project hb focus
+    id=$(echo "$json" | jq -r '.id')
+    type=$(echo "$json" | jq -r '.type')
+    status=$(echo "$json" | jq -r '.status')
+    project=$(echo "$json" | jq -r '.project')
+    hb=$(echo "$json" | jq -r '.health_before')
+    focus=$(echo "$json" | jq -r '.focus')
+
+    assert_eq "run_id field" "test-run-001" "$id"
+    assert_eq "type field" "improve" "$type"
+    assert_eq "status field" "running" "$status"
+    assert_eq "health_before field" "42" "$hb"
+    assert_eq "focus field" "testing" "$focus"
+
+    # Empty fields should be filtered out
+    declare -A _test_hist2=([health_before]="" [focus]="quality")
+    write_history "test-run-002" "improve" "completed" _test_hist2
+
+    local has_hb
+    has_hb=$(jq 'has("health_before")' "$KYZN_HISTORY_DIR/test-run-002.json")
+    assert_eq "empty health_before filtered" "false" "$has_hb"
+
+    # Clean up global files
+    rm -f "$KYZN_GLOBAL_HISTORY/test-run-001.json" "$KYZN_GLOBAL_HISTORY/test-run-002.json" 2>/dev/null
+
+    cleanup_sandbox
+}
+
+test_dashboard() {
+    log_header "46. dashboard shows project entries"
+
+    source "$KYZN_ROOT/lib/history.sh"
+
+    # Create fake global history entries
+    local global_dir="$KYZN_GLOBAL_HISTORY"
+    mkdir -p "$global_dir"
+
+    # Project 1: improve completed
+    jq -n --arg proj "CMS" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id:"run1",type:"improve",status:"completed",project:$proj,ts:$ts,health_before:"65",health_after:"72"}' \
+        > "$global_dir/test-dash-001.json"
+
+    # Project 2: analyze completed
+    jq -n --arg proj "InContext" --arg ts "$(date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id:"run2",type:"analyze",status:"completed",project:$proj,ts:$ts,finding_count:"8"}' \
+        > "$global_dir/test-dash-002.json"
+
+    # Project 3: measure completed
+    jq -n --arg proj "takamul" --arg ts "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id:"run3",type:"measure",status:"completed",project:$proj,ts:$ts,health_score:"71"}' \
+        > "$global_dir/test-dash-003.json"
+
+    # Run dashboard in a subshell to isolate from parent set -e
+    local output
+    output=$(KYZN_VERSION="0.4.0" bash -c '
+        source "'"$KYZN_ROOT"'/lib/core.sh"
+        source "'"$KYZN_ROOT"'/lib/history.sh"
+        cmd_dashboard
+    ' 2>&1) || true
+
+    assert_contains "shows CMS" "$output" "CMS"
+    assert_contains "shows InContext" "$output" "InContext"
+    assert_contains "shows takamul" "$output" "takamul"
+    assert_contains "shows improve type" "$output" "improve"
+    assert_contains "shows analyze type" "$output" "analyze"
+    assert_contains "shows measure type" "$output" "measure"
+
+    # Clean up
+    rm -f "$global_dir/test-dash-001.json" "$global_dir/test-dash-002.json" "$global_dir/test-dash-003.json"
+}
+
+test_dashboard_corrupt() {
+    log_header "47. dashboard handles corrupt/empty files"
+
+    local global_dir="$KYZN_GLOBAL_HISTORY"
+    mkdir -p "$global_dir"
+
+    # Create a 0-byte file
+    : > "$global_dir/test-corrupt-001.json"
+
+    # Create a valid entry alongside it
+    jq -n --arg proj "ValidProject" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id:"run-valid",type:"measure",status:"completed",project:$proj,ts:$ts,health_score:"80"}' \
+        > "$global_dir/test-corrupt-002.json"
+
+    local output
+    local exit_code=0
+    output=$(KYZN_VERSION="0.4.0" bash -c '
+        source "'"$KYZN_ROOT"'/lib/core.sh"
+        source "'"$KYZN_ROOT"'/lib/history.sh"
+        cmd_dashboard
+    ' 2>&1) || exit_code=$?
+
+    if (( exit_code == 0 )); then
+        pass "dashboard doesn't crash with corrupt file"
+    else
+        fail "dashboard crash" "exit code $exit_code with corrupt file"
+    fi
+
+    # Clean up
+    rm -f "$global_dir/test-corrupt-001.json" "$global_dir/test-corrupt-002.json"
+}
+
+test_dashboard_hyphenated_project() {
+    log_header "48. dashboard handles hyphenated project names"
+
+    local global_dir="$KYZN_GLOBAL_HISTORY"
+    mkdir -p "$global_dir"
+
+    jq -n --arg proj "my-cool-app" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id:"run-hyph",type:"measure",status:"completed",project:$proj,ts:$ts,health_score:"55"}' \
+        > "$global_dir/test-hyph-001.json"
+
+    local output
+    output=$(KYZN_VERSION="0.4.0" bash -c '
+        source "'"$KYZN_ROOT"'/lib/core.sh"
+        source "'"$KYZN_ROOT"'/lib/history.sh"
+        cmd_dashboard
+    ' 2>&1) || true
+
+    assert_contains "shows hyphenated project" "$output" "my-cool-app"
+
+    # Clean up
+    rm -f "$global_dir/test-hyph-001.json"
+}
+
+# ---------------------------------------------------------------------------
 # Stress tests (--full or --stress only)
 # ---------------------------------------------------------------------------
 
@@ -1350,6 +1538,11 @@ main() {
     test_generate_fix_prompt
     test_analyze_wired_in_kyzn
     test_reject_no_learn_message
+    test_relative_time
+    test_write_history
+    test_dashboard
+    test_dashboard_corrupt
+    test_dashboard_hyphenated_project
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

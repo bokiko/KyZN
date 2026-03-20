@@ -222,6 +222,39 @@ timestamp() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+# ---------------------------------------------------------------------------
+# Write history entry (dual-write: local + global)
+# ---------------------------------------------------------------------------
+write_history() {
+    local run_id="$1" type="$2" status="$3"
+    local _extra_name="${4:-}"
+
+    ensure_kyzn_dirs
+    local _wh_project
+    _wh_project=$(project_name 2>/dev/null || echo "unknown")
+
+    # Build jq args from optional associative array
+    local jq_args=()
+    jq_args+=(--arg id "$run_id" --arg type "$type" --arg status "$status")
+    jq_args+=(--arg project "$_wh_project" --arg ts "$(timestamp)")
+
+    if [[ -n "$_extra_name" ]]; then
+        local -n _wh_fields="$_extra_name"
+        for key in "${!_wh_fields[@]}"; do
+            jq_args+=(--arg "$key" "${_wh_fields[$key]}")
+        done
+    fi
+
+    local json
+    json=$(jq -n "${jq_args[@]}" '$ARGS.named | with_entries(select(.value != ""))') || return 0
+
+    # Write to local project history
+    echo "$json" > "$KYZN_HISTORY_DIR/$run_id.json" 2>/dev/null || true
+
+    # Write to global history
+    echo "$json" > "$KYZN_GLOBAL_HISTORY/$run_id.json" 2>/dev/null || true
+}
+
 # Truncate string to N chars
 truncate_str() {
     local str="$1"

@@ -235,4 +235,9 @@ cmd_measure() {
         echo -e "  Run ${CYAN}kyzn improve --focus $weakest${RESET} to improve it."
         echo -e "  Run ${CYAN}kyzn analyze${RESET} for a deep multi-agent code review."
     fi
+
+    # Write history entry for measure
+    ensure_kyzn_dirs
+    declare -A _hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
+    write_history "measure-$(date +%Y%m%d-%H%M%S)" "measure" "completed" _hist
 }
