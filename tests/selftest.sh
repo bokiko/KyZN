@@ -1244,7 +1244,7 @@ test_write_history() {
     local json
     json=$(cat "$KYZN_HISTORY_DIR/test-run-001.json")
     local id type status project hb focus
-    id=$(echo "$json" | jq -r '.id')
+    id=$(echo "$json" | jq -r '.run_id')
     type=$(echo "$json" | jq -r '.type')
     status=$(echo "$json" | jq -r '.status')
     project=$(echo "$json" | jq -r '.project')

@@ -235,7 +235,7 @@ write_history() {
 
     # Build jq args from optional associative array
     local jq_args=()
-    jq_args+=(--arg id "$run_id" --arg type "$type" --arg status "$status")
+    jq_args+=(--arg run_id "$run_id" --arg type "$type" --arg status "$status")
     jq_args+=(--arg project "$_wh_project" --arg ts "$(timestamp)")
 
     if [[ -n "$_extra_name" ]]; then
