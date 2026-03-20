@@ -62,6 +62,9 @@ large_files=0
 if command -v find &>/dev/null; then
     large_files=$(find . -not -path './.git/*' -not -path './node_modules/*' \
         -not -path './.venv/*' -not -path './target/*' -not -path './vendor/*' \
+        -not -path './.next/*' -not -path './dist/*' -not -path './build/*' \
+        -not -path './__pycache__/*' -not -path './.cache/*' -not -path './.tox/*' \
+        -not -path './.pytest_cache/*' -not -path './coverage/*' \
         -type f -size +1M 2>/dev/null | wc -l) || true
 fi
 
