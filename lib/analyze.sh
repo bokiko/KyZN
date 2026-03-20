@@ -329,7 +329,7 @@ display_findings() {
     # Terminal width (capped at 120)
     local term_width
     term_width=$(tput cols 2>/dev/null || echo 80)
-    (( term_width > 120 )) && term_width=120
+    if (( term_width > 120 )); then term_width=120; fi
 
     # Column widths: 2 indent + 10 ID + 2 gap + title (adaptive) + 2 gap + 30 file
     local id_col=10
@@ -337,7 +337,7 @@ display_findings() {
     local gap=2
     local indent=4
     local title_col=$(( term_width - indent - id_col - gap - file_col - gap ))
-    (( title_col < 20 )) && title_col=20
+    if (( title_col < 20 )); then title_col=20; fi
 
     # Severity counts
     local critical high medium low
@@ -678,7 +678,7 @@ cmd_analyze() {
 
         # Helper: get/set status for a specialist
         _get_status() { eval "echo \$_status_$1"; }
-        _set_status() { eval "_status_$1=$2"; }
+        _set_status() { printf -v "_status_$1" '%s' "$2"; }
 
         for spec in "${specialists[@]}"; do
             local spec_prompt
@@ -753,7 +753,7 @@ cmd_analyze() {
             # Move up, clear, print both lines
             echo -en "\033[2K\r${status_line}\n\033[2K\r${hint_line}\033[1A"
 
-            (( completed_count < ${#specialists[@]} )) && sleep 0.5
+            if (( completed_count < ${#specialists[@]} )); then sleep 0.5; fi
         done
         # Clear the hint line and move past it
         echo -en "\n\033[2K\r"
@@ -943,10 +943,10 @@ generate_detailed_report() {
         echo ""
         echo "| Severity | Count |"
         echo "|----------|-------|"
-        (( critical > 0 )) && echo "| CRITICAL | $critical |"
-        (( high > 0 )) && echo "| HIGH | $high |"
-        (( medium > 0 )) && echo "| MEDIUM | $medium |"
-        (( low > 0 )) && echo "| LOW | $low |"
+        if (( critical > 0 )); then echo "| CRITICAL | $critical |"; fi
+        if (( high > 0 )); then echo "| HIGH | $high |"; fi
+        if (( medium > 0 )); then echo "| MEDIUM | $medium |"; fi
+        if (( low > 0 )); then echo "| LOW | $low |"; fi
         echo ""
 
         # Group findings by category
@@ -1011,7 +1011,6 @@ generate_detailed_report() {
 
             # Build ranked table from findings sorted by severity
             local fix_num=1
-            local sev_order
             for sev_level in CRITICAL HIGH MEDIUM LOW; do
                 local sev_items
                 sev_items=$(jq --arg s "$sev_level" '[.[] | select(.severity == $s)]' "$findings_file")

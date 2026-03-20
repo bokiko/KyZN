@@ -181,7 +181,7 @@ prompt_choice() {
     local i=1
     for opt in "${options[@]}"; do
         echo -e "  ${CYAN}$i)${RESET} $opt" >&2
-        ((i++))
+        ((i++)) || true
     done
     echo -en "\n${BOLD}Choice${RESET} [1]: " >&2
 

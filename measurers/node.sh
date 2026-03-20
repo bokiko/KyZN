@@ -22,7 +22,7 @@ if command -v npm &>/dev/null && [[ -f "package-lock.json" ]]; then
         (( sec_score -= high * 15 )) || true
         (( sec_score -= moderate * 5 )) || true
         (( sec_score -= low * 1 )) || true
-        (( sec_score < 0 )) && sec_score=0
+        if (( sec_score < 0 )); then sec_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$sec_score" \
             --argjson c "$critical" --argjson h "$high" --argjson m "$moderate" \
@@ -58,7 +58,7 @@ if command -v npx &>/dev/null; then
         lint_score=100
         (( lint_score -= error_count * 5 )) || true
         (( lint_score -= warning_count * 1 )) || true
-        (( lint_score < 0 )) && lint_score=0
+        if (( lint_score < 0 )); then lint_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$lint_score" \
             --argjson e "$error_count" --argjson w "$warning_count" \
@@ -82,7 +82,7 @@ if command -v npx &>/dev/null && [[ -f "tsconfig.json" ]]; then
 
     ts_score=100
     (( ts_score -= tsc_errors * 3 )) || true
-    (( ts_score < 0 )) && ts_score=0
+    if (( ts_score < 0 )); then ts_score=0; fi
 
     results=$(echo "$results" | jq --argjson s "$ts_score" --argjson e "$tsc_errors" \
         '. + [{
@@ -134,7 +134,7 @@ if command -v npm &>/dev/null && [[ -f "package.json" ]]; then
 
         dep_score=100
         (( dep_score -= major_outdated * 3 )) || true
-        (( dep_score < 0 )) && dep_score=0
+        if (( dep_score < 0 )); then dep_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$dep_score" --argjson c "$outdated_count" \
             '. + [{

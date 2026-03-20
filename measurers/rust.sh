@@ -17,7 +17,7 @@ if command -v cargo &>/dev/null; then
         lint_score=100
         lint_score=$(( lint_score - error_count * 10 ))
         lint_score=$(( lint_score - warning_count * 2 ))
-        (( lint_score < 0 )) && lint_score=0
+        if (( lint_score < 0 )); then lint_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$lint_score" \
             --argjson e "$error_count" --argjson w "$warning_count" \
@@ -43,7 +43,7 @@ if command -v cargo-audit &>/dev/null || cargo audit --version &>/dev/null 2>&1;
 
         sec_score=100
         sec_score=$(( sec_score - vuln_count * 20 ))
-        (( sec_score < 0 )) && sec_score=0
+        if (( sec_score < 0 )); then sec_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$sec_score" --argjson v "$vuln_count" \
             '. + [{
@@ -68,7 +68,7 @@ if command -v cargo &>/dev/null; then
     if (( src_files > 0 )); then
         test_ratio=$(( (test_files * 100) / src_files ))
     fi
-    (( test_ratio > 100 )) && test_ratio=100
+    if (( test_ratio > 100 )); then test_ratio=100; fi
 
     results=$(echo "$results" | jq --argjson s "$test_ratio" \
         --argjson tf "$test_files" --argjson sf "$src_files" \

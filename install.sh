@@ -343,7 +343,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Step 3: Install kyzn
 # ---------------------------------------------------------------------------
-echo -e "${BOLD}Step 3: Installing kyzn${RESET}"
+echo -e "${BOLD}Step 3: Installing KyZN${RESET}"
 echo ""
 
 if $FROM_REPO; then

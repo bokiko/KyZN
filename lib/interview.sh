@@ -10,7 +10,7 @@ run_interview() {
     # Step 1: What to improve
     local approach
     approach=$(prompt_choice "What do you want to improve?" \
-        "Everything (let kyzn decide based on measurements)" \
+        "Everything (let KyZN decide based on measurements)" \
         "I have specific goals")
 
     local -a priorities=()
@@ -41,7 +41,7 @@ run_interview() {
 
     # Step 4: Build failure behavior
     local on_fail
-    on_fail=$(prompt_choice "If the build breaks after improvements, what should kyzn do?" \
+    on_fail=$(prompt_choice "If the build breaks after improvements, what should KyZN do?" \
         "Write a report explaining what happened (recommended)" \
         "Silently discard the branch" \
         "Create a draft PR so you can see what was attempted")
@@ -73,7 +73,7 @@ run_interview() {
 # Specific goals interview branch
 # ---------------------------------------------------------------------------
 interview_specific_goals() {
-    local _var_priorities=$1
+    local -n _ref_priorities=$1
 
     local area
     area=$(prompt_choice "Which area do you want to focus on?" \
@@ -85,20 +85,20 @@ interview_specific_goals() {
         "Multiple areas")
 
     case "$area" in
-        1) eval "$_var_priorities+=(\"security\")"
-           interview_security_depth "$_var_priorities"
+        1) _ref_priorities+=("security")
+           interview_security_depth "$1"
            ;;
-        2) eval "$_var_priorities+=(\"testing\")"
-           interview_testing_depth "$_var_priorities"
+        2) _ref_priorities+=("testing")
+           interview_testing_depth "$1"
            ;;
-        3) eval "$_var_priorities+=(\"performance\")"
-           interview_performance_depth "$_var_priorities"
+        3) _ref_priorities+=("performance")
+           interview_performance_depth "$1"
            ;;
-        4) eval "$_var_priorities+=(\"quality\")"
+        4) _ref_priorities+=("quality")
            ;;
-        5) eval "$_var_priorities+=(\"documentation\")"
+        5) _ref_priorities+=("documentation")
            ;;
-        6) interview_multiple_areas "$_var_priorities"
+        6) interview_multiple_areas "$1"
            ;;
     esac
 }
@@ -107,7 +107,7 @@ interview_specific_goals() {
 # Sub-interview: security depth
 # ---------------------------------------------------------------------------
 interview_security_depth() {
-    local _var_pri=$1
+    local -n _ref_pri=$1
 
     local depth
     depth=$(prompt_choice "Security focus?" \
@@ -117,9 +117,9 @@ interview_security_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) eval "$_var_pri+=(\"security-deps\")" ;;
-        2) eval "$_var_pri+=(\"security-code\")" ;;
-        3) eval "$_var_pri+=(\"security-deps\" \"security-code\")" ;;
+        1) _ref_pri+=("security-deps") ;;
+        2) _ref_pri+=("security-code") ;;
+        3) _ref_pri+=("security-deps" "security-code") ;;
         4) ;; # already has "security"
     esac
 }
@@ -128,7 +128,7 @@ interview_security_depth() {
 # Sub-interview: testing depth
 # ---------------------------------------------------------------------------
 interview_testing_depth() {
-    local _var_pri=$1
+    local -n _ref_pri=$1
 
     local depth
     depth=$(prompt_choice "Testing focus?" \
@@ -138,9 +138,9 @@ interview_testing_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) eval "$_var_pri+=(\"testing-coverage\")" ;;
-        2) eval "$_var_pri+=(\"testing-flaky\")" ;;
-        3) eval "$_var_pri+=(\"testing-integration\")" ;;
+        1) _ref_pri+=("testing-coverage") ;;
+        2) _ref_pri+=("testing-flaky") ;;
+        3) _ref_pri+=("testing-integration") ;;
         4) ;; # already has "testing"
     esac
 }
@@ -149,7 +149,7 @@ interview_testing_depth() {
 # Sub-interview: performance depth
 # ---------------------------------------------------------------------------
 interview_performance_depth() {
-    local _var_pri=$1
+    local -n _ref_pri=$1
 
     local depth
     depth=$(prompt_choice "Performance focus?" \
@@ -159,9 +159,9 @@ interview_performance_depth() {
         "Let Claude decide")
 
     case "$depth" in
-        1) eval "$_var_pri+=(\"perf-bundle\")" ;;
-        2) eval "$_var_pri+=(\"perf-hotpath\")" ;;
-        3) eval "$_var_pri+=(\"perf-memory\")" ;;
+        1) _ref_pri+=("perf-bundle") ;;
+        2) _ref_pri+=("perf-hotpath") ;;
+        3) _ref_pri+=("perf-memory") ;;
         4) ;; # already has "performance"
     esac
 }
@@ -170,7 +170,7 @@ interview_performance_depth() {
 # Sub-interview: multiple areas
 # ---------------------------------------------------------------------------
 interview_multiple_areas() {
-    local _var_pri=$1
+    local -n _ref_pri=$1
 
     echo -e "\n${BOLD}Select all that apply (space-separated numbers):${RESET}" >&2
     echo -e "  ${CYAN}1)${RESET} Security" >&2
@@ -183,14 +183,15 @@ interview_multiple_areas() {
     local choices
     read -r choices
     choices="${choices:-1 2 3}"
+    choices="${choices//[^0-9 ]/}"
 
     for c in $choices; do
         case "$c" in
-            1) eval "$_var_pri+=(\"security\")" ;;
-            2) eval "$_var_pri+=(\"testing\")" ;;
-            3) eval "$_var_pri+=(\"performance\")" ;;
-            4) eval "$_var_pri+=(\"quality\")" ;;
-            5) eval "$_var_pri+=(\"documentation\")" ;;
+            1) _ref_pri+=("security") ;;
+            2) _ref_pri+=("testing") ;;
+            3) _ref_pri+=("performance") ;;
+            4) _ref_pri+=("quality") ;;
+            5) _ref_pri+=("documentation") ;;
         esac
     done
 }

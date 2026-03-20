@@ -18,7 +18,7 @@ if command -v ruff &>/dev/null; then
         lint_score=100
         (( lint_score -= error_count * 3 )) || true
         (( lint_score -= fixable_count * 1 )) || true
-        (( lint_score < 0 )) && lint_score=0
+        if (( lint_score < 0 )); then lint_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$lint_score" \
             --argjson e "$error_count" --argjson f "$fixable_count" --argjson t "$total_issues" \
@@ -42,7 +42,7 @@ if command -v mypy &>/dev/null; then
 
     type_score=100
     (( type_score -= mypy_errors * 3 )) || true
-    (( type_score < 0 )) && type_score=0
+    if (( type_score < 0 )); then type_score=0; fi
 
     results=$(echo "$results" | jq --argjson s "$type_score" --argjson e "$mypy_errors" \
         '. + [{
@@ -89,7 +89,7 @@ if command -v pytest &>/dev/null; then
 
     # Score: test file ratio (rough proxy for test coverage)
     test_score=$test_ratio
-    (( test_score > 100 )) && test_score=100
+    if (( test_score > 100 )); then test_score=100; fi
 
     results=$(echo "$results" | jq --argjson s "$test_score" \
         --argjson tf "$test_files" --argjson sf "$src_files" --argjson r "$test_ratio" \
@@ -114,7 +114,7 @@ if command -v pip-audit &>/dev/null; then
 
         sec_score=100
         (( sec_score -= vuln_count * 15 )) || true
-        (( sec_score < 0 )) && sec_score=0
+        if (( sec_score < 0 )); then sec_score=0; fi
 
         results=$(echo "$results" | jq --argjson s "$sec_score" --argjson v "$vuln_count" \
             '. + [{

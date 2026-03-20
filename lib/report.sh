@@ -132,8 +132,9 @@ generate_category_comparison() {
             local av="${after_val%.*}"; av="${av:-0}"
             local d=$(( av - bv ))
             local t="→"
-            (( d > 0 )) && t="↑ +$d"
-            (( d < 0 )) && t="↓ $d"
+            if (( d > 0 )); then t="↑ +$d"
+            elif (( d < 0 )); then t="↓ $d"
+            fi
             echo "| $cat | $before_val | $after_val | $t |"
         elif [[ "$before_val" != "-" ]]; then
             echo "| $cat | $before_val | - | - |"
@@ -154,8 +155,9 @@ generate_pr_body() {
     local diff_stat="$7"
 
     local trend="→"
-    (( delta > 0 )) && trend="↑"
-    (( delta < 0 )) && trend="↓"
+    if (( delta > 0 )); then trend="↑"
+    elif (( delta < 0 )); then trend="↓"
+    fi
 
     cat <<EOF
 ## KyZN Improvement Report

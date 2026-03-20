@@ -19,7 +19,7 @@ fi
 todo_score=100
 if (( todo_count > 0 )); then
     todo_score=$(( 100 - (todo_count * 2) ))
-    (( todo_score < 0 )) && todo_score=0
+    if (( todo_score < 0 )); then todo_score=0; fi
 fi
 
 results=$(echo "$results" | jq --argjson s "$todo_score" --argjson c "$todo_count" \
@@ -40,9 +40,9 @@ if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null
     unpushed=$(git log --oneline '@{u}..HEAD' 2>/dev/null | wc -l) || true
 
     git_score=100
-    (( dirty_files > 10 )) && git_score=$(( git_score - 20 ))
-    (( dirty_files > 0 )) && git_score=$(( git_score - 10 ))
-    (( unpushed > 5 )) && git_score=$(( git_score - 20 ))
+    if (( dirty_files > 10 )); then git_score=$(( git_score - 20 )); fi
+    if (( dirty_files > 0 )); then git_score=$(( git_score - 10 )); fi
+    if (( unpushed > 5 )); then git_score=$(( git_score - 20 )); fi
 
     results=$(echo "$results" | jq --argjson s "$git_score" --argjson d "$dirty_files" --argjson u "$unpushed" \
         '. + [{
@@ -66,8 +66,8 @@ if command -v find &>/dev/null; then
 fi
 
 large_score=100
-(( large_files > 0 )) && large_score=$(( 100 - (large_files * 10) ))
-(( large_score < 0 )) && large_score=0
+if (( large_files > 0 )); then large_score=$(( 100 - (large_files * 10) )); fi
+if (( large_score < 0 )); then large_score=0; fi
 
 results=$(echo "$results" | jq --argjson s "$large_score" --argjson c "$large_files" \
     '. + [{
@@ -92,8 +92,8 @@ if command -v grep &>/dev/null; then
 fi
 
 secret_score=100
-(( secrets_found > 0 )) && secret_score=$(( 100 - (secrets_found * 25) ))
-(( secret_score < 0 )) && secret_score=0
+if (( secrets_found > 0 )); then secret_score=$(( 100 - (secrets_found * 25) )); fi
+if (( secret_score < 0 )); then secret_score=0; fi
 
 results=$(echo "$results" | jq --argjson s "$secret_score" --argjson c "$secrets_found" \
     '. + [{
@@ -134,7 +134,7 @@ if [[ -f "README.md" ]]; then
     if grep -qi 'contributing' README.md 2>/dev/null; then
         doc_score=$(( doc_score + 5 ))
     fi
-    (( doc_score > 100 )) && doc_score=100
+    if (( doc_score > 100 )); then doc_score=100; fi
 fi
 
 results=$(echo "$results" | jq --argjson s "$doc_score" \

@@ -122,7 +122,7 @@ cmd_status() {
         local count=0
         for f in "$KYZN_HISTORY_DIR"/*.json; do
             [[ -f "$f" ]] || continue
-            (( count >= 5 )) && break
+            if (( count >= 5 )); then break; fi
 
             local run_id status
             run_id=$(jq -r '.run_id // "unknown"' "$f")

@@ -7,7 +7,7 @@ set -euo pipefail
 _resolve() {
     local f="$1"; local d=0
     while [[ -L "$f" ]]; do
-        (( d++ > 20 )) && break
+        if (( d++ > 20 )); then break; fi
         local dir; dir="$(cd "$(dirname "$f")" && pwd)"
         f="$(readlink "$f")"; [[ "$f" != /* ]] && f="$dir/$f"
     done
@@ -318,7 +318,7 @@ test_measure() {
 
     # Health score should be computed
     [[ -n "${KYZN_HEALTH_SCORE:-}" ]] && pass "health score computed" || fail "health score" "not set"
-    (( KYZN_HEALTH_SCORE >= 0 && KYZN_HEALTH_SCORE <= 100 )) && pass "health score in range" || fail "health score range" "$KYZN_HEALTH_SCORE"
+    if (( KYZN_HEALTH_SCORE >= 0 && KYZN_HEALTH_SCORE <= 100 )); then pass "health score in range"; else fail "health score range" "$KYZN_HEALTH_SCORE"; fi
 
     # Measurements file should exist
     [[ -f "${KYZN_MEASUREMENTS_FILE:-}" ]] && pass "measurements file created" || fail "measurements file" "not found"

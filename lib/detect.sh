@@ -90,11 +90,11 @@ print_detection() {
     fi
 
     local features=()
-    $KYZN_HAS_TYPESCRIPT && features+=("TypeScript")
-    $KYZN_HAS_TESTS      && features+=("Tests")
-    $KYZN_HAS_CI          && features+=("CI")
-    $KYZN_HAS_DOCKER      && features+=("Docker")
-    $KYZN_HAS_LINTER      && features+=("Linter")
+    if $KYZN_HAS_TYPESCRIPT; then features+=("TypeScript"); fi
+    if $KYZN_HAS_TESTS;      then features+=("Tests"); fi
+    if $KYZN_HAS_CI;          then features+=("CI"); fi
+    if $KYZN_HAS_DOCKER;      then features+=("Docker"); fi
+    if $KYZN_HAS_LINTER;      then features+=("Linter"); fi
 
     if (( ${#features[@]} > 0 )); then
         log_dim "Features: ${features[*]}"
