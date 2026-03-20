@@ -304,6 +304,57 @@ kyzn schedule off                   # Remove schedule
 
 ---
 
+## Security Transparency
+
+We believe security is built on trust, and trust requires transparency.
+
+KyZN runs AI agents with real tool access inside your codebase. That's a serious responsibility. Rather than asking you to take our word that it's safe, we publish our audit process and findings so you can verify it yourself.
+
+### How We Audit
+
+Before every major release, we run a **parallel multi-agent security audit** — 16 specialist AI agents independently review the entire codebase, each from a different angle:
+
+| Specialist | Focus |
+|-----------|-------|
+| Security agent | Injection vectors, input validation, access control |
+| Architecture agent | Trust boundaries, isolation design, module coupling |
+| Testing agent | Coverage gaps, untested critical paths |
+| Performance agent | Subprocess bottlenecks, scaling limits |
+| + 12 more | Correctness, dead code, crash safety, competitive analysis |
+
+The agents work in parallel and don't see each other's findings. A consensus step then deduplicates and ranks the results. This catches issues that any single reviewer — human or AI — would miss.
+
+### What We Found and Fixed (v0.5.0)
+
+Our v0.4.0 audit produced **~350KB of findings across 8,400 lines** from 16 agents. The consensus identified issues in these categories:
+
+| Category | Issues Found | How We Fixed Them |
+|----------|-------------|-------------------|
+| **Input handling** | Unsafe variable expansion patterns in internal functions | Replaced with safe bash built-ins (`${!var}`, `printf -v`, `awk -v`) |
+| **Tool restrictions** | Language-specific tool permissions not applied correctly due to string-vs-array expansion | Converted to proper bash arrays with quoted expansion |
+| **Config isolation** | Trust setting in committed config (should be local-only) | Moved to gitignored `local.yaml`, added comment guidance |
+| **Path validation** | Missing input validation in some user-facing commands | Added format validation with positive pattern matching |
+| **File access** | Restricted file list didn't cover all sensitive paths | Expanded to include shell configs, package manager credentials, container configs |
+| **Crash recovery** | Missing cleanup on interrupt during multi-agent analysis | Added trap that kills child processes, updates history, cleans temp files |
+| **Measurement accuracy** | Parsers for Go and Rust tools producing inflated counts | Fixed to use structured JSON parsing instead of line counting |
+
+Every finding was verified, fixed, and tested. The full test suite grew from 156 to 208 tests, with new tests specifically covering the fixed attack surfaces.
+
+### Published Reports
+
+The complete audit reports are published in this repository:
+
+- [`full-audit-by-claude/EXECUTIVE-SUMMARY.md`](full-audit-by-claude/EXECUTIVE-SUMMARY.md) — Overall assessment, prioritized findings, agent report card
+- [`full-audit-by-claude/`](full-audit-by-claude/) — All 16 individual agent reports with file-level detail
+
+We publish these because we believe you should be able to read exactly what was found, how serious it was, and how it was resolved — before you decide to run KyZN on your code.
+
+### Reporting Security Issues
+
+If you find a security issue in KyZN, please open a GitHub issue. Since KyZN runs locally (no server, no data collection, no network calls beyond Claude API and GitHub), most issues can be discussed openly. For issues involving the Claude API key or token handling, please reach out privately.
+
+---
+
 ## Configuration
 
 `kyzn init` creates `.kyzn/config.yaml`:
@@ -374,8 +425,9 @@ kyzn/
 │   └── go.sh               # go vet, govulncheck
 ├── templates/              # Prompt templates
 ├── profiles/               # Focus-specific system prompts
+├── full-audit-by-claude/   # Published security audit (16 agent reports)
 └── tests/
-    └── selftest.sh         # 156 tests (43 core + 4 stress)
+    └── selftest.sh         # 208 tests (49 core + 4 stress)
 ```
 
 ---
@@ -383,8 +435,8 @@ kyzn/
 ## Self-Test
 
 ```bash
-kyzn selftest              # Quick tests (147 cases)
-kyzn selftest --full       # Full suite with stress tests (156 cases)
+kyzn selftest              # Quick tests (199 cases)
+kyzn selftest --full       # Full suite with stress tests (208 cases)
 ```
 
 ---
@@ -397,13 +449,15 @@ kyzn selftest --full       # Full suite with stress tests (156 cases)
 - [x] Score regression gate
 - [x] Pre-existing test failure detection
 - [x] Branch cleanup on all failure paths
-- [x] 156-test self-test suite
+- [x] 208-test self-test suite
 - [x] Multi-agent analysis — 4 Opus specialists + consensus (`kyzn analyze`)
 - [x] Two-model architecture (Opus thinks, Sonnet executes)
 - [x] Live progress indicator during analysis
 - [x] Security hardening (file restrictions, CI blocking, timeouts, checksums)
 - [x] Compact terminal output + `kyzn-report.md` detailed report
 - [x] Full report context passed to fix phase for accurate Sonnet fixes
+- [x] 16-agent parallel security audit with published reports
+- [x] Audit-driven hardening: eval removal, array allowlists, input validation, crash safety
 - [ ] Reflexion loop (retry with self-reflection on failure)
 - [ ] Multi-candidate patches (generate 3, pick best)
 - [ ] Experience bank (store/retrieve successful fix patterns)
