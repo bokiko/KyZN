@@ -68,17 +68,34 @@ run_measurer() {
         return
     fi
 
-    local output
-    output=$(bash "$measurer" 2>/dev/null) || true
+    local output stderr_tmp
+    stderr_tmp=$(mktemp)
+    output=$(bash "$measurer" 2>"$stderr_tmp") || true
+
+    # Log stderr on failure (was previously discarded with 2>/dev/null)
+    if [[ -s "$stderr_tmp" ]]; then
+        local measurer_name
+        measurer_name=$(basename "$measurer")
+        if [[ -z "$output" ]] || ! echo "$output" | jq . &>/dev/null; then
+            log_warn "Measurer $measurer_name had errors:"
+            head -5 "$stderr_tmp" | while IFS= read -r _line; do
+                log_dim "  $_line"
+            done
+        fi
+    fi
+    rm -f "$stderr_tmp"
 
     if [[ -n "$output" ]] && echo "$output" | jq . &>/dev/null; then
         # Measurer may return a single object or array of objects
-        local merged
+        local merged tmp_output
+        tmp_output=$(mktemp)
+        echo "$output" > "$tmp_output"
         if echo "$output" | jq -e 'type == "array"' &>/dev/null; then
-            merged=$(jq -s '.[0] + .[1]' "$results_file" <(echo "$output"))
+            merged=$(jq -s '.[0] + .[1]' "$results_file" "$tmp_output")
         else
-            merged=$(jq -s '.[0] + [.[1]]' "$results_file" <(echo "$output"))
+            merged=$(jq -s '.[0] + [.[1]]' "$results_file" "$tmp_output")
         fi
+        rm -f "$tmp_output"
         echo "$merged" > "$results_file"
     else
         log_dim "  (no results from $(basename "$measurer"))"

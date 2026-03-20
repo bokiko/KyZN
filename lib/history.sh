@@ -36,16 +36,22 @@ cmd_history() {
     printf "${BOLD}%-22s %-10s %-8s %-8s %s${RESET}\n" "Run ID" "Status" "Before" "After" "Focus"
     echo "─────────────────────────────────────────────────────────────────"
 
-    # List history entries
-    for f in "$history_dir"/*.json; do
-        [[ -f "$f" ]] || continue
+    # Batch: single jq -s call for all entries, sorted by timestamp, output as TSV
+    local _hist_tsv
+    _hist_tsv=$(cat "$history_dir"/*.json 2>/dev/null | jq -s '
+        [.[] | select(. != null and type == "object")]
+        | sort_by(.ts // .timestamp // .created_at // "")
+        | .[] | [
+            (.run_id // "unknown"),
+            (.status // "pending"),
+            (.health_before // "-" | tostring),
+            (.health_after // "-" | tostring),
+            (.focus // "-")
+          ] | @tsv
+    ' -r 2>/dev/null) || true
 
-        local run_id status before after focus
-        run_id=$(jq -r '.run_id // "unknown"' "$f")
-        status=$(jq -r '.status // "pending"' "$f")
-        before=$(jq -r '.health_before // "-"' "$f")
-        after=$(jq -r '.health_after // "-"' "$f")
-        focus=$(jq -r '.focus // "-"' "$f")
+    while IFS=$'\t' read -r run_id status before after focus; do
+        [[ -z "$run_id" ]] && continue
 
         # Color status
         local status_colored
@@ -61,7 +67,7 @@ cmd_history() {
         echo -en "$status_colored"
         printf "%*s" $((10 - ${#status})) ""
         printf "%-8s %-8s %s\n" "$before" "$after" "$focus"
-    done
+    done <<< "$_hist_tsv"
 
     echo ""
     echo -e "  ${DIM}Tip:${RESET} Run ${CYAN}kyzn diff <run-id>${RESET} to see what a run changed."
@@ -251,9 +257,15 @@ cmd_diff() {
         return 1
     fi
 
-    # Try to find the branch
+    # Validate run_id (prevent path traversal and injection)
+    if ! validate_run_id "$run_id"; then
+        log_error "Invalid run ID: $run_id"
+        return 1
+    fi
+
+    # Try to find the branch (use fixed-string grep to prevent regex injection)
     local branch
-    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep "$run_id" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||')
+    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -F "$run_id" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
 
     if [[ -n "$branch" ]]; then
         git diff "main...$branch" 2>/dev/null || git diff "master...$branch" 2>/dev/null

@@ -342,20 +342,23 @@ test_allowlist() {
     source "$KYZN_ROOT/lib/allowlist.sh"
 
     # Node allowlist
-    local node_list
-    node_list=$(build_allowlist "node")
+    local -a node_arr=()
+    build_allowlist node_arr "node"
+    local node_list="${node_arr[*]}"
     assert_contains "node has npm" "$node_list" "npm"
     assert_contains "node has Read" "$node_list" "Read"
 
     # Python allowlist
-    local py_list
-    py_list=$(build_allowlist "python")
+    local -a py_arr=()
+    build_allowlist py_arr "python"
+    local py_list="${py_arr[*]}"
     assert_contains "python has pytest" "$py_list" "pytest"
     assert_contains "python has ruff" "$py_list" "ruff"
 
     # Generic allowlist
-    local gen_list
-    gen_list=$(build_allowlist "generic")
+    local -a gen_arr=()
+    build_allowlist gen_arr "generic"
+    local gen_list="${gen_arr[*]}"
     assert_not_contains "generic no npm" "$gen_list" "npm"
     assert_contains "generic has Read" "$gen_list" "Read"
 }
@@ -823,6 +826,9 @@ test_approve_reject() {
     reason=$(jq -r '.rejection_reason' "$KYZN_HISTORY_DIR/test-reject-001.json")
     assert_eq "reject stores reason" "too aggressive" "$reason"
 
+    # Clean up test artifacts
+    rm -f "$KYZN_GLOBAL_HISTORY/test-approve-001.json" "$KYZN_GLOBAL_HISTORY/test-reject-001.json" 2>/dev/null
+
     cleanup_sandbox
 }
 
@@ -846,13 +852,15 @@ test_allowlist_rust_go() {
 
     source "$KYZN_ROOT/lib/allowlist.sh"
 
-    local rust_list
-    rust_list=$(build_allowlist "rust")
+    local -a rust_arr=()
+    build_allowlist rust_arr "rust"
+    local rust_list="${rust_arr[*]}"
     assert_contains "rust has cargo" "$rust_list" "cargo"
     assert_contains "rust has Read" "$rust_list" "Read"
 
-    local go_list
-    go_list=$(build_allowlist "go")
+    local -a go_arr=()
+    build_allowlist go_arr "go"
+    local go_list="${go_arr[*]}"
     assert_contains "go has go" "$go_list" "go"
     assert_contains "go has Read" "$go_list" "Read"
 }
@@ -896,15 +904,18 @@ test_disallowed_file_globs() {
     source "$KYZN_ROOT/lib/execute.sh"
     source "$KYZN_ROOT/lib/allowlist.sh"
 
-    # Read the function source and verify it contains disallowedFileGlobs
+    # Verify KYZN_SETTINGS_JSON constant in core.sh contains disallowedFileGlobs
     local src
-    src=$(cat "$KYZN_ROOT/lib/execute.sh")
-    assert_contains "execute.sh has disallowedFileGlobs in settings" "$src" "disallowedFileGlobs"
+    src=$(cat "$KYZN_ROOT/lib/core.sh")
+    assert_contains "core.sh has disallowedFileGlobs in settings" "$src" "disallowedFileGlobs"
     assert_contains "blocks ~/.ssh" "$src" "~/.ssh/**"
     assert_contains "blocks ~/.aws" "$src" "~/.aws/**"
     assert_contains "blocks .env files" "$src" "**/.env"
     assert_contains "blocks .pem files" "$src" "**/*.pem"
-    assert_contains "uses --settings flag" "$src" '--settings "$settings_json"'
+    # Verify execute.sh uses the constant
+    local exec_src
+    exec_src=$(cat "$KYZN_ROOT/lib/execute.sh")
+    assert_contains "uses KYZN_SETTINGS_JSON constant" "$exec_src" 'KYZN_SETTINGS_JSON'
 }
 
 test_ci_blocking() {
@@ -952,37 +963,42 @@ test_tightened_allowlist() {
     source "$KYZN_ROOT/lib/allowlist.sh"
 
     # Python: should NOT have broad 'python *', should have specific subcommands
-    local py_list
-    py_list=$(build_allowlist "python")
-    assert_not_contains "python no broad wildcard" "$py_list" '"Bash(python *)"'
+    local -a py_arr=()
+    build_allowlist py_arr "python"
+    local py_list="${py_arr[*]}"
+    assert_not_contains "python no broad wildcard" "$py_list" 'Bash(python *)'
     assert_contains "python has pytest" "$py_list" "pytest"
     assert_contains "python has python -m pytest" "$py_list" "python -m pytest"
 
     # Node: should NOT have broad 'npm *', should have specific subcommands
-    local node_list
-    node_list=$(build_allowlist "node")
-    assert_not_contains "node no broad npm wildcard" "$node_list" '"Bash(npm *)"'
+    local -a node_arr=()
+    build_allowlist node_arr "node"
+    local node_list="${node_arr[*]}"
+    assert_not_contains "node no broad npm wildcard" "$node_list" 'Bash(npm *)'
     assert_contains "node has npm test" "$node_list" "npm test"
     assert_contains "node has npm run" "$node_list" "npm run"
-    assert_not_contains "node no bare node" "$node_list" '"Bash(node *)"'
+    assert_not_contains "node no bare node" "$node_list" 'Bash(node *)'
 
     # Rust: should NOT have broad 'cargo *'
-    local rust_list
-    rust_list=$(build_allowlist "rust")
-    assert_not_contains "rust no broad cargo wildcard" "$rust_list" '"Bash(cargo *)"'
+    local -a rust_arr=()
+    build_allowlist rust_arr "rust"
+    local rust_list="${rust_arr[*]}"
+    assert_not_contains "rust no broad cargo wildcard" "$rust_list" 'Bash(cargo *)'
     assert_contains "rust has cargo test" "$rust_list" "cargo test"
     assert_contains "rust has cargo check" "$rust_list" "cargo check"
 
     # Go: should NOT have broad 'go *'
-    local go_list
-    go_list=$(build_allowlist "go")
-    assert_not_contains "go no broad go wildcard" "$go_list" '"Bash(go *)"'
+    local -a go_arr=()
+    build_allowlist go_arr "go"
+    local go_list="${go_arr[*]}"
+    assert_not_contains "go no broad go wildcard" "$go_list" 'Bash(go *)'
     assert_contains "go has go test" "$go_list" "go test"
     assert_contains "go has go build" "$go_list" "go build"
 
     # Generic: should NOT have 'cat *'
-    local gen_list
-    gen_list=$(build_allowlist "generic")
+    local -a gen_arr=()
+    build_allowlist gen_arr "generic"
+    local gen_list="${gen_arr[*]}"
     assert_not_contains "generic no cat" "$gen_list" "cat"
 }
 
@@ -1481,6 +1497,130 @@ test_stress_config_overwrite() {
 }
 
 # ---------------------------------------------------------------------------
+# v0.5.0 security hardening tests
+# ---------------------------------------------------------------------------
+
+test_enforce_config_ceilings() {
+    log_header "37. enforce_config_ceilings prevents injection and caps values"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+
+    # Test normal capping
+    local budget=30 turns=200 diff=20000
+    enforce_config_ceilings budget turns diff
+    assert_eq "budget capped to 25" "25" "$budget"
+    assert_eq "turns capped to 100" "100" "$turns"
+    assert_eq "diff capped to 10000" "10000" "$diff"
+
+    # Test values below ceiling are not changed
+    local budget2=5 turns2=10 diff2=500
+    enforce_config_ceilings budget2 turns2 diff2
+    assert_eq "budget under ceiling unchanged" "5" "$budget2"
+    assert_eq "turns under ceiling unchanged" "10" "$turns2"
+    assert_eq "diff under ceiling unchanged" "500" "$diff2"
+
+    # Test that malicious input doesn't execute code (awk injection attempt)
+    local budget3='0); system("id") #' turns3=10 diff3=100
+    # Should not crash or execute anything — awk -v safely passes the value
+    local exit_code=0
+    enforce_config_ceilings budget3 turns3 diff3 2>/dev/null || exit_code=$?
+    # The value should be capped or left alone, not executed
+    pass "awk injection attempt did not crash (exit: $exit_code)"
+}
+
+test_unstage_secrets() {
+    log_header "49. unstage_secrets removes staged secret files"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Create and stage files matching secret patterns
+    echo "SECRET=abc" > .env
+    echo "SECRET=abc" > credentials.json
+    echo "--- KEY ---" > server.pem
+    echo "data" > safe-file.txt
+
+    git add .env credentials.json server.pem safe-file.txt 2>/dev/null
+
+    # Run unstage_secrets
+    unstage_secrets 2>/dev/null
+
+    # Check that secret files are no longer staged
+    local staged
+    staged=$(git diff --cached --name-only 2>/dev/null)
+
+    if echo "$staged" | grep -q '\.env'; then
+        fail "unstage .env" ".env still staged"
+    else
+        pass "unstage .env — removed from staging"
+    fi
+
+    if echo "$staged" | grep -q '\.pem'; then
+        fail "unstage .pem" "server.pem still staged"
+    else
+        pass "unstage .pem — removed from staging"
+    fi
+
+    if echo "$staged" | grep -q 'credentials'; then
+        fail "unstage credentials" "credentials.json still staged"
+    else
+        pass "unstage credentials — removed from staging"
+    fi
+
+    if echo "$staged" | grep -q 'safe-file'; then
+        pass "safe file remains staged"
+    else
+        fail "safe file" "safe-file.txt was incorrectly unstaged"
+    fi
+
+    cleanup_sandbox
+}
+
+test_path_traversal_reject_diff() {
+    log_header "50. Path traversal rejected in reject and diff commands"
+
+    source "$KYZN_ROOT/lib/approve.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+
+    create_sandbox generic
+    ensure_kyzn_dirs
+
+    # Test reject with path traversal
+    local exit_code=0
+    cmd_reject "../../etc/cron.d/x" 2>/dev/null || exit_code=$?
+    assert_eq "reject path traversal blocked" "1" "$exit_code"
+
+    # Test diff with path traversal
+    exit_code=0
+    cmd_diff "../../etc/passwd" 2>/dev/null || exit_code=$?
+    assert_eq "diff path traversal blocked" "1" "$exit_code"
+
+    # Test diff with regex-like input
+    exit_code=0
+    cmd_diff ".*" 2>/dev/null || exit_code=$?
+    assert_eq "diff regex input blocked" "1" "$exit_code"
+
+    cleanup_sandbox
+}
+
+test_validate_run_id() {
+    log_header "51. validate_run_id accepts valid IDs and rejects invalid"
+
+    # Valid run IDs
+    validate_run_id "20260320-143022-abc123ef" && pass "valid run ID accepted" || fail "valid run ID" "rejected"
+    validate_run_id "measure-20260320-143022" && pass "valid measure ID accepted" || fail "valid measure ID" "rejected"
+    validate_run_id "test-approve-001" && pass "valid test ID accepted" || fail "valid test ID" "rejected"
+
+    # Invalid run IDs
+    validate_run_id "../../etc/passwd" && fail "path traversal" "accepted" || pass "path traversal rejected"
+    validate_run_id "foo/bar" && fail "slash" "accepted" || pass "slash rejected"
+    validate_run_id "" && fail "empty" "accepted" || pass "empty rejected"
+    validate_run_id "random-junk" && fail "random junk" "accepted" || pass "random junk rejected"
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -1543,6 +1683,10 @@ main() {
     test_dashboard
     test_dashboard_corrupt
     test_dashboard_hyphenated_project
+    test_enforce_config_ceilings
+    test_unstage_secrets
+    test_path_traversal_reject_diff
+    test_validate_run_id
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

@@ -39,6 +39,12 @@ run_interview() {
     local budget
     budget=$(prompt_input "Budget per run (USD)" "2.50")
 
+    # Validate budget is a positive number
+    if ! [[ "$budget" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        log_warn "Invalid budget '$budget' — using default 2.50"
+        budget="2.50"
+    fi
+
     # Step 4: Build failure behavior
     local on_fail
     on_fail=$(prompt_choice "If the build breaks after improvements, what should KyZN do?" \
@@ -268,6 +274,7 @@ setup_kyzn_gitignore() {
 history/
 reports/
 local.yaml
+kyzn-report.md
 EOF
 }
 

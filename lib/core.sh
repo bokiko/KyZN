@@ -40,10 +40,32 @@ KYZN_REPORTS_DIR="$KYZN_DIR/reports"
 KYZN_GLOBAL_DIR="${HOME}/.kyzn"
 KYZN_GLOBAL_HISTORY="${KYZN_GLOBAL_DIR}/history"
 
-# Ensure .kyzn directories exist
+# Sensitive file access restrictions (single constant — used by execute.sh + analyze.sh)
+KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**"]}}'
+
+# Ensure .kyzn directories exist (restrictive permissions for global dirs)
 ensure_kyzn_dirs() {
     mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
-    mkdir -p "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
+    mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
+}
+
+# Validate run ID format (prevent path traversal and injection)
+validate_run_id() {
+    local run_id="$1"
+    if [[ -z "$run_id" ]]; then
+        return 1
+    fi
+    # Reject slashes, .., and anything that doesn't match run ID format
+    if [[ "$run_id" == */* || "$run_id" == *..* ]]; then
+        return 1
+    fi
+    # Positive format check: YYYYMMDD-HHMMSS-hex OR measure-YYYYMMDD-HHMMSS OR test-*
+    if [[ "$run_id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]+$ ]] ||
+       [[ "$run_id" =~ ^measure-[0-9]{8}-[0-9]{6}$ ]] ||
+       [[ "$run_id" =~ ^test-[a-zA-Z0-9_-]+$ ]]; then
+        return 0
+    fi
+    return 1
 }
 
 # Check if we're in a git repo
@@ -104,15 +126,9 @@ config_set() {
     VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
 }
 
-# Set a string config value (properly quoted)
+# Set a string config value (alias for backward compat)
 config_set_str() {
-    local key="$1"
-    local value="$2"
-    ensure_kyzn_dirs
-    if [[ ! -f "$KYZN_CONFIG" ]]; then
-        echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
-    fi
-    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
+    config_set "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -128,14 +144,20 @@ generate_run_id() {
     echo "${date_part}-${rand_part}"
 }
 
-# Get project root (git root)
+# Get project root (git root) — cached after first call
 project_root() {
-    git rev-parse --show-toplevel 2>/dev/null || pwd
+    if [[ -z "${KYZN_PROJECT_ROOT:-}" ]]; then
+        KYZN_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    fi
+    echo "$KYZN_PROJECT_ROOT"
 }
 
-# Get project name from directory
+# Get project name from directory — cached after first call
 project_name() {
-    basename "$(project_root)"
+    if [[ -z "${KYZN_PROJECT_NAME:-}" ]]; then
+        KYZN_PROJECT_NAME=$(basename "$(project_root)")
+    fi
+    echo "$KYZN_PROJECT_NAME"
 }
 
 # Prompt user for input with a default

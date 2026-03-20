@@ -232,21 +232,19 @@ run_specialist() {
     local output_file="$5"
     local model="${6:-opus}"
 
-    local allowlist='--allowedTools Read --allowedTools Glob --allowedTools Grep'
+    local -a allowlist_arr=(--allowedTools Read --allowedTools Glob --allowedTools Grep)
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
-    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
 
     local stderr_file
     stderr_file=$(mktemp)
 
     local result
-    # shellcheck disable=SC2086
     result=$(timeout "$claude_timeout" claude -p "$prompt" \
         --model "$model" \
         --max-budget-usd "$budget" \
         --max-turns 30 \
-        $allowlist \
-        --settings "$settings_json" \
+        "${allowlist_arr[@]}" \
+        --settings "$KYZN_SETTINGS_JSON" \
         --append-system-prompt-file "$sys_prompt_file" \
         --output-format json \
         --no-session-persistence \
@@ -597,12 +595,44 @@ cmd_analyze() {
     declare -A _hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
     write_history "$run_id" "analyze" "running" _hist
 
+    # Cleanup variables (initialized before trap)
+    local _analyze_pids=() _analyze_tmp_dir="" _analyze_sys_prompt="" _analyze_consensus_stderr=""
+
+    # Cleanup function — handles Ctrl+C, errors, and normal exit
+    _kyzn_analyze_cleanup() {
+        # Kill any running background Claude processes
+        local _p
+        for _p in "${_analyze_pids[@]:-}"; do
+            [[ -n "$_p" ]] && kill "$_p" 2>/dev/null && wait "$_p" 2>/dev/null || true
+        done
+        # Update history if still running
+        if [[ -n "${run_id:-}" ]]; then
+            local _hist_file="$KYZN_HISTORY_DIR/$run_id.json"
+            if [[ -f "$_hist_file" ]]; then
+                local _cur_status
+                _cur_status=$(jq -r '.status // ""' "$_hist_file" 2>/dev/null) || true
+                if [[ "$_cur_status" == "running" ]]; then
+                    declare -A _cleanup_hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
+                    write_history "$run_id" "analyze" "failed" _cleanup_hist 2>/dev/null || true
+                fi
+            fi
+        fi
+        # Clean temp files
+        [[ -d "${_analyze_tmp_dir:-}" ]] && rm -rf "$_analyze_tmp_dir" 2>/dev/null
+        [[ -n "${_analyze_sys_prompt:-}" ]] && rm -f "$_analyze_sys_prompt" 2>/dev/null
+        [[ -n "${_analyze_consensus_stderr:-}" ]] && rm -f "$_analyze_consensus_stderr" 2>/dev/null
+        [[ -d "${measure_dir:-}" ]] && rm -rf "$measure_dir" 2>/dev/null
+        trap - EXIT INT TERM
+    }
+    trap _kyzn_analyze_cleanup EXIT INT TERM
+
     local measurements_json
     measurements_json=$(cat "$measurements_file" 2>/dev/null || echo '[]')
 
     # Build system prompt
     local sys_prompt_file
     sys_prompt_file=$(mktemp)
+    _analyze_sys_prompt="$sys_prompt_file"
     cat "$KYZN_ROOT/templates/system-prompt.md" > "$sys_prompt_file"
     echo "" >> "$sys_prompt_file"
     echo "---" >> "$sys_prompt_file"
@@ -610,7 +640,7 @@ cmd_analyze() {
     cat "$KYZN_ROOT/templates/analysis-prompt.md" >> "$sys_prompt_file"
 
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
-    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
+    local settings_json="$KYZN_SETTINGS_JSON"
     local total_cost=0
 
     local findings_file="$KYZN_REPORTS_DIR/$run_id-findings.json"
@@ -625,17 +655,16 @@ cmd_analyze() {
         prompt=$(build_specialist_prompt "${focus:-correctness}" "$(project_name)" \
             "$(project_type_name "$KYZN_PROJECT_TYPE")" "${KYZN_HEALTH_SCORE:-0}" "$measurements_json")
 
-        local allowlist='--allowedTools Read --allowedTools Glob --allowedTools Grep'
+        local -a allowlist_arr=(--allowedTools Read --allowedTools Glob --allowedTools Grep)
         local stderr_file
         stderr_file=$(mktemp)
 
         local result
-        # shellcheck disable=SC2086
         result=$(timeout "$claude_timeout" claude -p "$prompt" \
             --model opus \
             --max-budget-usd "$budget" \
             --max-turns 40 \
-            $allowlist \
+            "${allowlist_arr[@]}" \
             --settings "$settings_json" \
             --append-system-prompt-file "$sys_prompt_file" \
             --output-format json \
@@ -672,6 +701,7 @@ cmd_analyze() {
 
         local tmp_dir
         tmp_dir=$(mktemp -d)
+        _analyze_tmp_dir="$tmp_dir"
 
         local pids=()
         local specialists=("security" "correctness" "performance" "architecture")
@@ -681,7 +711,7 @@ cmd_analyze() {
         local _status_security="running" _status_correctness="running" _status_performance="running" _status_architecture="running"
 
         # Helper: get/set status for a specialist
-        _get_status() { eval "echo \$_status_$1"; }
+        _get_status() { declare -n _ref="_status_$1"; echo "$_ref"; }
         _set_status() { printf -v "_status_$1" '%s' "$2"; }
 
         for spec in "${specialists[@]}"; do
@@ -694,6 +724,9 @@ cmd_analyze() {
             pids+=($pid)
             pid_specs+=("$spec")
         done
+
+        # Track PIDs for cleanup trap
+        _analyze_pids=("${pids[@]}")
 
         echo ""
 
@@ -832,8 +865,11 @@ cmd_analyze() {
         total_cost="~$(awk "BEGIN {printf \"%.2f\", $per_agent_budget * 5}")"
     fi
 
-    rm -f "$sys_prompt_file"
-    rm -rf "$measure_dir"
+    # Clear trap variables (cleanup handled below, not by trap on success)
+    _analyze_pids=()
+    rm -f "$sys_prompt_file" 2>/dev/null; _analyze_sys_prompt=""
+    rm -rf "$measure_dir" 2>/dev/null
+    trap - EXIT INT TERM
 
     local finding_count
     finding_count=$(jq 'length' "$findings_file")
@@ -858,6 +894,9 @@ cmd_analyze() {
     log_ok "Full report: ${BOLD}$root_report${RESET}"
     log_dim "  Archive: $report_file"
     log_dim "  JSON:    $findings_file"
+
+    # Display compact findings summary in terminal
+    display_findings "$findings_file"
 
     # Export if requested
     if [[ -n "$export_path" ]]; then
@@ -957,51 +996,25 @@ generate_detailed_report() {
         if (( low > 0 )); then echo "| LOW | $low |"; fi
         echo ""
 
-        # Group findings by category
-        local categories
-        categories=$(jq -r '[.[].category] | unique | .[]' "$findings_file" 2>/dev/null)
-
-        for cat in $categories; do
-            local cat_upper
-            cat_upper=$(echo "$cat" | tr '[:lower:]' '[:upper:]' | tr '-' ' ')
-            echo "## $cat_upper"
-            echo ""
-
-            local cat_count
-            cat_count=$(jq --arg c "$cat" '[.[] | select(.category == $c)] | length' "$findings_file")
-            local i=0
-
-            while (( i < cat_count )); do
-                local id severity title file line description fix effort
-                id=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].id // "?"' "$findings_file")
-                severity=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].severity // "?"' "$findings_file")
-                title=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].title // "?"' "$findings_file")
-                file=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].file // "?"' "$findings_file")
-                line=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].line // "?"' "$findings_file")
-                description=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].description // ""' "$findings_file")
-                fix=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].fix // ""' "$findings_file")
-                effort=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | .['$i'].effort // "?"' "$findings_file")
-
-                echo "### $id — $title"
-                echo ""
-                echo "- **Severity:** $severity"
-                echo "- **File:** \`$file:$line\`"
-                echo "- **Effort:** $effort"
-                echo ""
-                if [[ -n "$description" && "$description" != "null" ]]; then
-                    echo "$description"
-                    echo ""
-                fi
-                if [[ -n "$fix" && "$fix" != "null" ]]; then
-                    echo "**Suggested fix:** $fix"
-                    echo ""
-                fi
-                echo "---"
-                echo ""
-
-                ((i++)) || true
-            done
-        done
+        # Group findings by category and generate markdown in a single jq call
+        jq -r '
+            group_by(.category)
+            | map(
+                "## " + (.[0].category | ascii_upcase | gsub("-"; " ")) + "\n\n" +
+                (map(
+                    "### " + (.id // "?") + " — " + (.title // "?") + "\n\n" +
+                    "- **Severity:** " + (.severity // "?") + "\n" +
+                    "- **File:** `" + (.file // "?") + ":" + ((.line // "?") | tostring) + "`\n" +
+                    "- **Effort:** " + (.effort // "?") + "\n\n" +
+                    (if (.description // "") != "" and (.description // "") != "null"
+                     then (.description // "") + "\n\n" else "" end) +
+                    (if (.fix // "") != "" and (.fix // "") != "null"
+                     then "**Suggested fix:** " + (.fix // "") + "\n\n" else "" end) +
+                    "---\n"
+                ) | join("\n"))
+              )
+            | join("\n\n")
+        ' "$findings_file" 2>/dev/null || true
 
         echo "*Generated by [KyZN](https://github.com/bokiko/KyZN) — multi-agent analysis ($profile profile)*"
         echo ""
@@ -1017,26 +1030,17 @@ generate_detailed_report() {
             echo "| # | ID | Severity | File | Title |"
             echo "|---|-----|----------|------|-------|"
 
-            # Build ranked table from findings sorted by severity
-            local fix_num=1
-            for sev_level in CRITICAL HIGH MEDIUM LOW; do
-                local sev_items
-                sev_items=$(jq --arg s "$sev_level" '[.[] | select(.severity == $s)]' "$findings_file")
-                local sev_len
-                sev_len=$(echo "$sev_items" | jq 'length')
-                local si=0
-                while (( si < sev_len )); do
-                    local fix_id fix_sev fix_file fix_line fix_title
-                    fix_id=$(echo "$sev_items" | jq -r ".[$si].id // \"?\"")
-                    fix_sev=$(echo "$sev_items" | jq -r ".[$si].severity // \"?\"")
-                    fix_file=$(echo "$sev_items" | jq -r ".[$si].file // \"?\"")
-                    fix_line=$(echo "$sev_items" | jq -r ".[$si].line // \"?\"")
-                    fix_title=$(echo "$sev_items" | jq -r ".[$si].title // \"?\"")
-                    echo "| $fix_num | $fix_id | $fix_sev | \`$fix_file:$fix_line\` | $fix_title |"
-                    ((fix_num++)) || true
-                    ((si++)) || true
-                done
-            done
+            # Build ranked table from findings sorted by severity (single jq call)
+            jq -r '
+                def sev_rank: if . == "CRITICAL" then 0 elif . == "HIGH" then 1
+                  elif . == "MEDIUM" then 2 else 3 end;
+                sort_by(.severity | sev_rank)
+                | to_entries
+                | map("| " + ((.key + 1) | tostring) + " | " + (.value.id // "?") + " | " +
+                    (.value.severity // "?") + " | `" + (.value.file // "?") + ":" +
+                    ((.value.line // "?") | tostring) + "` | " + (.value.title // "?") + " |")
+                | join("\n")
+            ' "$findings_file" 2>/dev/null || true
 
             echo ""
             echo "### Rules for AI"
@@ -1065,6 +1069,21 @@ run_fix_phase() {
     local run_id="$3"
     local fix_budget="$4"
 
+    # Concurrency lock (prevents two concurrent analyze-fix runs from corrupting working tree)
+    local lockdir="$KYZN_DIR/.improve.lock"
+    if ! mkdir "$lockdir" 2>/dev/null; then
+        local stale_pid
+        stale_pid=$(cat "$lockdir/pid" 2>/dev/null || echo "")
+        if [[ -z "$stale_pid" ]] || ! kill -0 "$stale_pid" 2>/dev/null; then
+            rm -rf "$lockdir"
+            mkdir "$lockdir" 2>/dev/null || { log_error "Another fix is already running."; return 1; }
+        else
+            log_error "Another KyZN fix/improve is already running (PID: $stale_pid)."
+            return 1
+        fi
+    fi
+    echo $$ > "$lockdir/pid"
+
     # Pass the full report to give Claude rich context for fixes
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
 
@@ -1088,11 +1107,10 @@ run_fix_phase() {
         return 1
     }
 
-    local fix_allowlist
-    fix_allowlist=$(build_allowlist "$KYZN_PROJECT_TYPE")
+    local -a fix_allowlist_arr=()
+    build_allowlist fix_allowlist_arr "$KYZN_PROJECT_TYPE"
 
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
-    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
 
     local fix_stderr
     fix_stderr=$(mktemp)
@@ -1100,13 +1118,12 @@ run_fix_phase() {
     log_step "Sonnet is implementing fixes..."
 
     local fix_result
-    # shellcheck disable=SC2086
     fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
         --model sonnet \
         --max-budget-usd "$fix_budget" \
         --max-turns 30 \
-        $fix_allowlist \
-        --settings "$settings_json" \
+        "${fix_allowlist_arr[@]}" \
+        --settings "$KYZN_SETTINGS_JSON" \
         --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
         --output-format json \
         --no-session-persistence \
@@ -1133,11 +1150,32 @@ run_fix_phase() {
     else
         log_error "Build/tests failed after fixes."
         handle_build_failure "report" "$run_id" "$branch_name" "analyze" "fix"
+        rm -rf "$lockdir" 2>/dev/null
         return 1
     fi
 
-    # Commit the fixes
+    # Diff-limit check before committing
     safe_git add -A 2>/dev/null
+    local numstat_fix
+    numstat_fix=$(git diff --cached --numstat HEAD 2>/dev/null) || true
+    local fix_diff_lines=0 fix_del_lines=0
+    if [[ -n "$numstat_fix" ]]; then
+        fix_diff_lines=$(echo "$numstat_fix" | awk '{sum+=$1} END {print sum+0}')
+        fix_del_lines=$(echo "$numstat_fix" | awk '{sum+=$2} END {print sum+0}')
+    fi
+    local fix_total_diff=$(( fix_diff_lines + fix_del_lines ))
+    local diff_limit
+    diff_limit=$(config_get '.preferences.diff_limit' '2000')
+
+    if (( fix_total_diff > diff_limit )); then
+        log_warn "Fix diff exceeds limit ($fix_total_diff > $diff_limit lines). Aborting."
+        git reset HEAD 2>/dev/null || true
+        safe_checkout_back
+        safe_git branch -D "$branch_name" 2>/dev/null || true
+        rm -rf "$lockdir" 2>/dev/null
+        return 1
+    fi
+
     unstage_secrets
     check_dangerous_files
     safe_git commit -m "KyZN: apply analysis fixes ($run_id)" 2>/dev/null || true
@@ -1147,8 +1185,31 @@ run_fix_phase() {
 
     log_info "Changes committed:"
     echo "$diff_stat"
+
+    # Push and create PR (matching improve's flow)
+    log_step "Pushing and creating PR..."
+    git push -u origin HEAD 2>/dev/null || {
+        log_warn "Push failed — changes are committed locally on $branch_name"
+        rm -rf "$lockdir" 2>/dev/null
+        return 0
+    }
+    gh pr create \
+        --title "KyZN: analysis fixes ($run_id)" \
+        --body "## Analysis Fixes
+
+Applied fixes for findings at severity **$min_severity** and above.
+
+**Run ID:** \`$run_id\`
+**Cost:** \$${KYZN_CLAUDE_COST:-unknown}
+**Changes:** +$fix_diff_lines -$fix_del_lines ($fix_total_diff lines)
+
+See \`kyzn-report.md\` for the full analysis report." \
+        2>/dev/null || log_warn "PR creation failed — push succeeded, create PR manually"
+
+    rm -rf "$lockdir" 2>/dev/null
+
     echo ""
-    log_info "Review the fixes, then:"
+    log_info "Review the PR, then:"
     echo -e "  ${CYAN}kyzn approve $run_id${RESET}   — sign off"
     echo -e "  ${CYAN}kyzn reject $run_id${RESET}    — discard"
 }

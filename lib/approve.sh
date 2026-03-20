@@ -15,8 +15,8 @@ cmd_approve() {
     require_git_repo
     ensure_kyzn_dirs
 
-    # Validate run_id (prevent path traversal — reject slashes and ..)
-    if [[ "$run_id" == */* || "$run_id" == *..* ]]; then
+    # Validate run_id (prevent path traversal and injection)
+    if ! validate_run_id "$run_id"; then
         log_error "Invalid run ID: $run_id"
         return 1
     fi
@@ -54,7 +54,7 @@ cmd_approve() {
     cp "$history_file" "$KYZN_GLOBAL_HISTORY/$run_id.json"
 
     log_ok "Run $run_id approved!"
-    log_info "The improvements are part of the project now."
+    log_info "Run signed off. Merge the PR when ready."
 }
 
 # ---------------------------------------------------------------------------
@@ -79,6 +79,12 @@ cmd_reject() {
 
     require_git_repo
     ensure_kyzn_dirs
+
+    # Validate run_id (prevent path traversal)
+    if ! validate_run_id "$run_id"; then
+        log_error "Invalid run ID: $run_id"
+        return 1
+    fi
 
     # Mark as rejected in history
     local history_file="$KYZN_HISTORY_DIR/$run_id.json"

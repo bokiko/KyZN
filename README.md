@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/github/license/bokiko/KyZN?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square" alt="Last Commit">
   <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
-  <img src="https://img.shields.io/badge/version-0.4.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-156%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/version-0.5.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-208%20passing-brightgreen?style=flat-square" alt="Tests">
 </p>
 
 </div>

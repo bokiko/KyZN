@@ -40,9 +40,9 @@ has_cmd() { command -v "$1" &>/dev/null; }
 
 detect_os() {
     if [[ -f /etc/os-release ]]; then
-        # shellcheck disable=SC1091
-        source /etc/os-release
-        echo "${ID:-linux}"
+        local _id
+        _id=$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+        echo "${_id:-linux}"
     elif [[ "$(uname)" == "Darwin" ]]; then
         echo "macos"
     else

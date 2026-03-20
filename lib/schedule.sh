@@ -42,12 +42,19 @@ schedule_cron() {
     local kyzn_path
     kyzn_path=$(command -v kyzn 2>/dev/null || echo "$KYZN_ROOT/kyzn")
 
+    # Safe quoting for cron entry (prevent path injection)
+    local safe_project_dir safe_kyzn_path
+    safe_project_dir=$(printf '%q' "$project_dir")
+    safe_kyzn_path=$(printf '%q' "$kyzn_path")
+
     local project_tag
     project_tag=$(basename "$project_dir")
-    local cron_line="$cron_expr cd \"$project_dir\" && \"$kyzn_path\" improve --auto >> \"$project_dir/.kyzn/reports/cron.log\" 2>&1 # kyzn:${project_tag}:$label"
+
+    # Prepend PATH so cron's minimal environment can find claude, jq, yq, gh
+    local cron_line="$cron_expr PATH=$PATH cd $safe_project_dir && $safe_kyzn_path improve --auto >> $safe_project_dir/.kyzn/reports/cron.log 2>&1 # kyzn:${project_tag}:$label"
 
     # Remove existing kyzn entry for THIS project only, then add new one
-    (crontab -l 2>/dev/null | grep -vF "# kyzn:${project_tag}:"; echo "$cron_line") | crontab -
+    (crontab -l 2>/dev/null || true) | grep -vF "# kyzn:${project_tag}:" | { cat; echo "$cron_line"; } | crontab -
 
     log_ok "Scheduled $label runs for $(project_name)"
     log_dim "Cron: $cron_expr"
@@ -64,7 +71,7 @@ remove_cron() {
     local project_tag
     project_tag=$(basename "$project_dir")
 
-    crontab -l 2>/dev/null | grep -vF "# kyzn:${project_tag}:" | crontab - 2>/dev/null
+    (crontab -l 2>/dev/null || true) | grep -vF "# kyzn:${project_tag}:" | crontab - 2>/dev/null
 
     log_ok "Removed KyZN schedule for $(project_name)"
 }

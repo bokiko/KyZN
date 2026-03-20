@@ -11,8 +11,9 @@ if command -v cargo &>/dev/null; then
     clippy_output=$(cargo clippy --message-format json 2>/dev/null) || true
 
     if [[ -n "$clippy_output" ]]; then
-        warning_count=$(echo "$clippy_output" | grep -c '"level":"warning"' 2>/dev/null) || true
-        error_count=$(echo "$clippy_output" | grep -c '"level":"error"' 2>/dev/null) || true
+        # Use jq to count only top-level compiler messages, not nested occurrences
+        warning_count=$(echo "$clippy_output" | jq -R 'try fromjson catch null | select(. != null) | select(.reason == "compiler-message") | .message.level' 2>/dev/null | grep -c '"warning"') || warning_count=0
+        error_count=$(echo "$clippy_output" | jq -R 'try fromjson catch null | select(. != null) | select(.reason == "compiler-message") | .message.level' 2>/dev/null | grep -c '"error"') || error_count=0
 
         lint_score=100
         lint_score=$(( lint_score - error_count * 10 ))

@@ -56,21 +56,21 @@ enforce_config_ceilings() {
     local max_budget=25 max_turns=100 max_diff=10000
 
     local _cur_budget _cur_turns _cur_diff
-    eval "_cur_budget=\$$_var_budget"
-    eval "_cur_turns=\$$_var_turns"
-    eval "_cur_diff=\$$_var_diff_limit"
+    _cur_budget="${!_var_budget}"
+    _cur_turns="${!_var_turns}"
+    _cur_diff="${!_var_diff_limit}"
 
-    if (( $(awk "BEGIN {print ($_cur_budget > $max_budget) ? 1 : 0}") )); then
+    if (( $(awk -v b="$_cur_budget" -v m="$max_budget" 'BEGIN {print (b > m) ? 1 : 0}') )); then
         log_warn "Budget $_cur_budget exceeds max ($max_budget). Capping."
-        eval "$_var_budget=$max_budget"
+        printf -v "$_var_budget" '%s' "$max_budget"
     fi
-    if (( _cur_turns > max_turns )); then
+    if (( $(awk -v b="$_cur_turns" -v m="$max_turns" 'BEGIN {print (b > m) ? 1 : 0}') )); then
         log_warn "Max turns $_cur_turns exceeds max ($max_turns). Capping."
-        eval "$_var_turns=$max_turns"
+        printf -v "$_var_turns" '%s' "$max_turns"
     fi
-    if (( _cur_diff > max_diff )); then
+    if (( $(awk -v b="$_cur_diff" -v m="$max_diff" 'BEGIN {print (b > m) ? 1 : 0}') )); then
         log_warn "Diff limit $_cur_diff exceeds max ($max_diff). Capping."
-        eval "$_var_diff_limit=$max_diff"
+        printf -v "$_var_diff_limit" '%s' "$max_diff"
     fi
 }
 
@@ -78,6 +78,10 @@ enforce_config_ceilings() {
 # Safety: return to main/master branch (fallback chain)
 # ---------------------------------------------------------------------------
 safe_checkout_back() {
+    local target="${KYZN_ORIGINAL_BRANCH:-}"
+    if [[ -n "$target" ]]; then
+        git checkout "$target" 2>/dev/null && return
+    fi
     git checkout - 2>/dev/null ||
     git checkout main 2>/dev/null ||
     git checkout master 2>/dev/null ||
@@ -97,31 +101,27 @@ execute_claude() {
     local verbose="${7:-false}"
 
     # Build allowlist
-    local allowlist
-    allowlist=$(build_allowlist "$project_type")
+    local -a allowlist_arr=()
+    build_allowlist allowlist_arr "$project_type"
 
     log_step "Invoking Claude Code (model: $model, budget: \$$budget, max turns: $max_turns)..."
 
     local stderr_file
     stderr_file=$(mktemp)
 
-    # Sensitive file access restrictions (passed via --settings since no CLI flag exists)
-    local settings_json='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key"]}}'
-
     # Timeout (default 10 minutes)
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-600}"
 
-    # Core invocation (allowlist is intentionally unquoted for word splitting)
+    # Core invocation (allowlist is an array — properly quoted expansion)
     local result
-    # shellcheck disable=SC2086
     if $verbose; then
         # Stream condensed progress lines to terminal in real-time
         result=$(timeout "$claude_timeout" claude -p "$prompt" \
             --model "$model" \
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
-            $allowlist \
-            --settings "$settings_json" \
+            "${allowlist_arr[@]}" \
+            --settings "$KYZN_SETTINGS_JSON" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
@@ -136,6 +136,12 @@ execute_claude() {
                 log_error "Claude Code timed out after ${claude_timeout}s"
             else
                 log_error "Claude Code invocation failed"
+                if [[ -s "$stderr_file" ]]; then
+                    log_dim "Last stderr lines:"
+                    tail -10 "$stderr_file" | while IFS= read -r line; do
+                        log_dim "  $line"
+                    done
+                fi
             fi
             rm -f "$stderr_file"; return 1
         }
@@ -144,8 +150,8 @@ execute_claude() {
             --model "$model" \
             --max-budget-usd "$budget" \
             --max-turns "$max_turns" \
-            $allowlist \
-            --settings "$settings_json" \
+            "${allowlist_arr[@]}" \
+            --settings "$KYZN_SETTINGS_JSON" \
             --append-system-prompt-file "$system_prompt_file" \
             --output-format json \
             --no-session-persistence \
@@ -155,6 +161,12 @@ execute_claude() {
                 log_error "Claude Code timed out after ${claude_timeout}s"
             else
                 log_error "Claude Code invocation failed"
+                if [[ -s "$stderr_file" ]]; then
+                    log_dim "Last stderr lines:"
+                    tail -10 "$stderr_file" | while IFS= read -r line; do
+                        log_dim "  $line"
+                    done
+                fi
             fi
             rm -f "$stderr_file"; return 1
         }
@@ -263,6 +275,12 @@ cmd_improve() {
         focus="$config_focus"
     fi
 
+    # Validate budget format before processing
+    if ! [[ "$budget" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        log_warn "Invalid budget '$budget' — using default 2.50"
+        budget="2.50"
+    fi
+
     # Enforce hard ceilings (prevents config poisoning)
     enforce_config_ceilings budget max_turns diff_limit
 
@@ -303,7 +321,7 @@ cmd_improve() {
     log_info "Run ID: $run_id"
 
     # Step 1: Baseline measurement
-    local baseline_dir
+    local baseline_dir after_dir="" sys_prompt_file=""
     baseline_dir=$(mktemp -d)
 
     # Cleanup function — handles Ctrl+C, errors, and normal exit
@@ -348,6 +366,9 @@ cmd_improve() {
     fi
 
     # Step 2: Create branch (use run_id suffix for uniqueness)
+    local original_branch
+    original_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    KYZN_ORIGINAL_BRANCH="$original_branch"
     local run_suffix="${run_id##*-}"
     local safe_focus="${focus//[^a-zA-Z0-9_-]/-}"
     local branch_name="kyzn/$(date +%Y%m%d)-${safe_focus}-${run_suffix}"

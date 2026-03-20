@@ -10,7 +10,6 @@ preferences:
   budget: 2.50        # USD per run
   max_turns: 30       # max Claude turns per run
   diff_limit: 2000    # max lines changed before aborting
-  trust: guardian      # guardian (always PR) | autopilot (auto-merge if safe)
   on_build_fail: report  # report | discard | draft-pr
 
 focus:
@@ -24,3 +23,8 @@ focus:
 #     performance: 15
 #     quality: 25
 #     documentation: 10
+
+# NOTE: trust level (guardian/autopilot) lives in local.yaml only
+# It is gitignored to prevent config poisoning via committed repos
+# Run `kyzn init` to set it, or create .kyzn/local.yaml manually:
+#   trust: guardian

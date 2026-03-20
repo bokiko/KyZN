@@ -13,7 +13,7 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) ))
     exit 1
 fi
 
-KYZN_VERSION="0.4.0"
+KYZN_VERSION="0.5.0"
 # Resolve symlinks portably (readlink -f doesn't exist on macOS)
 _kyzn_resolve() {
     local f="$1"
@@ -63,9 +63,30 @@ Commands:
   update          Pull latest version
   version         Show version
 
-Options:
-  -h, --help      Show this help
-  -v, --version   Show version
+Improve options:
+  --auto              Use saved config (no prompts, for cron)
+  --focus <area>      Target specific area (security, testing, perf, quality, doc)
+  --mode <mode>       deep | clean | full
+  --model <model>     sonnet | opus | haiku
+  --budget <USD>      Budget per run (e.g. 5.00)
+  --turns <N>         Max Claude turns per run
+  --allow-ci          Allow CI/pipeline file creation
+  -v, --verbose       Show live Claude progress
+
+Analyze options:
+  --auto              Run without prompts
+  --fix               Auto-fix findings after analysis
+  --fix-budget <USD>  Budget for fix phase
+  --single            Use single reviewer instead of 4 specialists
+  --focus <area>      Narrow analysis to one area
+  --profile <p>       opus | hybrid | sonnet
+
+History options:
+  --global            Show history from all projects
+
+General:
+  -h, --help          Show this help
+  -v, --version       Show version
 
 Examples:
   kyzn init                       # First-time setup
@@ -78,6 +99,8 @@ Examples:
   kyzn improve --budget 5.00      # Set budget per run
   kyzn improve -v                 # Show live progress
   kyzn measure                    # Measure only, no changes
+  kyzn analyze --fix              # Deep analysis + auto-fix
+  kyzn history --global           # All projects
 EOF
 }
 
@@ -118,8 +141,8 @@ check_for_updates() {
         local behind
         behind=$(git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
         echo ""
-        echo -e "${RED}✗ KyZN is outdated${RESET} (${behind} commits behind)"
-        echo -e "  ${RED}Update now for better analysis accuracy and security fixes.${RESET}"
+        echo -e "${YELLOW}⚠ KyZN update available${RESET} (${behind} commits behind)"
+        echo -e "  ${YELLOW}Update for better analysis accuracy and security fixes.${RESET}"
         echo -e "  Run: ${CYAN}kyzn update${RESET}"
         echo ""
     fi

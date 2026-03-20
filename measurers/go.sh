@@ -9,9 +9,12 @@ results='[]'
 # ---------------------------------------------------------------------------
 if command -v go &>/dev/null; then
     vet_output=$(go vet ./... 2>&1) || true
-    vet_issues=$(echo "$vet_output" | grep -c '^' 2>/dev/null) || true
-    # Empty output = 0 issues
-    [[ -z "$vet_output" ]] && vet_issues=0
+    # Count only actual error lines (contain file:line: pattern), not "ok" or blank lines
+    if [[ -z "$vet_output" ]]; then
+        vet_issues=0
+    else
+        vet_issues=$(echo "$vet_output" | grep -cE '\.go:[0-9]+:' 2>/dev/null) || vet_issues=0
+    fi
 
     vet_score=100
     vet_score=$(( vet_score - vet_issues * 5 ))
@@ -34,8 +37,9 @@ fi
 if command -v govulncheck &>/dev/null; then
     vuln_output=$(govulncheck -json ./... 2>/dev/null) || true
 
-    if [[ -n "$vuln_output" ]] && echo "$vuln_output" | jq . &>/dev/null; then
-        vuln_count=$(echo "$vuln_output" | jq '[.vulns[]? | select(.modules)] | length') || true
+    if [[ -n "$vuln_output" ]]; then
+        # govulncheck outputs NDJSON (one JSON object per line), not a single JSON object
+        vuln_count=$(echo "$vuln_output" | jq -R 'try fromjson catch null | select(. != null) | select(.finding != null)' 2>/dev/null | jq -s 'length') || true
         vuln_count="${vuln_count:-0}"
 
         sec_score=100
