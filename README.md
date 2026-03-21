@@ -1,24 +1,24 @@
-<div align="center">
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=14,20,24&height=200&section=header&text=KyZN&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Autonomous%20Code%20Improvement%20CLI&descAlignY=55&descAlign=50" />
+</p>
 
-# KyZN
-
-<strong>Autonomous code improvement CLI — measure, analyze, improve, verify, ship</strong>
-
-<p>
+<p align="center">
   <a href="https://github.com/bokiko/KyZN"><img src="https://img.shields.io/badge/GitHub-KyZN-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
-  <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Powered_by-Claude_Code-6B4FBB?style=for-the-badge" alt="Claude Code"></a>
+  <a href="https://x.com/bokiko"><img src="https://img.shields.io/badge/X-@bokiko-000000?style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
 </p>
 
-<p>
-  <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
-  <img src="https://img.shields.io/github/license/bokiko/KyZN?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square" alt="Last Commit">
-  <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
-  <img src="https://img.shields.io/badge/version-0.5.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-218%20passing-brightgreen?style=flat-square" alt="Tests">
+<p align="center">
+  <img src="https://img.shields.io/badge/Bash-5.0+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
+  <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
+  <img src="https://img.shields.io/badge/version-0.5.0-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-218%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
+  <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
-</div>
+<p align="center">
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Improve+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+in+parallel;218+tests+passing;Security+audited+%26+published" alt="Typing SVG"></a>
+</p>
 
 ---
 
@@ -239,11 +239,23 @@ kyzn schedule off                   # Remove schedule
 
 ## How It Works
 
-Detect project type → measure health with real tools → improve with Claude → verify build + tests → self-repair on failure → score gate → PR.
+```mermaid
+graph LR
+    A[Detect] --> B[Measure]
+    B --> C{Mode?}
+    C -->|improve| D[Sonnet]
+    C -->|analyze| E[4x Opus]
+    D --> F[Verify]
+    E --> G[Consensus]
+    G --> F
+    F -->|fail| H[Self-Repair]
+    H --> F
+    F -->|pass| I[Score Gate]
+    I -->|pass| J[PR]
+```
 
-For deep analysis, 4 Opus specialists (security, correctness, performance, architecture) review in parallel, then a consensus step deduplicates and ranks findings.
-
-See [`docs/how-it-works.md`](docs/how-it-works.md) for architecture diagrams, health score weights, modes, configuration, and supported languages.
+> [!TIP]
+> See [`docs/how-it-works.md`](docs/how-it-works.md) for detailed architecture, health score weights, modes, configuration, and supported languages.
 
 ---
 
@@ -325,44 +337,25 @@ Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement m
 
 ---
 
-## Project Structure
+<details>
+<summary><b>Project Structure</b></summary>
 
 ```
 kyzn/
 ├── kyzn                       # Entry point + subcommand routing
 ├── install.sh                 # One-liner installer
-├── lib/
-│   ├── core.sh                # Logging, config, prompt utilities
-│   ├── detect.sh              # Project type + feature detection
-│   ├── interview.sh           # Interactive setup questionnaire
-│   ├── measure.sh             # Measurement dispatcher + health scoring
-│   ├── prompt.sh              # Prompt assembly for Claude
-│   ├── execute.sh             # Claude invocation + improve orchestration
-│   ├── verify.sh              # Build/test verification per language
-│   ├── allowlist.sh           # Per-language tool permissions
-│   ├── analyze.sh             # Multi-agent Opus analysis + consensus + fix
-│   ├── report.sh              # Report generation + PR creation
-│   ├── approve.sh             # Approve/reject handling
-│   ├── history.sh             # Run history + status dashboard
-│   └── schedule.sh            # Cron integration
-├── measurers/
-│   ├── generic.sh             # TODOs, secrets, git health, docs
-│   ├── node.sh                # npm audit, eslint, tsc, coverage
-│   ├── python.sh              # ruff, mypy, pytest-cov, pip-audit
-│   ├── rust.sh                # cargo clippy, cargo audit
-│   └── go.sh                  # go vet, govulncheck
+├── lib/                       # Core libraries (14 modules)
+├── measurers/                 # Per-language health measurers
 ├── templates/                 # Prompt templates
 ├── profiles/                  # Focus-specific system prompts
-├── docs/                      # Research and design documents
+├── docs/                      # Research, examples, architecture
 ├── full-audit-by-claude/      # Published security audit (16 agent reports)
 ├── .github/workflows/         # CI (ShellCheck on push/PR)
 └── tests/
     └── selftest.sh            # 218 tests (50 core + 4 stress)
 ```
 
----
-
-## Self-Test
+</details>
 
 ```bash
 kyzn selftest              # Quick tests (209 cases)
@@ -402,6 +395,17 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
+## Related Projects
+
 <p align="center">
-  Made by <a href="https://www.bokiko.io">@bokiko</a>
+  <a href="https://github.com/bokiko/RepoFix">
+    <img align="center" src="https://github-readme-stats.vercel.app/api/pin/?username=bokiko&repo=RepoFix&theme=transparent&hide_border=true" />
+  </a>
+</p>
+
+---
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=14,20,24&height=100&section=footer" />
+<p align="center">
+  Made by <a href="https://bokiko.io">@bokiko</a>
 </p>
