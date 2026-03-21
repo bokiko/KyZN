@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KyZN installer — curl -fsSL https://raw.githubusercontent.com/bokiko/kyzn/main/install.sh | bash
+# KyZN installer — curl -fsSL https://raw.githubusercontent.com/bokiko/KyZN/main/install.sh | bash
 set -euo pipefail
 
 REPO="bokiko/KyZN"
@@ -159,14 +159,14 @@ install_yq() {
     [[ "$(uname)" == "Darwin" ]] && os="darwin"
 
     # Pinned version + SHA256 checksums for supply chain safety
-    local YQ_VERSION="v4.44.1"
-    # checksums from https://github.com/mikefarah/yq/releases/tag/v4.44.1
+    local YQ_VERSION="v4.52.4"
+    # checksums computed from https://github.com/mikefarah/yq/releases/tag/v4.52.4
     local expected_checksum=""
     case "${os}_${arch}" in
-        linux_amd64)  expected_checksum="a8bd3bd4e1871b37028a1e89ddc16fec10e62586e4a1053e0c4666abb559f029" ;;
-        linux_arm64)  expected_checksum="47025f24e1b752fdf340e48cdeab56bdd2a6a7f2cf7b2d48b6fae83a4e724c8c" ;;
-        darwin_amd64) expected_checksum="2ff786273b7a5f2d1c9df9e4c932a4fb38cf6d44f553573a1d53ed9108d661db" ;;
-        darwin_arm64) expected_checksum="de22118250c2eb8e87d8720d4101990fc66c3ddd1dda29f0b3a83bf6f7c3a699" ;;
+        linux_amd64)  expected_checksum="0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c" ;;
+        linux_arm64)  expected_checksum="4c2cc022a129be5cc1187959bb4b09bebc7fb543c5837b93001c68f97ce39a5d" ;;
+        darwin_amd64) expected_checksum="d72a75fe9953c707d395f653d90095b133675ddd61aa738e1ac9a73c6c05e8be" ;;
+        darwin_arm64) expected_checksum="6bfa43a439936644d63c70308832390c8838290d064970eaada216219c218a13" ;;
     esac
 
     local platform_key="${os}_${arch}"
