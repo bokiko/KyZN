@@ -1620,6 +1620,41 @@ test_validate_run_id() {
     validate_run_id "random-junk" && fail "random junk" "accepted" || pass "random junk rejected"
 }
 
+test_reflexion_retry_loop() {
+    log_header "42. Reflexion retry loop in cmd_improve"
+
+    local src
+    src=$(cat "$KYZN_ROOT/lib/execute.sh")
+
+    # 1. Retry flag exists to prevent infinite loops
+    assert_contains "has retried flag" "$src" 'local retried=false'
+
+    # 2. Retry is gated on baseline_verify_ok (only retry when Claude broke clean build)
+    assert_contains "retry gated on baseline_verify_ok" "$src" 'baseline_verify_ok'
+
+    # 3. Captures verify_build output to a temp file for error context
+    assert_contains "captures verify errors to file" "$src" 'verify_errors_file'
+
+    # 4. Constructs retry prompt with error context
+    assert_contains "retry prompt has error message" "$src" 'Your previous changes broke the build'
+    assert_contains "retry prompt includes errors" "$src" 'verify_errors'
+
+    # 5. Halves the budget for retry
+    assert_contains "halves budget for retry" "$src" 'retry_budget'
+
+    # 6. Calls execute_claude again for retry
+    assert_contains "calls execute_claude for retry" "$src" 'execute_claude "$retry_prompt"'
+
+    # 7. Logs self-repair attempt
+    assert_contains "logs self-repair attempt" "$src" 'self-repair'
+
+    # 8. Sets retried flag to prevent double-retry
+    assert_contains "sets retried=true" "$src" 'retried=true'
+
+    # 9. Only retries once (checks retried flag)
+    assert_contains "checks retried flag" "$src" '$retried'
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1687,6 +1722,7 @@ main() {
     test_unstage_secrets
     test_path_traversal_reject_diff
     test_validate_run_id
+    test_reflexion_retry_loop
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

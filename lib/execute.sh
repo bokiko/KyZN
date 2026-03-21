@@ -449,13 +449,59 @@ cmd_improve() {
 
     log_info "Changes: +$diff_lines -$del_lines ($total_diff lines)"
 
-    # Step 6: Verify
+    # Step 6: Verify (with reflexion retry on failure)
+    local retried=false
+    local verify_errors_file
+    verify_errors_file=$(mktemp)
+
     if verify_build; then
         log_ok "Build and tests passed!"
+        rm -f "$verify_errors_file"
     else
-        if $baseline_verify_ok; then
-            # Baseline was clean, Claude broke it — abort
+        # Capture error output from verify_build for retry context
+        local verify_errors
+        verify_errors=$(verify_build 2>&1) || true
+        echo "$verify_errors" > "$verify_errors_file"
+
+        if $baseline_verify_ok && ! $retried; then
+            # Baseline was clean, Claude broke it — attempt self-repair (one retry)
+            log_warn "Build failed -- attempting self-repair..."
+            retried=true
+
+            # Halve the budget for the retry attempt
+            local retry_budget
+            retry_budget=$(awk -v b="$budget" 'BEGIN { printf "%.2f", b / 2 }')
+
+            # Construct retry prompt with error context
+            local retry_prompt
+            retry_prompt="Your previous changes broke the build. Here are the errors:
+
+${verify_errors}
+
+Please fix these issues while preserving your improvements. Do not revert all changes — only fix what is broken."
+
+            # Execute Claude again with error context
+            if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then
+                # Re-verify after retry
+                if verify_build; then
+                    log_ok "Self-repair succeeded -- build and tests pass after retry!"
+                    rm -f "$verify_errors_file"
+                else
+                    log_error "Self-repair failed -- build still broken after retry."
+                    rm -f "$verify_errors_file"
+                    handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
+                    return 1
+                fi
+            else
+                log_error "Self-repair failed -- Claude execution error on retry."
+                rm -f "$verify_errors_file"
+                handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
+                return 1
+            fi
+        elif $baseline_verify_ok; then
+            # Already retried and still failing
             log_error "Build or tests failed after improvements."
+            rm -f "$verify_errors_file"
             handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
         else
@@ -479,12 +525,14 @@ cmd_improve() {
                 echo "$new_failures" | while IFS= read -r f; do
                     [[ -n "$f" ]] && log_error "  - $f"
                 done
+                rm -f "$verify_errors_file"
                 handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
                 return 1
             else
                 log_warn "Build/tests still failing, but all failures are pre-existing. Continuing."
             fi
         fi
+        rm -f "$verify_errors_file"
     fi
 
     # Step 7: Re-measure

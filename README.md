@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square" alt="Last Commit">
   <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="Status">
   <img src="https://img.shields.io/badge/version-0.5.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-208%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-218%20passing-brightgreen?style=flat-square" alt="Tests">
 </p>
 
 </div>
@@ -26,30 +26,39 @@
 
 **KyZN** (from _kaizen_ — continuous improvement) measures your project's health with real tools, sends the results to Claude Code with strict safety constraints, verifies the changes, and opens a PR — all autonomously. Supports Node.js, Python, Rust, and Go out of the box.
 
+<div align="center">
+  <img src="docs/images/kyzn-demo.png" alt="KyZN in action — health score + multi-agent analysis" width="680">
+  <br>
+  <em>Health score dashboard + 4-agent parallel analysis</em>
+</div>
+
+---
+
+## Quick Demo
+
+```bash
+$ cd your-project
+$ kyzn measure
+
+  Project Health Score
+
+  68 / 100
+
+  Categories:
+  security        ████████████████░░░░  80%
+  testing         ██████████░░░░░░░░░░  50%
+  quality         ██████████████░░░░░░  72%
+  performance     ████████████████████ 100%
+  documentation   ████████████░░░░░░░░  60%
+
+  ℹ Weakest area: testing (50%)
+    Run kyzn improve --focus testing to improve it.
+    Run kyzn analyze for a deep multi-agent code review.
 ```
-$ kyzn improve
 
-→ Project type: node
-  Features: TypeScript Tests CI
+That's it — one command, zero config. KyZN runs your project's real tools (eslint, ruff, clippy, go vet) and produces a health score. Then `kyzn improve` sends the results to Claude Code, which makes targeted improvements, verifies them, and opens a PR.
 
-  Run settings:
-    Mode:   deep
-    Model:  sonnet
-    Budget: $2.50
-    Focus:  auto
-
-  Model to use?
-    1) sonnet  — fast, cost-effective (recommended)
-    2) opus    — highest quality, slower
-    3) haiku   — cheapest, basic improvements
-  Choice [1]:
-
-→ Invoking Claude Code (model: sonnet, budget: $2.50, max turns: 30)...
-✓ Claude finished (cost: $1.23, reason: end_turn)
-✓ Build and tests passed!
-✓ Health: 52 → 68 (↑ +16)
-✓ PR created: https://github.com/you/project/pull/42
-```
+See [`docs/examples/sample-report.md`](docs/examples/sample-report.md) for what a full analysis report looks like.
 
 ---
 
@@ -209,77 +218,11 @@ kyzn schedule off                   # Remove schedule
 
 ## How It Works
 
-### `kyzn improve` — Sonnet incremental improvements
+Detect project type → measure health with real tools → improve with Claude → verify build + tests → self-repair on failure → score gate → PR.
 
-```
- ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
- │  Detect  │───▶│ Measure  │───▶│ Improve  │───▶│  Verify  │───▶│  Score   │───▶│    PR    │
- │          │    │          │    │ (Sonnet) │    │          │    │  Gate    │    │          │
- │ language │    │ run real │    │ Claude   │    │ build +  │    │ abort   │    │ before/  │
- │ features │    │ tools    │    │ Code     │    │ tests    │    │ if drop │    │ after    │
- └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
-```
+For deep analysis, 4 Opus specialists (security, correctness, performance, architecture) review in parallel, then a consensus step deduplicates and ranks findings.
 
-### `kyzn analyze` — Multi-agent Opus deep analysis
-
-```
-                                  ┌────────────┐
-                                  │  Security  │──┐
- ┌──────────┐    ┌──────────┐    ├────────────┤  │    ┌───────────┐    ┌──────────┐
- │  Detect  │───▶│ Measure  │───▶│Correctness │──┼───▶│ Consensus │───▶│  Report  │───▶│   Fix    │
- │          │    │          │    ├────────────┤  │    │  (Opus)   │    │          │    │ (Sonnet) │
- │ language │    │ run real │    │Performance │──┤    │ dedup +   │    │ kyzn-    │    │ optional │
- │ features │    │ tools    │    ├────────────┤  │    │ rank      │    │ report   │    │ --fix    │
- └──────────┘    └──────────┘    │Architecture│──┘    └───────────┘    │ .md      │    └──────────┘
-                                  └────────────┘                       └──────────┘
-                                   4 Opus sessions
-                                   (parallel)
-```
-
-1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
-2. **Measure** — runs real tools and computes a health score out of 100
-3. **Improve/Analyze** — Sonnet for incremental fixes, 4 parallel Opus specialists for deep code review
-4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones.
-5. **Score Gate** — re-measures health. If score dropped, aborts and cleans up.
-6. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root (archived in `.kyzn/reports/`)
-7. **PR** — commits, pushes, and creates PR with before/after health comparison
-
----
-
-## Health Score
-
-```
-  Project Health Score
-
-  68 / 100
-
-  Categories:
-  security        ████████████████░░░░  80%
-  testing         ██████████░░░░░░░░░░  50%
-  quality         ██████████████░░░░░░  72%
-  performance     ████████████████████ 100%
-  documentation   ████████████░░░░░░░░  60%
-```
-
-| Category | Weight | What It Measures |
-|----------|--------|------------------|
-| Security | 25% | Dependency vulnerabilities, hardcoded secrets |
-| Testing | 25% | Test coverage, test file ratio |
-| Quality | 25% | Lint errors, type errors, TODO count, git health |
-| Performance | 15% | Large files, bundle size indicators |
-| Documentation | 10% | README quality and completeness |
-
----
-
-## Supported Languages
-
-| Language | Detection | Measurers | Verify |
-|----------|-----------|-----------|--------|
-| **Node.js** | `package.json` | npm audit, eslint, tsc, coverage | npm build, npm test |
-| **Python** | `pyproject.toml`, `setup.py` | ruff, mypy, pytest-cov, pip-audit | ruff check, mypy, pytest |
-| **Rust** | `Cargo.toml` (incl. workspaces) | cargo clippy, cargo audit | cargo check, cargo test |
-| **Go** | `go.mod` | go vet, govulncheck | go build, go test, go vet |
-| **Generic** | (fallback) | TODOs, git health, secrets, docs | — |
+See [`docs/how-it-works.md`](docs/how-it-works.md) for architecture diagrams, health score weights, modes, configuration, and supported languages.
 
 ---
 
@@ -357,43 +300,7 @@ If you find a security issue in KyZN, please open a GitHub issue. Since KyZN run
 
 ## Configuration
 
-`kyzn init` creates `.kyzn/config.yaml`:
-
-```yaml
-project:
-  name: my-project
-  type: node
-
-preferences:
-  mode: deep            # deep | clean | full
-  model: sonnet         # sonnet | opus | haiku
-  budget: 2.50          # USD per run
-  max_turns: 30         # Claude conversation turns
-  diff_limit: 2000      # max lines changed
-  on_build_fail: report # report | discard | draft-pr
-  # trust level is in .kyzn/local.yaml (gitignored, not committable)
-
-focus:
-  priorities: [auto]    # auto | security | testing | quality | performance | documentation
-
-scoring:
-  weights:
-    security: 25
-    testing: 25
-    quality: 25
-    performance: 15
-    documentation: 10
-```
-
----
-
-## Modes
-
-| Mode | What It Does | Best For |
-|------|-------------|----------|
-| **deep** | Only fixes real bugs, security issues, error handling gaps. No cosmetic changes. | Production codebases |
-| **clean** | Dead code removal, unused imports, naming fixes, docs. No behavior changes. | Tech debt cleanup |
-| **full** | Both real improvements and cleanup. Maximum value per run. | Side projects |
+Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement modes: **deep** (real bugs only), **clean** (dead code + naming), **full** (everything). See [`docs/how-it-works.md`](docs/how-it-works.md) for full config reference and mode details.
 
 ---
 
@@ -429,7 +336,7 @@ kyzn/
 ├── full-audit-by-claude/      # Published security audit (16 agent reports)
 ├── .github/workflows/         # CI (ShellCheck on push/PR)
 └── tests/
-    └── selftest.sh            # 208 tests (49 core + 4 stress)
+    └── selftest.sh            # 218 tests (50 core + 4 stress)
 ```
 
 ---
@@ -437,8 +344,8 @@ kyzn/
 ## Self-Test
 
 ```bash
-kyzn selftest              # Quick tests (199 cases)
-kyzn selftest --full       # Full suite with stress tests (208 cases)
+kyzn selftest              # Quick tests (209 cases)
+kyzn selftest --full       # Full suite with stress tests (218 cases)
 ```
 
 ---
@@ -451,7 +358,7 @@ kyzn selftest --full       # Full suite with stress tests (208 cases)
 - [x] Score regression gate
 - [x] Pre-existing test failure detection
 - [x] Branch cleanup on all failure paths
-- [x] 208-test self-test suite
+- [x] 218-test self-test suite
 - [x] Multi-agent analysis — 4 Opus specialists + consensus (`kyzn analyze`)
 - [x] Two-model architecture (Opus thinks, Sonnet executes)
 - [x] Live progress indicator during analysis
@@ -460,7 +367,7 @@ kyzn selftest --full       # Full suite with stress tests (208 cases)
 - [x] Full report context passed to fix phase for accurate Sonnet fixes
 - [x] 16-agent parallel security audit with published reports
 - [x] Audit-driven hardening: eval removal, array allowlists, input validation, crash safety
-- [ ] Reflexion loop (retry with self-reflection on failure)
+- [x] Reflexion loop (retry with self-reflection on failure)
 - [ ] Multi-candidate patches (generate 3, pick best)
 - [ ] Experience bank (store/retrieve successful fix patterns)
 - [ ] Learning from rejection feedback

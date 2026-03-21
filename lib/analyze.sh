@@ -568,7 +568,7 @@ cmd_analyze() {
         per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $budget / 5}")
     fi
 
-    # Confirm (no dollar amounts shown)
+    # Confirm
     echo ""
     echo -e "${BOLD}Analysis settings:${RESET}"
     echo -e "  Profile: ${CYAN}$profile${RESET}"
@@ -578,6 +578,7 @@ cmd_analyze() {
     elif [[ -n "$focus" ]]; then
         echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
+    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET} ($profile profile)"
     echo ""
 
     if ! $auto && ! prompt_yn "Run deep analysis?"; then
