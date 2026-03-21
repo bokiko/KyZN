@@ -47,6 +47,19 @@ KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["~/.ssh/**","~/.aws/*
 ensure_kyzn_dirs() {
     mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
     mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
+
+    # Always ensure .kyzn/.gitignore exists (protects target repos even without kyzn init)
+    local gi="$KYZN_DIR/.gitignore"
+    if [[ ! -f "$gi" ]]; then
+        cat > "$gi" <<'GITIGNORE'
+# kyzn — gitignored local data
+history/
+reports/
+local.yaml
+kyzn-report.md
+.improve.lock/
+GITIGNORE
+    fi
 }
 
 # Validate run ID format (prevent path traversal and injection)

@@ -24,6 +24,57 @@ unstage_secrets() {
 }
 
 # ---------------------------------------------------------------------------
+# Safety: stage only Claude's changes, excluding KyZN artifacts
+# ---------------------------------------------------------------------------
+stage_claude_changes() {
+    # Stage modified tracked files
+    safe_git add -u 2>/dev/null
+
+    # Stage new files Claude created, excluding KyZN artifacts
+    local new_files
+    new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$' || true)
+    if [[ -n "$new_files" ]]; then
+        echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
+    fi
+
+    # Run safety filters on what's staged
+    unstage_secrets
+    check_dangerous_files
+}
+
+# ---------------------------------------------------------------------------
+# Safety: count diff size without permanently staging (excludes KyZN artifacts)
+# ---------------------------------------------------------------------------
+count_diff_size() {
+    local _var_added=$1 _var_deleted=$2 _var_binary=$3
+
+    # Stage temporarily to count
+    safe_git add -u 2>/dev/null
+    local new_files
+    new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$' || true)
+    if [[ -n "$new_files" ]]; then
+        echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
+    fi
+
+    local numstat
+    numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
+    safe_git reset HEAD 2>/dev/null || true
+
+    local added=0 deleted=0 binary=0
+    if [[ -n "$numstat" ]]; then
+        added=$(echo "$numstat" | awk '{sum+=$1} END {print sum+0}')
+        deleted=$(echo "$numstat" | awk '{sum+=$2} END {print sum+0}')
+        binary=$(echo "$numstat" | grep -c '^-' 2>/dev/null) || true
+    fi
+
+    printf -v "$_var_added" '%s' "$added"
+    printf -v "$_var_deleted" '%s' "$deleted"
+    printf -v "$_var_binary" '%s' "$binary"
+}
+
+# ---------------------------------------------------------------------------
 # Safety: check for dangerous staged files (CI pipelines, git hooks)
 # ---------------------------------------------------------------------------
 check_dangerous_files() {
@@ -419,22 +470,11 @@ cmd_improve() {
         return 1
     }
 
-    # Step 5: Check diff size (tracked changes + new untracked files)
-    # Stage temporarily to count all changes (tracked + untracked)
-    safe_git add -A 2>/dev/null
-    local numstat
-    numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
-    git reset HEAD 2>/dev/null || true
-    local diff_lines=0 del_lines=0
-    if [[ -n "$numstat" ]]; then
-        diff_lines=$(echo "$numstat" | awk '{sum+=$1} END {print sum+0}')
-        del_lines=$(echo "$numstat" | awk '{sum+=$2} END {print sum+0}')
-    fi
+    # Step 5: Check diff size (tracked changes + new untracked files, excludes KyZN artifacts)
+    local diff_lines=0 del_lines=0 binary_count=0
+    count_diff_size diff_lines del_lines binary_count
     local total_diff=$(( diff_lines + del_lines ))
 
-    # Check for binary files in diff
-    local binary_count
-    binary_count=$(echo "$numstat" | grep -c '^-' 2>/dev/null) || true
     if (( binary_count > 0 )); then
         log_warn "Claude added $binary_count binary file(s)"
         total_diff=$(( total_diff + binary_count * 500 )) # penalize binaries
@@ -639,11 +679,9 @@ EOF
             ;;
         draft-pr)
             log_info "Creating draft PR with failure report..."
-            safe_git add -A 2>/dev/null
-            unstage_secrets
-            check_dangerous_files
+            stage_claude_changes
             safe_git commit -m "KyZN: attempted improvements (build failed) [$run_id]" 2>/dev/null || true
-            git push -u origin HEAD 2>/dev/null || true
+            safe_git push -u origin HEAD 2>/dev/null || true
             gh pr create --draft \
                 --title "KyZN: attempted improvements (build failed)" \
                 --body "**WARNING: Build failed after these changes.**\n\nRun ID: $run_id\nCost: \$${KYZN_CLAUDE_COST:-unknown}" \

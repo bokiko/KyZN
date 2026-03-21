@@ -275,6 +275,7 @@ history/
 reports/
 local.yaml
 kyzn-report.md
+.improve.lock/
 EOF
 }
 

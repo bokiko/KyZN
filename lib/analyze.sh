@@ -1155,30 +1155,23 @@ run_fix_phase() {
         return 1
     fi
 
-    # Diff-limit check before committing
-    safe_git add -A 2>/dev/null
-    local numstat_fix
-    numstat_fix=$(git diff --cached --numstat HEAD 2>/dev/null) || true
-    local fix_diff_lines=0 fix_del_lines=0
-    if [[ -n "$numstat_fix" ]]; then
-        fix_diff_lines=$(echo "$numstat_fix" | awk '{sum+=$1} END {print sum+0}')
-        fix_del_lines=$(echo "$numstat_fix" | awk '{sum+=$2} END {print sum+0}')
-    fi
+    # Diff-limit check before committing (excludes KyZN artifacts)
+    local fix_diff_lines=0 fix_del_lines=0 fix_binary=0
+    count_diff_size fix_diff_lines fix_del_lines fix_binary
     local fix_total_diff=$(( fix_diff_lines + fix_del_lines ))
     local diff_limit
     diff_limit=$(config_get '.preferences.diff_limit' '2000')
 
     if (( fix_total_diff > diff_limit )); then
         log_warn "Fix diff exceeds limit ($fix_total_diff > $diff_limit lines). Aborting."
-        git reset HEAD 2>/dev/null || true
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         rm -rf "$lockdir" 2>/dev/null
         return 1
     fi
 
-    unstage_secrets
-    check_dangerous_files
+    # Stage Claude's changes only (excludes KyZN artifacts, secrets, CI files)
+    stage_claude_changes
     safe_git commit -m "KyZN: apply analysis fixes ($run_id)" 2>/dev/null || true
 
     local diff_stat
@@ -1189,7 +1182,7 @@ run_fix_phase() {
 
     # Push and create PR (matching improve's flow)
     log_step "Pushing and creating PR..."
-    git push -u origin HEAD 2>/dev/null || {
+    safe_git push -u origin HEAD 2>/dev/null || {
         log_warn "Push failed — changes are committed locally on $branch_name"
         rm -rf "$lockdir" 2>/dev/null
         return 0

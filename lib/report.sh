@@ -28,8 +28,11 @@ generate_report() {
     if (( delta > 0 )); then trend="↑"; fi
     if (( delta < 0 )); then trend="↓"; fi
 
-    # Generate diff summary (stage first to include new files)
-    safe_git add -A 2>/dev/null
+    # Generate diff summary (stage temporarily, excluding KyZN artifacts)
+    local _add=0 _del=0 _bin=0
+    count_diff_size _add _del _bin
+    # Re-stage briefly to get --stat output
+    stage_claude_changes
     local diff_stat
     diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")
     local files_changed
@@ -74,10 +77,8 @@ EOF
     local trust
     trust=$(local_config_get '.trust' 'guardian')
 
-    # Stage all changes, unstage secrets, warn about CI files
-    safe_git add -A 2>/dev/null
-    unstage_secrets
-    check_dangerous_files
+    # Stage Claude's changes only (excludes KyZN artifacts, secrets, CI files)
+    stage_claude_changes
     safe_git commit -m "KyZN($mode): improve $focus [run:$run_id]
 
 Health: $before_score → $after_score ($trend$delta)
