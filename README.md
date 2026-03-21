@@ -73,7 +73,6 @@ See [`docs/examples/sample-report.md`](docs/examples/sample-report.md) for what 
 | `claude` | Yes | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
 | `jq` | Yes | JSON processing |
 | `yq` | Yes | YAML config |
-| Claude auth | Yes | Log in via `claude` CLI (OAuth) **or** set `ANTHROPIC_API_KEY` |
 
 ### Installation
 
@@ -88,6 +87,28 @@ ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
 # Verify
 kyzn doctor
 ```
+
+### Authentication
+
+KyZN needs Claude Code authenticated. Pick **one** method:
+
+**Option A — OAuth login (recommended)**
+```bash
+claude    # Opens browser, log in once, done
+```
+
+**Option B — API key**
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+> **Heads up:** If `ANTHROPIC_API_KEY` is set in your shell, Claude will use it instead of OAuth — even if the key is expired. If `kyzn doctor` shows "Claude auth: API key" but things fail, run `unset ANTHROPIC_API_KEY` to fall back to OAuth.
+
+To switch between methods:
+- **Use OAuth:** `unset ANTHROPIC_API_KEY` (and remove any export from `~/.bashrc`)
+- **Use API key:** `export ANTHROPIC_API_KEY="sk-ant-..."`
+
+`kyzn doctor` shows which method is active.
 
 ### First Run
 

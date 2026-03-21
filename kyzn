@@ -308,7 +308,18 @@ cmd_doctor() {
 
     # Claude auth (API key OR OAuth login)
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        log_ok "Claude auth: API key"
+        # Validate the key actually works (quick test)
+        local _key_test
+        _key_test=$(claude -p "hi" --output-format json --no-session-persistence --max-turns 1 2>/dev/null) || true
+        if echo "$_key_test" | grep -q '"is_error":true' 2>/dev/null; then
+            log_fail "Claude auth: API key is SET but INVALID"
+            log_dim "  Your ANTHROPIC_API_KEY is expired or wrong."
+            log_dim "  Fix: unset ANTHROPIC_API_KEY  (to use OAuth login instead)"
+            log_dim "  Or replace the key in ~/.bashrc with a valid one."
+            ok=false
+        else
+            log_ok "Claude auth: API key (verified)"
+        fi
     elif claude auth status &>/dev/null 2>&1 || [[ -d "${HOME}/.claude" ]]; then
         log_ok "Claude auth: logged in (no API key needed)"
     else
