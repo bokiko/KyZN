@@ -1,6 +1,8 @@
 # kyzn local data
 .kyzn/history/
 .kyzn/reports/
+.kyzn/local.yaml
+kyzn-report.md
 
 # Claude Code agent cache
 .claude/

@@ -401,33 +401,35 @@ scoring:
 
 ```
 kyzn/
-├── kyzn                    # Entry point + subcommand routing
-├── install.sh              # One-liner installer
+├── kyzn                       # Entry point + subcommand routing
+├── install.sh                 # One-liner installer
 ├── lib/
-│   ├── core.sh             # Logging, config, prompt utilities
-│   ├── detect.sh           # Project type + feature detection
-│   ├── interview.sh        # Interactive setup questionnaire
-│   ├── measure.sh          # Measurement dispatcher + health scoring
-│   ├── prompt.sh           # Prompt assembly for Claude
-│   ├── execute.sh          # Claude invocation + improve orchestration
-│   ├── verify.sh           # Build/test verification per language
-│   ├── allowlist.sh        # Per-language tool permissions
-│   ├── analyze.sh          # Multi-agent Opus analysis (4 specialists + consensus)
-│   ├── report.sh           # Report generation + PR creation
-│   ├── approve.sh          # Approve/reject handling
-│   ├── history.sh          # Run history + status dashboard
-│   └── schedule.sh         # Cron integration
+│   ├── core.sh                # Logging, config, prompt utilities
+│   ├── detect.sh              # Project type + feature detection
+│   ├── interview.sh           # Interactive setup questionnaire
+│   ├── measure.sh             # Measurement dispatcher + health scoring
+│   ├── prompt.sh              # Prompt assembly for Claude
+│   ├── execute.sh             # Claude invocation + improve orchestration
+│   ├── verify.sh              # Build/test verification per language
+│   ├── allowlist.sh           # Per-language tool permissions
+│   ├── analyze.sh             # Multi-agent Opus analysis + consensus + fix
+│   ├── report.sh              # Report generation + PR creation
+│   ├── approve.sh             # Approve/reject handling
+│   ├── history.sh             # Run history + status dashboard
+│   └── schedule.sh            # Cron integration
 ├── measurers/
-│   ├── generic.sh          # TODOs, secrets, git health, docs
-│   ├── node.sh             # npm audit, eslint, tsc, coverage
-│   ├── python.sh           # ruff, mypy, pytest-cov, pip-audit
-│   ├── rust.sh             # cargo clippy, cargo audit
-│   └── go.sh               # go vet, govulncheck
-├── templates/              # Prompt templates
-├── profiles/               # Focus-specific system prompts
-├── full-audit-by-claude/   # Published security audit (16 agent reports)
+│   ├── generic.sh             # TODOs, secrets, git health, docs
+│   ├── node.sh                # npm audit, eslint, tsc, coverage
+│   ├── python.sh              # ruff, mypy, pytest-cov, pip-audit
+│   ├── rust.sh                # cargo clippy, cargo audit
+│   └── go.sh                  # go vet, govulncheck
+├── templates/                 # Prompt templates
+├── profiles/                  # Focus-specific system prompts
+├── docs/                      # Research and design documents
+├── full-audit-by-claude/      # Published security audit (16 agent reports)
+├── .github/workflows/         # CI (ShellCheck on push/PR)
 └── tests/
-    └── selftest.sh         # 208 tests (49 core + 4 stress)
+    └── selftest.sh            # 208 tests (49 core + 4 stress)
 ```
 
 ---
