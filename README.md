@@ -27,9 +27,7 @@
 **KyZN** (from _kaizen_ — continuous improvement) measures your project's health with real tools, sends the results to Claude Code with strict safety constraints, verifies the changes, and opens a PR — all autonomously. Supports Node.js, Python, Rust, and Go out of the box.
 
 <div align="center">
-  <img src="docs/images/kyzn-demo.png" alt="KyZN in action — health score + multi-agent analysis" width="680">
-  <br>
-  <em>Health score dashboard + 4-agent parallel analysis</em>
+  <img src="images/kyzn-measure.png" alt="KyZN measure — health score dashboard" width="580">
 </div>
 
 ---
@@ -255,7 +253,13 @@ graph LR
 ```
 
 > [!TIP]
-> See [`docs/how-it-works.md`](docs/how-it-works.md) for detailed architecture, health score weights, modes, configuration, and supported languages.
+> See [`docs/how-it-works.md`](docs/how-it-works.md) for detailed architecture, health score weights, modes, and supported languages.
+
+---
+
+## Configuration
+
+Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement modes: **deep** (real bugs only), **clean** (dead code + naming), **full** (everything). See [`docs/how-it-works.md`](docs/how-it-works.md) for full config reference.
 
 ---
 
@@ -331,12 +335,6 @@ If you find a security issue in KyZN, please open a GitHub issue. Since KyZN run
 
 ---
 
-## Configuration
-
-Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement modes: **deep** (real bugs only), **clean** (dead code + naming), **full** (everything). See [`docs/how-it-works.md`](docs/how-it-works.md) for full config reference and mode details.
-
----
-
 <details>
 <summary><b>Project Structure</b></summary>
 
@@ -392,16 +390,6 @@ kyzn selftest --full       # Full suite with stress tests (218 cases)
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
-
----
-
-## Related Projects
-
-<p align="center">
-  <a href="https://github.com/bokiko/RepoFix">
-    <img align="center" src="https://github-readme-stats.vercel.app/api/pin/?username=bokiko&repo=RepoFix&theme=transparent&hide_border=true" />
-  </a>
-</p>
 
 ---
 
