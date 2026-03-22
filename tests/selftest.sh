@@ -1159,25 +1159,33 @@ test_generate_fix_prompt() {
 
     source "$KYZN_ROOT/lib/analyze.sh"
 
-    local tmpfile
-    tmpfile=$(mktemp)
-    cat > "$tmpfile" <<'JSON'
-[
+    # generate_fix_prompt now takes JSON string, not file path
+    # Severity filtering is done by run_fix_phase before calling this
+    local findings_json='[
   {"id":"BUG-001","severity":"CRITICAL","category":"bug","title":"Null deref","file":"src/main.ts","line":10,"fix":"Add null check"},
-  {"id":"SEC-001","severity":"HIGH","category":"security","title":"SQL injection","file":"src/db.ts","line":20,"fix":"Use parameterized query"},
-  {"id":"STYLE-001","severity":"LOW","category":"quality","title":"Naming","file":"src/utils.ts","line":5,"fix":"Rename"}
-]
-JSON
+  {"id":"SEC-001","severity":"HIGH","category":"security","title":"SQL injection","file":"src/db.ts","line":20,"fix":"Use parameterized query"}
+]'
 
     local prompt
-    prompt=$(generate_fix_prompt "$tmpfile" 10 "HIGH")
+    prompt=$(generate_fix_prompt "$findings_json" "" "")
 
     assert_contains "fix prompt has BUG-001" "$prompt" "BUG-001"
     assert_contains "fix prompt has SEC-001" "$prompt" "SEC-001"
-    # LOW severity should be filtered out when min is HIGH
-    assert_not_contains "fix prompt excludes LOW" "$prompt" "STYLE-001"
+    assert_contains "fix prompt has rules" "$prompt" "Fix each issue"
+    assert_contains "fix prompt has skip guidance" "$prompt" "contradicts reality"
 
-    rm -f "$tmpfile"
+    # Test with baseline failures context
+    local prompt_with_baseline
+    prompt_with_baseline=$(generate_fix_prompt "$findings_json" "" "FAILED test_login
+FAILED test_signup")
+
+    assert_contains "baseline context included" "$prompt_with_baseline" "Pre-Existing Test Failures"
+    assert_contains "baseline has test names" "$prompt_with_baseline" "test_login"
+
+    # Test empty findings
+    local empty_prompt
+    empty_prompt=$(generate_fix_prompt "[]" "" "")
+    assert_eq "empty findings returns empty" "" "$empty_prompt"
 }
 
 test_analyze_wired_in_kyzn() {

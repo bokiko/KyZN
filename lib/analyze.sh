@@ -378,37 +378,12 @@ display_findings() {
 # Generate fix prompt from findings for Sonnet
 # ---------------------------------------------------------------------------
 generate_fix_prompt() {
-    local findings_file="$1"
-    local max_findings="${2:-10}"
-    local min_severity="${3:-LOW}"
-    local report_file="${4:-}"
-
-    local min_rank
-    case "$min_severity" in
-        CRITICAL) min_rank=4 ;;
-        HIGH)     min_rank=3 ;;
-        MEDIUM)   min_rank=2 ;;
-        *)        min_rank=1 ;;
-    esac
-
-    local selected
-    selected=$(jq --argjson min "$min_rank" '
-        map(
-            . + {"_rank": (
-                if .severity == "CRITICAL" then 4
-                elif .severity == "HIGH" then 3
-                elif .severity == "MEDIUM" then 2
-                else 1 end
-            )}
-        )
-        | sort_by(-.["_rank"])
-        | map(select(._rank >= $min))
-        | .[:'"$max_findings"']
-        | map(del(._rank))
-    ' "$findings_file")
+    local findings_json="$1"
+    local report_file="${2:-}"
+    local baseline_failures="${3:-}"
 
     local count
-    count=$(echo "$selected" | jq 'length')
+    count=$(echo "$findings_json" | jq 'length')
 
     if (( count == 0 )); then
         echo ""
@@ -431,24 +406,42 @@ $(cat "$report_file")
 "
     fi
 
+    # Include baseline failure context so Claude knows what was already broken
+    local baseline_context=""
+    if [[ -n "$baseline_failures" ]]; then
+        baseline_context="## Pre-Existing Test Failures
+
+The following tests were ALREADY failing before your changes. Do NOT try to fix these — they are pre-existing issues. Only ensure you don't make them worse or add NEW failures.
+
+\`\`\`
+$baseline_failures
+\`\`\`
+
+---
+
+"
+    fi
+
     cat <<EOF
 ## Fix These Issues
 
 The following issues were identified by a multi-agent deep analysis (4 specialized Opus reviewers + consensus). Fix each one.
 
-### Findings to Fix
+### Findings to Fix ($count issues)
 
 \`\`\`json
-$selected
+$findings_json
 \`\`\`
 
-${report_context}## Rules
+${report_context}${baseline_context}## Rules
 
 - Fix each issue in the order listed (highest severity first)
 - For each fix, verify you're changing the right code by reading the file first
 - After each fix, make sure the code still compiles/passes tests
+- If a finding describes something that contradicts reality (e.g., claims code is broken but it works), skip that finding and explain why
 - If a fix is too risky or you're not confident, skip it and note why
 - Do NOT make any changes beyond what's listed here — no drive-by refactoring
+- Do NOT modify test files unless a finding specifically targets test code AND the test is genuinely broken
 
 ## Output
 
@@ -456,6 +449,7 @@ After making changes, summarize what you fixed:
 - Finding ID
 - What you changed
 - File and line
+- Any findings you skipped and why
 EOF
 }
 
@@ -1062,7 +1056,7 @@ generate_detailed_report() {
 }
 
 # ---------------------------------------------------------------------------
-# Run the fix phase (Sonnet implements findings)
+# Run the fix phase (Sonnet implements findings) — batched with reflexion
 # ---------------------------------------------------------------------------
 run_fix_phase() {
     local findings_file="$1"
@@ -1085,21 +1079,69 @@ run_fix_phase() {
     fi
     echo $$ > "$lockdir/pid"
 
+    # Cleanup on exit
+    _kyzn_fix_cleanup() {
+        rm -rf "${lockdir:-}" 2>/dev/null
+        trap - EXIT INT TERM
+    }
+    trap _kyzn_fix_cleanup EXIT INT TERM
+
     # Pass the full report to give Claude rich context for fixes
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
 
-    local fix_prompt
-    fix_prompt=$(generate_fix_prompt "$findings_file" 10 "$min_severity" "$report_file")
+    # Filter findings by severity
+    local min_rank
+    case "$min_severity" in
+        CRITICAL) min_rank=4 ;;
+        HIGH)     min_rank=3 ;;
+        MEDIUM)   min_rank=2 ;;
+        *)        min_rank=1 ;;
+    esac
 
-    if [[ -z "$fix_prompt" ]]; then
+    local all_selected
+    all_selected=$(jq --argjson min "$min_rank" '
+        map(
+            . + {"_rank": (
+                if .severity == "CRITICAL" then 4
+                elif .severity == "HIGH" then 3
+                elif .severity == "MEDIUM" then 2
+                else 1 end
+            )}
+        )
+        | sort_by(-.["_rank"])
+        | map(select(._rank >= $min))
+        | map(del(._rank))
+    ' "$findings_file")
+
+    local total_findings
+    total_findings=$(echo "$all_selected" | jq 'length')
+
+    if (( total_findings == 0 )); then
         log_info "No findings at or above $min_severity severity to fix."
         return 0
     fi
 
     echo ""
-    log_header "Fixing issues (min severity: $min_severity)"
+    log_header "Fixing issues (min severity: $min_severity, $total_findings findings)"
 
-    # Create branch for fixes
+    # Step 1: Baseline test state — capture pre-existing failures
+    log_step "Capturing baseline test state..."
+    local baseline_verify_ok=true
+    local baseline_failures=""
+    if ! verify_build 2>/dev/null; then
+        baseline_verify_ok=false
+        baseline_failures=$(capture_failing_tests 2>/dev/null) || true
+        log_warn "Pre-existing test failures detected (will not block fixes)"
+        if [[ -n "$baseline_failures" ]]; then
+            echo "$baseline_failures" | while IFS= read -r f; do
+                [[ -n "$f" ]] && log_dim "  - $f"
+            done
+        fi
+    else
+        log_ok "Baseline tests passing"
+    fi
+
+    # Step 2: Create branch
     local run_suffix="${run_id##*-}"
     local branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
     log_step "Creating branch: $branch_name"
@@ -1108,54 +1150,177 @@ run_fix_phase() {
         return 1
     }
 
+    # Step 3: Split findings into severity batches
+    local -a severity_tiers=()
+    local crit_count high_count med_count low_count
+    crit_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "CRITICAL")] | length')
+    high_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "HIGH")] | length')
+    med_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "MEDIUM")] | length')
+    low_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "LOW")] | length')
+
+    (( crit_count > 0 )) && severity_tiers+=("CRITICAL")
+    (( high_count > 0 )) && severity_tiers+=("HIGH")
+    (( med_count > 0 )) && severity_tiers+=("MEDIUM")
+    (( low_count > 0 )) && severity_tiers+=("LOW")
+
     local -a fix_allowlist_arr=()
     build_allowlist fix_allowlist_arr "$KYZN_PROJECT_TYPE"
-
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
 
-    local fix_stderr
-    fix_stderr=$(mktemp)
+    local total_fix_cost=0
+    local batches_applied=0
+    local batches_failed=0
 
-    log_step "Sonnet is implementing fixes..."
+    # Step 4: Fix each severity tier as a separate batch
+    for tier in "${severity_tiers[@]}"; do
+        local tier_findings
+        tier_findings=$(echo "$all_selected" | jq --arg sev "$tier" '[.[] | select(.severity == $sev)]')
+        local tier_count
+        tier_count=$(echo "$tier_findings" | jq 'length')
 
-    local fix_result
-    fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
-        --model sonnet \
-        --max-budget-usd "$fix_budget" \
-        --max-turns 30 \
-        "${fix_allowlist_arr[@]}" \
-        --settings "$KYZN_SETTINGS_JSON" \
-        --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
-        --output-format json \
-        --no-session-persistence \
-        2>"$fix_stderr") || {
-        local exit_code=$?
-        if (( exit_code == 124 )); then
-            log_error "Fix phase timed out"
-        else
-            log_error "Fix phase failed"
+        # Cap at 10 findings per batch to avoid overwhelming Claude
+        if (( tier_count > 10 )); then
+            tier_findings=$(echo "$tier_findings" | jq '.[0:10]')
+            tier_count=10
+            log_warn "Capped $tier batch to 10 findings (had more)"
         fi
+
+        echo ""
+        log_step "Batch: $tier ($tier_count issues)"
+
+        # Budget per batch: proportional to findings count
+        local batch_budget
+        batch_budget=$(awk -v total="$fix_budget" -v batch="$tier_count" -v all="$total_findings" \
+            'BEGIN { b = total * batch / all; if (b < 0.50) b = 0.50; printf "%.2f", b }')
+
+        local fix_prompt
+        fix_prompt=$(generate_fix_prompt "$tier_findings" "$report_file" "$baseline_failures")
+
+        if [[ -z "$fix_prompt" ]]; then
+            log_info "No findings for $tier tier."
+            continue
+        fi
+
+        # Execute Claude for this batch
+        local fix_stderr
+        fix_stderr=$(mktemp)
+
+        local fix_result
+        fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
+            --model sonnet \
+            --max-budget-usd "$batch_budget" \
+            --max-turns 30 \
+            "${fix_allowlist_arr[@]}" \
+            --settings "$KYZN_SETTINGS_JSON" \
+            --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
+            --output-format json \
+            --no-session-persistence \
+            2>"$fix_stderr") || {
+            local exit_code=$?
+            if (( exit_code == 124 )); then
+                log_error "$tier batch timed out — skipping"
+            else
+                log_error "$tier batch failed — skipping"
+            fi
+            rm -f "$fix_stderr"
+            (( batches_failed++ ))
+            continue
+        }
         rm -f "$fix_stderr"
+
+        local batch_cost
+        batch_cost=$(echo "$fix_result" | jq -r '.total_cost_usd // "0"')
+        total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$batch_cost" 'BEGIN { printf "%.2f", a + b }')
+        log_ok "$tier fixes applied (cost: \$$batch_cost)"
+
+        # Verify after this batch
+        if verify_build; then
+            log_ok "Build/tests pass after $tier batch"
+            (( batches_applied++ ))
+        else
+            # Reflexion retry — capture errors, give Claude a second chance
+            log_warn "$tier batch broke build — attempting self-repair..."
+
+            local verify_errors
+            verify_errors=$(verify_build 2>&1) || true
+
+            local retry_budget
+            retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
+
+            local retry_prompt="Your previous fixes for $tier severity issues broke the build/tests. Here are the errors:
+
+${verify_errors}
+
+Please fix ONLY the issues your changes introduced. Do not revert all changes — preserve what works and fix what's broken.
+If a specific fix is causing the failure, revert just that one fix."
+
+            local retry_stderr
+            retry_stderr=$(mktemp)
+
+            local retry_result
+            retry_result=$(timeout "$claude_timeout" claude -p "$retry_prompt" \
+                --model sonnet \
+                --max-budget-usd "$retry_budget" \
+                --max-turns 20 \
+                "${fix_allowlist_arr[@]}" \
+                --settings "$KYZN_SETTINGS_JSON" \
+                --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
+                --output-format json \
+                --no-session-persistence \
+                2>"$retry_stderr") || true
+            rm -f "$retry_stderr"
+
+            if [[ -n "$retry_result" ]]; then
+                local retry_cost
+                retry_cost=$(echo "$retry_result" | jq -r '.total_cost_usd // "0"')
+                total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$retry_cost" 'BEGIN { printf "%.2f", a + b }')
+            fi
+
+            if verify_build; then
+                log_ok "Self-repair succeeded for $tier batch"
+                (( batches_applied++ ))
+            elif ! $baseline_verify_ok; then
+                # Baseline had failures — check if Claude added NEW ones
+                local after_failures
+                after_failures=$(capture_failing_tests 2>/dev/null) || true
+                local new_failures=""
+                if [[ -n "$after_failures" ]]; then
+                    while IFS= read -r test_name; do
+                        [[ -z "$test_name" ]] && continue
+                        if ! echo "$baseline_failures" | grep -qF "$test_name"; then
+                            new_failures+="$test_name"$'\n'
+                        fi
+                    done <<< "$after_failures"
+                fi
+
+                if [[ -z "${new_failures//[$'\n']/}" ]]; then
+                    log_warn "$tier batch: all failures are pre-existing — continuing"
+                    (( batches_applied++ ))
+                else
+                    log_error "$tier batch introduced NEW test failures — reverting batch"
+                    safe_git checkout -- . 2>/dev/null
+                    safe_git clean -fd 2>/dev/null
+                    (( batches_failed++ ))
+                fi
+            else
+                log_error "$tier batch still broken after retry — reverting batch"
+                safe_git checkout -- . 2>/dev/null
+                safe_git clean -fd 2>/dev/null
+                (( batches_failed++ ))
+            fi
+        fi
+    done
+
+    # Step 5: Check if any batches succeeded
+    if (( batches_applied == 0 )); then
+        log_error "All fix batches failed. No changes to commit."
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
-        return 1
-    }
-    rm -f "$fix_stderr"
-
-    local fix_cost
-    fix_cost=$(echo "$fix_result" | jq -r '.total_cost_usd // "unknown"')
-    log_ok "Fixes applied (cost: \$$fix_cost)"
-
-    if verify_build; then
-        log_ok "Build and tests passed after fixes!"
-    else
-        log_error "Build/tests failed after fixes."
-        handle_build_failure "report" "$run_id" "$branch_name" "analyze" "fix"
         rm -rf "$lockdir" 2>/dev/null
         return 1
     fi
 
-    # Diff-limit check before committing (excludes KyZN artifacts)
+    # Step 6: Diff-limit check before committing
     local fix_diff_lines=0 fix_del_lines=0 fix_binary=0
     count_diff_size fix_diff_lines fix_del_lines fix_binary
     local fix_total_diff=$(( fix_diff_lines + fix_del_lines ))
@@ -1170,9 +1335,13 @@ run_fix_phase() {
         return 1
     fi
 
-    # Stage Claude's changes only (excludes KyZN artifacts, secrets, CI files)
+    # Step 7: Commit, push, PR
     stage_claude_changes
-    safe_git commit -m "KyZN: apply analysis fixes ($run_id)" 2>/dev/null || true
+    local commit_msg="KyZN: apply analysis fixes ($run_id)
+
+Batches: $batches_applied applied, $batches_failed failed
+Cost: \$$total_fix_cost"
+    safe_git commit -m "$commit_msg" 2>/dev/null || true
 
     local diff_stat
     diff_stat=$(git diff --stat HEAD~1 HEAD 2>/dev/null || echo "No changes")
@@ -1180,24 +1349,37 @@ run_fix_phase() {
     log_info "Changes committed:"
     echo "$diff_stat"
 
-    # Push and create PR (matching improve's flow)
     log_step "Pushing and creating PR..."
     safe_git push -u origin HEAD 2>/dev/null || {
         log_warn "Push failed — changes are committed locally on $branch_name"
         rm -rf "$lockdir" 2>/dev/null
         return 0
     }
-    gh pr create \
-        --title "KyZN: analysis fixes ($run_id)" \
-        --body "## Analysis Fixes
+
+    local pr_body
+    pr_body=$(cat <<EOF
+## Analysis Fixes
 
 Applied fixes for findings at severity **$min_severity** and above.
 
 **Run ID:** \`$run_id\`
-**Cost:** \$${KYZN_CLAUDE_COST:-unknown}
+**Cost:** \$$total_fix_cost
+**Batches:** $batches_applied succeeded, $batches_failed failed
 **Changes:** +$fix_diff_lines -$fix_del_lines ($fix_total_diff lines)
 
-See \`kyzn-report.md\` for the full analysis report." \
+### Approach
+Findings were batched by severity tier (CRITICAL → HIGH → MEDIUM → LOW).
+Each batch was verified independently — if a batch broke tests, self-repair
+was attempted. Failed batches were reverted to protect passing code.
+
+---
+*Generated by [KyZN](https://github.com/bokiko/KyZN) — autonomous code improvement*
+EOF
+    )
+
+    gh pr create \
+        --title "KyZN: analysis fixes ($run_id)" \
+        --body "$pr_body" \
         2>/dev/null || log_warn "PR creation failed — push succeeded, create PR manually"
 
     rm -rf "$lockdir" 2>/dev/null
