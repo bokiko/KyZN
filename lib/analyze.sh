@@ -1223,7 +1223,7 @@ run_fix_phase() {
                 log_error "$tier batch failed — skipping"
             fi
             rm -f "$fix_stderr"
-            (( batches_failed++ ))
+            (( batches_failed++ )) || true
             continue
         }
         rm -f "$fix_stderr"
@@ -1236,7 +1236,7 @@ run_fix_phase() {
         # Verify after this batch
         if verify_build; then
             log_ok "Build/tests pass after $tier batch"
-            (( batches_applied++ ))
+            (( batches_applied++ )) || true
         else
             # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch broke build — attempting self-repair..."
@@ -1278,7 +1278,7 @@ If a specific fix is causing the failure, revert just that one fix."
 
             if verify_build; then
                 log_ok "Self-repair succeeded for $tier batch"
-                (( batches_applied++ ))
+                (( batches_applied++ )) || true
             elif ! $baseline_verify_ok; then
                 # Baseline had failures — check if Claude added NEW ones
                 local after_failures
@@ -1295,18 +1295,18 @@ If a specific fix is causing the failure, revert just that one fix."
 
                 if [[ -z "${new_failures//[$'\n']/}" ]]; then
                     log_warn "$tier batch: all failures are pre-existing — continuing"
-                    (( batches_applied++ ))
+                    (( batches_applied++ )) || true
                 else
                     log_error "$tier batch introduced NEW test failures — reverting batch"
                     safe_git checkout -- . 2>/dev/null
                     safe_git clean -fd 2>/dev/null
-                    (( batches_failed++ ))
+                    (( batches_failed++ )) || true
                 fi
             else
                 log_error "$tier batch still broken after retry — reverting batch"
                 safe_git checkout -- . 2>/dev/null
                 safe_git clean -fd 2>/dev/null
-                (( batches_failed++ ))
+                (( batches_failed++ )) || true
             fi
         fi
     done
