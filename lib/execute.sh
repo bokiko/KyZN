@@ -60,7 +60,7 @@ count_diff_size() {
 
     local numstat
     numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
-    safe_git reset HEAD 2>/dev/null || true
+    safe_git reset -q HEAD 2>/dev/null || true
 
     local added=0 deleted=0 binary=0
     if [[ -n "$numstat" ]]; then

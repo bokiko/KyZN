@@ -1170,8 +1170,25 @@ run_fix_phase() {
     local total_fix_cost=0
     local batches_applied=0
     local batches_failed=0
+    local batches_skipped=0
+    local -a applied_tiers=()
 
-    # Step 4: Fix each severity tier as a separate batch
+    # Diff budget: analyze --fix uses a higher limit than improve (more files touched)
+    # Config override takes precedence, otherwise 5000 for analyze, hard ceiling 10000
+    local diff_limit
+    diff_limit=$(config_get '.preferences.analyze_diff_limit' '')
+    if [[ -z "$diff_limit" ]]; then
+        diff_limit=$(config_get '.preferences.diff_limit' '5000')
+        # Ensure analyze default is at least 5000 even if improve's limit is lower
+        if (( diff_limit < 5000 )); then
+            diff_limit=5000
+        fi
+    fi
+    # Hard ceiling
+    if (( diff_limit > 10000 )); then diff_limit=10000; fi
+    local cumulative_diff=0
+
+    # Step 4: Fix each severity tier as a separate batch, commit incrementally
     for tier in "${severity_tiers[@]}"; do
         local tier_findings
         tier_findings=$(echo "$all_selected" | jq --arg sev "$tier" '[.[] | select(.severity == $sev)]')
@@ -1187,6 +1204,13 @@ run_fix_phase() {
 
         echo ""
         log_step "Batch: $tier ($tier_count issues)"
+
+        # Check diff budget headroom before starting this batch
+        if (( cumulative_diff > diff_limit * 80 / 100 )); then
+            log_warn "Diff budget ${cumulative_diff}/${diff_limit} lines (>80%) — skipping remaining batches"
+            (( batches_skipped++ )) || true
+            continue
+        fi
 
         # Budget per batch: proportional to findings count
         local batch_budget
@@ -1234,9 +1258,10 @@ run_fix_phase() {
         log_ok "$tier fixes applied (cost: \$$batch_cost)"
 
         # Verify after this batch
+        local batch_passed=false
         if verify_build; then
             log_ok "Build/tests pass after $tier batch"
-            (( batches_applied++ )) || true
+            batch_passed=true
         else
             # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch broke build — attempting self-repair..."
@@ -1278,7 +1303,7 @@ If a specific fix is causing the failure, revert just that one fix."
 
             if verify_build; then
                 log_ok "Self-repair succeeded for $tier batch"
-                (( batches_applied++ )) || true
+                batch_passed=true
             elif ! $baseline_verify_ok; then
                 # Baseline had failures — check if Claude added NEW ones
                 local after_failures
@@ -1295,19 +1320,28 @@ If a specific fix is causing the failure, revert just that one fix."
 
                 if [[ -z "${new_failures//[$'\n']/}" ]]; then
                     log_warn "$tier batch: all failures are pre-existing — continuing"
-                    (( batches_applied++ )) || true
-                else
-                    log_error "$tier batch introduced NEW test failures — reverting batch"
-                    safe_git checkout -- . 2>/dev/null
-                    safe_git clean -fd 2>/dev/null
-                    (( batches_failed++ )) || true
+                    batch_passed=true
                 fi
-            else
-                log_error "$tier batch still broken after retry — reverting batch"
-                safe_git checkout -- . 2>/dev/null
-                safe_git clean -fd 2>/dev/null
-                (( batches_failed++ )) || true
             fi
+        fi
+
+        if $batch_passed; then
+            # Commit this batch immediately — preserves work even if later batches fail
+            stage_claude_changes
+            safe_git commit -m "KyZN($tier): fix $tier_count findings [run:$run_id]" 2>/dev/null || true
+            (( batches_applied++ )) || true
+            applied_tiers+=("$tier")
+
+            # Update cumulative diff tracking
+            local _ba=0 _bd=0 _bb=0
+            count_diff_size _ba _bd _bb
+            cumulative_diff=$(( _ba + _bd ))
+            log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
+        else
+            log_error "$tier batch still broken after retry — reverting batch"
+            safe_git checkout -- . 2>/dev/null
+            safe_git clean -fd 2>/dev/null
+            (( batches_failed++ )) || true
         fi
     done
 
@@ -1320,41 +1354,29 @@ If a specific fix is causing the failure, revert just that one fix."
         return 1
     fi
 
-    # Step 6: Diff-limit check before committing
-    local fix_diff_lines=0 fix_del_lines=0 fix_binary=0
-    count_diff_size fix_diff_lines fix_del_lines fix_binary
-    local fix_total_diff=$(( fix_diff_lines + fix_del_lines ))
-    local diff_limit
-    diff_limit=$(config_get '.preferences.diff_limit' '2000')
-
-    if (( fix_total_diff > diff_limit )); then
-        log_warn "Fix diff exceeds limit ($fix_total_diff > $diff_limit lines). Aborting."
-        safe_checkout_back
-        safe_git branch -D "$branch_name" 2>/dev/null || true
-        rm -rf "$lockdir" 2>/dev/null
-        return 1
-    fi
-
-    # Step 7: Commit, push, PR
-    stage_claude_changes
-    local commit_msg="KyZN: apply analysis fixes ($run_id)
-
-Batches: $batches_applied applied, $batches_failed failed
-Cost: \$$total_fix_cost"
-    safe_git commit -m "$commit_msg" 2>/dev/null || true
-
+    # Step 6: Summary
+    echo ""
     local diff_stat
-    diff_stat=$(git diff --stat HEAD~1 HEAD 2>/dev/null || echo "No changes")
+    diff_stat=$(git diff --stat "${branch_name}~${batches_applied}..${branch_name}" 2>/dev/null \
+        || git diff --stat "main..HEAD" 2>/dev/null \
+        || echo "No diff available")
 
-    log_info "Changes committed:"
+    log_ok "Fix phase complete: $batches_applied batches applied, $batches_failed failed, $batches_skipped skipped"
+    log_info "Total cost: \$$total_fix_cost | Diff: $cumulative_diff lines"
     echo "$diff_stat"
 
+    # Step 7: Push and create PR
     log_step "Pushing and creating PR..."
     safe_git push -u origin HEAD 2>/dev/null || {
         log_warn "Push failed — changes are committed locally on $branch_name"
         rm -rf "$lockdir" 2>/dev/null
         return 0
     }
+
+    # Build applied tiers string for PR body
+    local tiers_str
+    tiers_str=$(printf '%s → ' "${applied_tiers[@]}")
+    tiers_str="${tiers_str% → }"  # strip trailing arrow
 
     local pr_body
     pr_body=$(cat <<EOF
@@ -1364,13 +1386,19 @@ Applied fixes for findings at severity **$min_severity** and above.
 
 **Run ID:** \`$run_id\`
 **Cost:** \$$total_fix_cost
-**Batches:** $batches_applied succeeded, $batches_failed failed
-**Changes:** +$fix_diff_lines -$fix_del_lines ($fix_total_diff lines)
+**Batches:** $batches_applied applied ($tiers_str), $batches_failed failed, $batches_skipped skipped
+**Diff:** $cumulative_diff lines
+
+### Changes
+\`\`\`
+$diff_stat
+\`\`\`
 
 ### Approach
 Findings were batched by severity tier (CRITICAL → HIGH → MEDIUM → LOW).
-Each batch was verified independently — if a batch broke tests, self-repair
-was attempted. Failed batches were reverted to protect passing code.
+Each batch was verified and committed independently — if a batch broke tests,
+self-repair was attempted. Failed batches were reverted to protect passing code.
+Diff budget was tracked incrementally to prevent waste.
 
 ---
 *Generated by [KyZN](https://github.com/bokiko/KyZN) — autonomous code improvement*
@@ -1378,7 +1406,7 @@ EOF
     )
 
     gh pr create \
-        --title "KyZN: analysis fixes ($run_id)" \
+        --title "KyZN: fix $(IFS=+; echo "${applied_tiers[*]}") findings ($run_id)" \
         --body "$pr_body" \
         2>/dev/null || log_warn "PR creation failed — push succeeded, create PR manually"
 
