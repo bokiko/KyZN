@@ -39,6 +39,7 @@ Return your findings as a JSON array. Each finding must have this structure:
     "line": 42,
     "description": "Detailed explanation of the problem",
     "fix": "Concrete description of how to fix it",
+    "fix_plan": "target_file: path/to/file.py | target_function: process_data | pattern_to_follow: see src/auth.py:validate for correct pattern | test_file: tests/test_process.py | test_approach: mock with unittest.mock.patch, assert ValueError raised | constraints: do not modify function signature",
     "effort": "small"
   }
 ]
@@ -46,6 +47,7 @@ Return your findings as a JSON array. Each finding must have this structure:
 
 - **severity**: CRITICAL, HIGH, MEDIUM, LOW
 - **effort**: small (< 10 lines), medium (10-50 lines), large (50+ lines)
+- **fix_plan**: structured guidance for the AI that will implement the fix. Include: target_file, target_function, pattern_to_follow (reference existing code), test_file, test_approach, constraints. Pipe-delimited fields. Optional — omit if the fix is trivially obvious.
 - Only report findings you can CONFIRM by reading actual code
 - If you find nothing significant, return an empty array `[]`
 - Quality over quantity — 3 real findings beat 20 maybes'
@@ -215,6 +217,15 @@ $architecture_findings
 3. **Rank** — order by severity (CRITICAL > HIGH > MEDIUM > LOW), then by confidence
 4. **Re-ID** — assign clean sequential IDs (SEC-001, BUG-001, PERF-001, ARCH-001, TEST-001, DEAD-001)
 5. **Quality filter** — remove any finding that doesn't have a concrete file path and actionable fix
+6. **Add fix_plan** — for each finding, add a "fix_plan" field with structured guidance:
+   - target_file: exact file path to modify
+   - target_function: function or class to change
+   - pattern_to_follow: reference an existing pattern in the codebase ("see src/auth.py:validate for the correct async pattern")
+   - test_file: which test file to add regression tests to (or "create tests/test_X.py")
+   - test_approach: how to test ("mock with unittest.mock.patch, assert ValueError raised")
+   - constraints: what NOT to change ("do not modify the function signature")
+   Use pipe-delimited format: "target_file: X | target_function: Y | ..."
+   The fix_plan gives the fix agent WHERE to look and WHICH patterns to follow. The existing "fix" field stays as a short summary. If a specialist already provided a fix_plan, keep or improve it.
 
 Return the final deduplicated JSON array in the same format as the inputs.
 Only include findings that are real, actionable issues. If reviewers disagree, favor the more specific finding.
@@ -311,6 +322,145 @@ extract_findings() {
 }
 
 # ---------------------------------------------------------------------------
+# Run profiler agent — reads repo files, extracts conventions, caches result
+# ---------------------------------------------------------------------------
+run_profiler() {
+    local project_type="$1"
+    local budget="$2"
+    local output_file="$3"
+
+    # Cache check: .kyzn/repo-profile.md with SHA on line 1
+    local cache_file="$KYZN_PROFILE_CACHE"
+    local current_sha
+    current_sha=$(git rev-parse HEAD 2>/dev/null || echo "none")
+    if [[ -f "$cache_file" ]]; then
+        local cached_sha
+        cached_sha=$(sed -n '1s/^<!-- sha:\(.*\) -->/\1/p' "$cache_file")
+        if [[ "$cached_sha" == "$current_sha" ]]; then
+            log_ok "Profiler: using cached repo profile (SHA match)"
+            cp "$cache_file" "$output_file"
+            return 0
+        fi
+    fi
+
+    local lang_name
+    lang_name=$(project_type_name "$project_type")
+
+    local profiler_prompt="## Repo Convention Profiler
+
+You are analyzing a $lang_name project to extract its coding conventions. Read 3-5 representative source files and produce a concise conventions profile.
+
+### What to Extract
+
+1. **Naming** — variable/function/class naming style (snake_case, camelCase, PascalCase)
+2. **Imports** — import organization pattern (grouped? sorted? relative vs absolute?)
+3. **Error handling** — how errors are handled (exceptions, Result types, error codes, custom error classes)
+4. **Testing** — test framework, test file location, fixture patterns, mocking approach
+5. **Architecture** — module organization, layer separation, dependency injection pattern
+6. **Type safety** — type annotations, strict mode, interface patterns
+
+### How to Analyze
+
+1. Use Glob to find source files (look in src/, lib/, app/, or root)
+2. Read 3-5 files that seem central (entry points, core modules, models)
+3. Read 1-2 test files to understand testing patterns
+4. Look at config files (tsconfig, pyproject.toml, Cargo.toml, etc.) for style settings
+
+### Output Format
+
+Return ONLY a markdown document under 500 words with these sections:
+
+\`\`\`markdown
+## Repo-Specific Conventions
+
+### Naming
+(patterns observed)
+
+### Imports
+(patterns observed)
+
+### Error Handling
+(patterns observed)
+
+### Testing
+(framework, patterns, file locations)
+
+### Architecture
+(module structure, patterns)
+
+### Key Patterns
+(any notable patterns specific to this codebase)
+\`\`\`
+
+Be specific — reference actual file names and patterns you observed. Do not guess or generalize beyond what you read."
+
+    local profiler_stderr
+    profiler_stderr=$(mktemp)
+    local profiler_timeout=60
+
+    log_step "Profiler: scanning repo conventions..."
+
+    local profiler_result
+    profiler_result=$(timeout "$profiler_timeout" claude -p "$profiler_prompt" \
+        --model sonnet \
+        --max-budget-usd "$budget" \
+        --max-turns 15 \
+        --allowedTools Read --allowedTools Glob --allowedTools Grep \
+        --settings "$KYZN_SETTINGS_JSON" \
+        --output-format json \
+        --no-session-persistence \
+        2>"$profiler_stderr") || {
+        local exit_code=$?
+        if (( exit_code == 124 )); then
+            log_warn "Profiler timed out — specialists will run without repo conventions"
+        else
+            log_warn "Profiler failed (exit $exit_code) — continuing without repo conventions"
+        fi
+        rm -f "$profiler_stderr"
+        return 1
+    }
+    rm -f "$profiler_stderr"
+
+    # Extract text content from Claude response
+    local profile_text
+    profile_text=$(echo "$profiler_result" | jq -r '
+        .result // .content // ""
+        | if type == "array" then
+            map(select(.type == "text") | .text) | join("\n")
+          else
+            .
+          end
+    ' 2>/dev/null) || profile_text=""
+
+    if [[ -z "$profile_text" ]]; then
+        log_warn "Profiler returned empty result — continuing without repo conventions"
+        return 1
+    fi
+
+    local profiler_cost
+    profiler_cost=$(echo "$profiler_result" | jq -r '.total_cost_usd // "?"')
+    log_ok "Profiler complete (\$$profiler_cost)"
+
+    # Write to cache with SHA header
+    ensure_kyzn_dirs
+    {
+        echo "<!-- sha:${current_sha} -->"
+        echo "$profile_text"
+    } > "$cache_file"
+
+    # Copy to output
+    cp "$cache_file" "$output_file"
+
+    # Add to .kyzn/.gitignore if not already there
+    local gi="$KYZN_DIR/.gitignore"
+    if [[ -f "$gi" ]] && ! grep -qF "repo-profile.md" "$gi"; then
+        echo "repo-profile.md" >> "$gi"
+    fi
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Display findings in a human-readable format
 # ---------------------------------------------------------------------------
 display_findings() {
@@ -382,6 +532,7 @@ generate_fix_prompt() {
     local report_file="${2:-}"
     local baseline_failures="${3:-}"
     local installed_packages="${4:-}"
+    local repo_profile="${5:-}"
 
     local count
     count=$(echo "$findings_json" | jq 'length')
@@ -423,6 +574,25 @@ $baseline_failures
 "
     fi
 
+    # Include repo profile if available
+    local profile_context=""
+    if [[ -n "$repo_profile" && -f "$repo_profile" ]]; then
+        local profile_content
+        # Strip SHA comment line
+        profile_content=$(sed '1{/^<!-- sha:/d}' "$repo_profile")
+        if [[ -n "$profile_content" ]]; then
+            profile_context="## Repo Profile
+
+The following conventions were extracted from this repo by a profiler agent. Follow these patterns when writing fixes.
+
+$profile_content
+
+---
+
+"
+        fi
+    fi
+
     cat <<EOF
 ## Fix These Issues
 
@@ -461,7 +631,16 @@ $(
         echo ""
     fi
 )
-${report_context}${baseline_context}## Rules
+${report_context}${baseline_context}${profile_context}## How to Use Fix Plans
+
+Each finding may include a fix_plan with guidance on which file, function, and pattern to follow.
+- START by reading the target file and verifying the fix_plan matches reality
+- If the fix_plan references a function that doesn't exist, find the correct location yourself
+- If the fix_plan references a pattern from another file, read that file first
+- The fix_plan is a guide, not a script — adapt it to the actual code state
+- If you deviate from the plan, note what you changed and why
+
+## Rules
 
 - Fix each issue in the order listed (highest severity first)
 - For each fix, verify you're changing the right code by reading the file first
@@ -585,11 +764,14 @@ cmd_analyze() {
         esac
     fi
 
+    local profiler_budget="0.50"
     local per_agent_budget
     if $single; then
         per_agent_budget="$budget"
     else
-        per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $budget / 5}")
+        local analysis_budget
+        analysis_budget=$(awk "BEGIN {printf \"%.2f\", $budget - $profiler_budget}")
+        per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $analysis_budget / 5}")
     fi
 
     # Confirm
@@ -663,6 +845,33 @@ cmd_analyze() {
     echo "---" >> "$sys_prompt_file"
     echo "" >> "$sys_prompt_file"
     cat "$KYZN_ROOT/templates/analysis-prompt.md" >> "$sys_prompt_file"
+
+    # Append language conventions to sys_prompt_file (Stage 1 gap fix — was missing in analyze path)
+    local lang="${KYZN_PROJECT_TYPE:-generic}"
+    local conventions="$KYZN_ROOT/templates/conventions/$lang.md"
+    if [[ -f "$conventions" ]]; then
+        echo "" >> "$sys_prompt_file"
+        echo "---" >> "$sys_prompt_file"
+        echo "" >> "$sys_prompt_file"
+        cat "$conventions" >> "$sys_prompt_file"
+    fi
+
+    # Run profiler agent — reads repo files, extracts conventions, caches result
+    local repo_profile_file=""
+    if ! $single; then
+        repo_profile_file=$(mktemp)
+        if run_profiler "$KYZN_PROJECT_TYPE" "$profiler_budget" "$repo_profile_file"; then
+            # Append repo profile to sys_prompt_file so all specialists see it
+            echo "" >> "$sys_prompt_file"
+            echo "---" >> "$sys_prompt_file"
+            echo "" >> "$sys_prompt_file"
+            # Strip SHA comment line from output
+            sed '1{/^<!-- sha:/d}' "$repo_profile_file" >> "$sys_prompt_file"
+        else
+            rm -f "$repo_profile_file"
+            repo_profile_file=""
+        fi
+    fi
 
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
     local settings_json="$KYZN_SETTINGS_JSON"
@@ -906,6 +1115,7 @@ cmd_analyze() {
     # Clear trap variables (cleanup handled below, not by trap on success)
     _analyze_pids=()
     rm -f "$sys_prompt_file" 2>/dev/null; _analyze_sys_prompt=""
+    [[ -n "${repo_profile_file:-}" ]] && rm -f "$repo_profile_file" 2>/dev/null
     rm -rf "$measure_dir" 2>/dev/null
     trap - EXIT INT TERM
 
@@ -1048,6 +1258,8 @@ generate_detailed_report() {
                      then (.description // "") + "\n\n" else "" end) +
                     (if (.fix // "") != "" and (.fix // "") != "null"
                      then "**Suggested fix:** " + (.fix // "") + "\n\n" else "" end) +
+                    (if (.fix_plan // "") != "" and (.fix_plan // "") != "null"
+                     then "**Fix plan:** " + (.fix_plan // "") + "\n\n" else "" end) +
                     "---\n"
                 ) | join("\n"))
               )
@@ -1106,6 +1318,7 @@ run_fix_phase() {
     local min_severity="$2"
     local run_id="$3"
     local fix_budget="$4"
+    local repo_profile="${5:-$KYZN_PROFILE_CACHE}"
 
     # Concurrency lock (prevents two concurrent analyze-fix runs from corrupting working tree)
     local lockdir="$KYZN_DIR/.improve.lock"
@@ -1272,7 +1485,7 @@ run_fix_phase() {
             'BEGIN { b = total * batch / all; if (b < 0.50) b = 0.50; printf "%.2f", b }')
 
         local fix_prompt
-        fix_prompt=$(generate_fix_prompt "$tier_findings" "$report_file" "$baseline_failures" "$installed_packages")
+        fix_prompt=$(generate_fix_prompt "$tier_findings" "$report_file" "$baseline_failures" "$installed_packages" "$repo_profile")
 
         if [[ -z "$fix_prompt" ]]; then
             log_info "No findings for $tier tier."

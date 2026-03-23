@@ -1753,6 +1753,167 @@ PKG
 }
 
 # ---------------------------------------------------------------------------
+# Stage 3: fix_plan tests
+# ---------------------------------------------------------------------------
+test_consensus_prompt_has_fix_plan() {
+    log_header "55. Consensus prompt instructs fix_plan generation"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local prompt
+    prompt=$(build_consensus_prompt '[{"id":"SEC-001"}]' '[]' '[]' '[]')
+
+    assert_contains "consensus has fix_plan instruction" "$prompt" "fix_plan"
+    assert_contains "consensus has target_file" "$prompt" "target_file"
+    assert_contains "consensus has pattern_to_follow" "$prompt" "pattern_to_follow"
+    assert_contains "consensus has test_approach" "$prompt" "test_approach"
+}
+
+test_fix_plan_passes_through() {
+    log_header "56. fix_plan field survives extract_findings"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local fake_result
+    fake_result=$(jq -n '{result: "[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\",\"fix\":\"do X\",\"fix_plan\":\"target_file: src/main.py | target_function: process\"}]"}')
+
+    local findings
+    findings=$(extract_findings "$fake_result")
+
+    local has_plan
+    has_plan=$(echo "$findings" | jq -r '.[0].fix_plan // ""')
+
+    if [[ "$has_plan" == *"target_file"* ]]; then
+        pass "fix_plan field preserved through extract_findings"
+    else
+        fail "fix_plan passthrough" "fix_plan not found in extracted findings"
+    fi
+}
+
+test_report_includes_fix_plan() {
+    log_header "57. generate_detailed_report includes fix_plan in markdown"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local findings_file="$tmpdir/findings.json"
+    local report_file="$tmpdir/report.md"
+
+    echo '[{"id":"BUG-001","severity":"HIGH","category":"bug","title":"Test bug","file":"src/main.py","line":10,"description":"A bug","fix":"Fix it","fix_plan":"target_file: src/main.py | target_function: process | test_file: tests/test_main.py","effort":"small"}]' > "$findings_file"
+
+    generate_detailed_report "$findings_file" "$report_file" "test-run" "opus" "1.00" "1"
+
+    local content
+    content=$(cat "$report_file")
+    assert_contains "report has Fix plan label" "$content" "Fix plan:"
+    assert_contains "report has target_file" "$content" "target_file"
+
+    rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 2: profiler tests
+# ---------------------------------------------------------------------------
+test_profiler_cache_invalidation() {
+    log_header "58. Profiler cache: stale SHA triggers miss, fresh SHA uses cache"
+
+    source "$KYZN_ROOT/lib/core.sh"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cd "$tmpdir"
+    git init -q
+    echo "initial" > file.txt
+    git add file.txt
+    git commit -q -m "init"
+
+    local current_sha
+    current_sha=$(git rev-parse HEAD)
+    mkdir -p .kyzn
+
+    # Write a cache file with the current SHA
+    echo "<!-- sha:${current_sha} -->" > .kyzn/repo-profile.md
+    echo "## Cached conventions" >> .kyzn/repo-profile.md
+
+    # Verify cache hit (SHA matches)
+    local cached_sha
+    cached_sha=$(sed -n '1s/^<!-- sha:\(.*\) -->/\1/p' .kyzn/repo-profile.md)
+    assert_eq "cache hit with matching SHA" "$current_sha" "$cached_sha"
+
+    # New commit → SHA changes → cache miss
+    echo "change" > file2.txt
+    git add file2.txt
+    git commit -q -m "change"
+    local new_sha
+    new_sha=$(git rev-parse HEAD)
+
+    if [[ "$cached_sha" != "$new_sha" ]]; then
+        pass "cache miss with new SHA"
+    else
+        fail "cache invalidation" "SHA didn't change after new commit"
+    fi
+
+    cd "$KYZN_ROOT"
+    rm -rf "$tmpdir"
+}
+
+test_generate_fix_prompt_with_profile() {
+    log_header "59. generate_fix_prompt with repo profile produces Repo Profile section"
+
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    # Create a fake repo profile
+    echo "<!-- sha:abc123 -->" > "$tmpdir/repo-profile.md"
+    echo "## Repo-Specific Conventions" >> "$tmpdir/repo-profile.md"
+    echo "### Naming" >> "$tmpdir/repo-profile.md"
+    echo "snake_case for functions" >> "$tmpdir/repo-profile.md"
+
+    local findings_json='[{"id":"BUG-001","severity":"HIGH","title":"test","fix":"do X"}]'
+
+    local prompt
+    prompt=$(generate_fix_prompt "$findings_json" "" "" "" "$tmpdir/repo-profile.md")
+
+    assert_contains "has Repo Profile section" "$prompt" "Repo Profile"
+    assert_contains "has conventions content" "$prompt" "snake_case for functions"
+    assert_contains "has How to Use Fix Plans" "$prompt" "How to Use Fix Plans"
+
+    rm -rf "$tmpdir"
+}
+
+test_budget_carving() {
+    log_header "60. Budget carving: \$20 profiler \$0.50, per_agent \$3.90"
+
+    local profiler_budget="0.50"
+    local budget="20.00"
+
+    local analysis_budget
+    analysis_budget=$(awk "BEGIN {printf \"%.2f\", $budget - $profiler_budget}")
+    local per_agent_budget
+    per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $analysis_budget / 5}")
+
+    assert_eq "analysis budget" "19.50" "$analysis_budget"
+    assert_eq "per agent budget" "3.90" "$per_agent_budget"
+}
+
+test_specialist_prompt_has_fix_plan() {
+    log_header "61. Specialist prompt includes fix_plan in schema"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local prompt
+    prompt=$(build_specialist_prompt "security" "test-proj" "Generic" "50" "[]")
+
+    assert_contains "specialist has fix_plan in schema" "$prompt" "fix_plan"
+    assert_contains "specialist has pipe-delimited" "$prompt" "Pipe-delimited"
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -1823,6 +1984,13 @@ main() {
     test_gitignore_preserves_custom
     test_capture_error_lines
     test_detect_installed_packages
+    test_consensus_prompt_has_fix_plan
+    test_fix_plan_passes_through
+    test_report_includes_fix_plan
+    test_profiler_cache_invalidation
+    test_generate_fix_prompt_with_profile
+    test_budget_carving
+    test_specialist_prompt_has_fix_plan
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

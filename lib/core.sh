@@ -39,6 +39,7 @@ KYZN_HISTORY_DIR="$KYZN_DIR/history"
 KYZN_REPORTS_DIR="$KYZN_DIR/reports"
 KYZN_GLOBAL_DIR="${HOME}/.kyzn"
 KYZN_GLOBAL_HISTORY="${KYZN_GLOBAL_DIR}/history"
+KYZN_PROFILE_CACHE="$KYZN_DIR/repo-profile.md"
 
 # Sensitive file access restrictions (single constant — used by execute.sh + analyze.sh)
 KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["**/.git/**","~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**"]}}'
