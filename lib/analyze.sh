@@ -1186,6 +1186,9 @@ run_fix_phase() {
     fi
 
     # Step 2: Create branch (capture base for diff budget tracking)
+    local original_branch
+    original_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    KYZN_ORIGINAL_BRANCH="$original_branch"
     local branch_base
     branch_base=$(git rev-parse HEAD)
     local run_suffix="${run_id##*-}"
@@ -1424,6 +1427,14 @@ ${tier_findings}
         fi
 
         if $batch_passed; then
+            # Safety: verify we're still on the kyzn branch (Claude may have switched)
+            local current_branch
+            current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+            if [[ "$current_branch" != "$branch_name" ]]; then
+                log_warn "Branch switched to '$current_branch' — restoring '$branch_name'"
+                safe_git checkout "$branch_name" 2>/dev/null || true
+            fi
+
             # Commit this batch immediately — preserves work even if later batches fail
             stage_claude_changes
             safe_git commit -m "KyZN($tier): fix $tier_count findings [run:$run_id]" 2>/dev/null || true
@@ -1481,6 +1492,21 @@ ${tier_findings}
     echo "$diff_stat"
 
     # Step 7: Push and create PR
+    # Safety: never push directly to main/master
+    local push_branch
+    push_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [[ "$push_branch" == "main" || "$push_branch" == "master" ]]; then
+        log_error "On $push_branch instead of kyzn branch — attempting to recover"
+        # Try to find and switch to the kyzn branch
+        if git rev-parse --verify "$branch_name" &>/dev/null; then
+            safe_git checkout "$branch_name" 2>/dev/null
+        else
+            log_error "Cannot find branch $branch_name — changes committed to $push_branch locally"
+            rm -rf "$lockdir" 2>/dev/null
+            return 1
+        fi
+    fi
+
     log_step "Pushing and creating PR..."
     safe_git push -u origin HEAD 2>/dev/null || {
         log_warn "Push failed — changes are committed locally on $branch_name"
