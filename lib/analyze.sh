@@ -1097,12 +1097,22 @@ cmd_analyze() {
             stop_progress
             rm -f "$consensus_stderr"
             local consensus_cost
-            consensus_cost=$(echo "$consensus_result" | jq -r '.total_cost_usd // 0')
+            consensus_cost=$(echo "$consensus_result" | jq -r '.total_cost_usd // 0' 2>/dev/null || echo "?")
             log_ok "Consensus complete (\$$consensus_cost)"
 
             local consensus_findings
             consensus_findings=$(extract_findings "$consensus_result")
-            echo "$consensus_findings" | jq '.' > "$findings_file" 2>/dev/null || echo '[]' > "$findings_file"
+
+            # Validate JSON before writing — fallback to raw concatenation on parse error
+            if echo "$consensus_findings" | jq -e 'type == "array"' &>/dev/null; then
+                echo "$consensus_findings" > "$findings_file"
+            else
+                log_warn "Consensus returned malformed JSON — using raw concatenated findings"
+                jq -s 'add | sort_by(if .severity == "CRITICAL" then 0 elif .severity == "HIGH" then 1 elif .severity == "MEDIUM" then 2 else 3 end)' \
+                    "$tmp_dir/security.json" "$tmp_dir/correctness.json" \
+                    "$tmp_dir/performance.json" "$tmp_dir/architecture.json" \
+                    > "$findings_file" 2>/dev/null || echo '[]' > "$findings_file"
+            fi
         fi
 
         # Clean up temp dir
@@ -1119,8 +1129,14 @@ cmd_analyze() {
     rm -rf "$measure_dir" 2>/dev/null
     trap - EXIT INT TERM
 
+    # Validate findings file is valid JSON array (guard against malformed consensus output)
+    if ! jq -e 'type == "array"' "$findings_file" &>/dev/null; then
+        log_warn "Findings file contains invalid JSON — resetting to empty"
+        echo '[]' > "$findings_file"
+    fi
+
     local finding_count
-    finding_count=$(jq 'length' "$findings_file")
+    finding_count=$(jq 'length' "$findings_file" 2>/dev/null) || finding_count=0
     log_info "Final findings: $finding_count issues"
 
     # Write completed history entry
