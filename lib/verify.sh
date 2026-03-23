@@ -22,7 +22,7 @@ capture_failing_tests() {
             ;;
         node)
             if [[ -f "package.json" ]] && jq -e '.scripts.test' package.json &>/dev/null 2>&1; then
-                failures=$(npm test 2>&1 | grep -E '(FAIL |✕ |✗ |× )' | sort) || true
+                failures=$(CI=true timeout 300 npm test 2>&1 | grep -E '(FAIL |✕ |✗ |× )' | sort) || true
             fi
             ;;
         rust)
@@ -163,10 +163,22 @@ verify_node() {
     # Run tests
     if jq -e '.scripts.test' package.json &>/dev/null 2>&1; then
         log_step "Running tests..."
-        if ! npm test 2>&1 | tail -10; then
-            log_error "Tests failed"
-            ok=false
+        local test_output test_exit
+        # CI=true disables vitest/jest watch mode; timeout guards against hangs
+        test_output=$(CI=true timeout 300 npm test 2>&1) || test_exit=$?
+        test_exit=${test_exit:-0}
+
+        # vitest exits 1 with "No test files found" — treat as pass (no tests to fail)
+        if (( test_exit != 0 )); then
+            if echo "$test_output" | grep -q "No test files found"; then
+                log_info "No test files found — skipping test verification"
+            else
+                echo "$test_output" | tail -10
+                log_error "Tests failed"
+                ok=false
+            fi
         else
+            echo "$test_output" | tail -10
             log_ok "Tests passed"
         fi
     fi

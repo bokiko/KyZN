@@ -1914,6 +1914,36 @@ test_specialist_prompt_has_fix_plan() {
 }
 
 # ---------------------------------------------------------------------------
+# Verify fixes: vitest no-test-files, CI=true
+# ---------------------------------------------------------------------------
+test_verify_node_no_test_files() {
+    log_header "62. verify_node treats 'No test files found' as pass"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    # Minimal node project: no tsconfig (skip tsc), no build script, test simulates vitest
+    echo '{"name":"test-project","scripts":{"test":"echo No test files found && exit 1"}}' > package.json
+    mkdir -p src
+    git add -A && git commit -q -m "init node"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    detect_project_type
+
+    if verify_build &>/dev/null; then
+        pass "no-test-files treated as pass"
+    else
+        fail "no-test-files" "verify_build should pass when no test files found"
+    fi
+
+    cd "$KYZN_ROOT"
+    rm -rf "$SANDBOX"
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -1991,6 +2021,7 @@ main() {
     test_generate_fix_prompt_with_profile
     test_budget_carving
     test_specialist_prompt_has_fix_plan
+    test_verify_node_no_test_files
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
