@@ -1763,10 +1763,10 @@ test_consensus_prompt_has_fix_plan() {
     local prompt
     prompt=$(build_consensus_prompt '[{"id":"SEC-001"}]' '[]' '[]' '[]')
 
-    assert_contains "consensus has fix_plan instruction" "$prompt" "fix_plan"
-    assert_contains "consensus has target_file" "$prompt" "target_file"
-    assert_contains "consensus has pattern_to_follow" "$prompt" "pattern_to_follow"
-    assert_contains "consensus has test_approach" "$prompt" "test_approach"
+    assert_contains "consensus preserves fix_plan" "$prompt" "Preserve fix_plan"
+    assert_contains "consensus says JSON only" "$prompt" "ONLY the JSON array"
+    assert_contains "consensus says no commentary" "$prompt" "No commentary"
+    assert_contains "consensus says no code fences" "$prompt" "Do NOT wrap"
 }
 
 test_fix_plan_passes_through() {

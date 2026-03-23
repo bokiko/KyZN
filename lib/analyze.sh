@@ -217,18 +217,14 @@ $architecture_findings
 3. **Rank** — order by severity (CRITICAL > HIGH > MEDIUM > LOW), then by confidence
 4. **Re-ID** — assign clean sequential IDs (SEC-001, BUG-001, PERF-001, ARCH-001, TEST-001, DEAD-001)
 5. **Quality filter** — remove any finding that doesn't have a concrete file path and actionable fix
-6. **Add fix_plan** — for each finding, add a "fix_plan" field with structured guidance:
-   - target_file: exact file path to modify
-   - target_function: function or class to change
-   - pattern_to_follow: reference an existing pattern in the codebase ("see src/auth.py:validate for the correct async pattern")
-   - test_file: which test file to add regression tests to (or "create tests/test_X.py")
-   - test_approach: how to test ("mock with unittest.mock.patch, assert ValueError raised")
-   - constraints: what NOT to change ("do not modify the function signature")
-   Use pipe-delimited format: "target_file: X | target_function: Y | ..."
-   The fix_plan gives the fix agent WHERE to look and WHICH patterns to follow. The existing "fix" field stays as a short summary. If a specialist already provided a fix_plan, keep or improve it.
+6. **Preserve fix_plan** — if a specialist provided a fix_plan field, keep it as-is. Do NOT generate new fix_plan fields — that is the specialists' job.
 
-Return the final deduplicated JSON array in the same format as the inputs.
-Only include findings that are real, actionable issues. If reviewers disagree, favor the more specific finding.
+## Output Rules
+
+- Output ONLY the JSON array. No commentary, no explanations, no reasoning.
+- Start your response with \`[\` and end with \`]\`.
+- Do NOT wrap the JSON in markdown code fences.
+- Only include findings that are real, actionable issues. If reviewers disagree, favor the more specific finding.
 EOF
 }
 
