@@ -292,18 +292,18 @@ write_history() {
 
 # ---------------------------------------------------------------------------
 # Progress animation — background process that shows continuous activity
+# Writes to /dev/tty directly so \r overwrites work from background process.
 # Usage:
-#   start_progress "Fixing CRITICAL issues" "reading files" "analyzing code" "writing fixes"
+#   start_progress "Fixing CRITICAL issues" "reading files" "analyzing code"
 #   ... long-running work ...
 #   stop_progress
-#
-# The animated bar moves continuously. Optional hint messages cycle every 6s.
 # ---------------------------------------------------------------------------
 _KYZN_PROGRESS_PID=""
 
 start_progress() {
     # Don't animate if not a terminal
     [[ ! -t 1 ]] && return 0
+    [[ ! -e /dev/tty ]] && return 0
 
     local title="$1"
     shift
@@ -319,6 +319,13 @@ start_progress() {
         start_time=$(date +%s)
         local idx=0
 
+        # Time-aware hints appended after the provided ones
+        local -a time_hints=(
+            "complex changes take time..."
+            "still working on it..."
+            "large codebase, patience pays off..."
+        )
+
         while true; do
             local elapsed=$(( $(date +%s) - start_time ))
             local mins=$(( elapsed / 60 ))
@@ -328,34 +335,36 @@ start_progress() {
             # Spinning braille
             local spin="${spinner_frames[$((idx % ${#spinner_frames[@]}))]}"
 
-            # Animated flowing bar (20 chars wide, wave pattern)
+            # Animated flowing bar (16 chars wide, wave pattern)
             local bar=""
             local i
-            for i in {0..19}; do
+            for i in {0..15}; do
                 local ci=$(( (idx + i) % ${#bar_chars[@]} ))
                 bar+="${bar_chars[$ci]}"
             done
 
-            # Cycling hint text
+            # Cycling hint text — time-aware after 2 minutes
             local hint=""
-            if (( ${#hints[@]} > 0 )); then
-                hint="${hints[$((elapsed / 6 % ${#hints[@]}))]}"
+            if (( elapsed >= 120 && ${#time_hints[@]} > 0 )); then
+                hint="${time_hints[$(( (elapsed / 4) % ${#time_hints[@]} ))]}"
+            elif (( ${#hints[@]} > 0 )); then
+                hint="${hints[$(( (elapsed / 4) % ${#hints[@]} ))]}"
             fi
 
-            # Render: spinner [time] title  ░▒▓█▓▒░▒▓█▓▒░▒▓█▓▒░▒  hint
+            # Write to /dev/tty — bypasses background process buffering,
+            # \r overwrites reliably regardless of foreground/background
             printf '\033[2K\r  %b %b[%s]%b %s  %b%s%b  %b%s%b' \
                 "${CYAN}${spin}${RESET}" \
                 "${DIM}" "$time_str" "${RESET}" \
                 "$title" \
                 "${CYAN}" "$bar" "${RESET}" \
-                "${DIM}" "$hint" "${RESET}"
+                "${DIM}" "$hint" "${RESET}" > /dev/tty
 
             idx=$((idx + 1))
             sleep 0.3
         done
     ) &
     _KYZN_PROGRESS_PID=$!
-    disown $_KYZN_PROGRESS_PID 2>/dev/null
 }
 
 stop_progress() {
@@ -364,7 +373,7 @@ stop_progress() {
         wait "$_KYZN_PROGRESS_PID" 2>/dev/null || true
         _KYZN_PROGRESS_PID=""
         # Clear the progress line
-        printf '\033[2K\r'
+        printf '\033[2K\r' > /dev/tty 2>/dev/null || printf '\033[2K\r'
     fi
 }
 

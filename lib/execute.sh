@@ -33,7 +33,7 @@ stage_claude_changes() {
     # Stage new files Claude created, excluding KyZN artifacts
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$' || true)
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
@@ -53,7 +53,7 @@ count_diff_size() {
     safe_git add -u 2>/dev/null
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$' || true)
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi

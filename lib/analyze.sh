@@ -1155,7 +1155,9 @@ run_fix_phase() {
         log_ok "Baseline tests passing"
     fi
 
-    # Step 2: Create branch
+    # Step 2: Create branch (capture base for diff budget tracking)
+    local branch_base
+    branch_base=$(git rev-parse HEAD)
     local run_suffix="${run_id##*-}"
     local branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
     log_step "Creating branch: $branch_name"
@@ -1362,15 +1364,21 @@ If a specific fix is causing the failure, revert just that one fix."
             (( batches_applied++ )) || true
             applied_tiers+=("$tier")
 
-            # Update cumulative diff tracking
-            local _ba=0 _bd=0 _bb=0
-            count_diff_size _ba _bd _bb
-            cumulative_diff=$(( _ba + _bd ))
+            # Update cumulative diff tracking (from branch base, not HEAD)
+            local _branch_numstat
+            _branch_numstat=$(git diff --numstat "$branch_base"...HEAD 2>/dev/null) || true
+            if [[ -n "$_branch_numstat" ]]; then
+                local _ba _bd
+                _ba=$(echo "$_branch_numstat" | awk '{sum+=$1} END {print sum+0}')
+                _bd=$(echo "$_branch_numstat" | awk '{sum+=$2} END {print sum+0}')
+                cumulative_diff=$(( _ba + _bd ))
+            fi
             log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
         else
             log_error "$tier batch still broken after retry — reverting batch"
             safe_git checkout -- . 2>/dev/null
-            safe_git clean -fd 2>/dev/null
+            # Only clean files Claude added, preserve user's untracked files
+            safe_git clean -fd --exclude='.kyzn/' --exclude='*.lock' --exclude='.claude/' 2>/dev/null
             (( batches_failed++ )) || true
         fi
     done
