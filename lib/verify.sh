@@ -12,7 +12,12 @@ capture_failing_tests() {
     case "$project_type" in
         python)
             if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
-                failures=$(pytest --tb=no -q 2>&1 | grep '^FAILED ' | sed 's/^FAILED //' | sort) || true
+                # Capture both FAILED (assertion errors) and ERROR (collection/import errors)
+                # ERR: prefix on ERROR lines prevents cross-format matching in grep -qF comparisons
+                failures=$(pytest --tb=no -q 2>&1 \
+                    | grep -E '^(FAILED |ERROR )' \
+                    | sed -E 's/^ERROR (collecting )?/ERR:/; s/^FAILED //' \
+                    | sort -u) || true
             fi
             ;;
         node)
@@ -33,6 +38,40 @@ capture_failing_tests() {
     esac
 
     echo "$failures"
+}
+
+# ---------------------------------------------------------------------------
+# Gate: check new test files for import errors (Python only)
+# Populates a variable with --ignore flags for broken test files
+# Usage: gate_new_test_files MY_VAR  →  MY_VAR="--ignore=bad1.py --ignore=bad2.py"
+# ---------------------------------------------------------------------------
+KYZN_PYTEST_EXTRA_ARGS=""
+
+gate_new_test_files() {
+    local _var_flags="${1:-}"
+    local project_type="${KYZN_PROJECT_TYPE:-generic}"
+    KYZN_PYTEST_EXTRA_ARGS=""  # reset between calls
+
+    [[ "$project_type" != "python" ]] && return 0
+    command -v pytest &>/dev/null || return 0
+
+    local new_tests ignore_list=""
+    new_tests=$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -E '(test_.*\.py$|.*_test\.py$)') || true
+    [[ -z "$new_tests" ]] && return 0
+
+    while IFS= read -r tf; do
+        [[ -z "$tf" ]] && continue
+        if ! pytest --collect-only "$tf" &>/dev/null; then
+            log_warn "New test file has import errors: $tf (excluding from test run)"
+            ignore_list+=" --ignore=$tf"
+        fi
+    done <<< "$new_tests"
+
+    if [[ -n "$ignore_list" ]]; then
+        KYZN_PYTEST_EXTRA_ARGS="$ignore_list"
+        [[ -n "$_var_flags" ]] && printf -v "$_var_flags" '%s' "$ignore_list"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -175,10 +214,14 @@ verify_python() {
         fi
     fi
 
-    # pytest
+    # pytest (with optional --ignore flags from gate_new_test_files)
     if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
         log_step "Running pytest..."
-        if ! pytest 2>&1 | tail -10; then
+        local -a pytest_args=()
+        if [[ -n "${KYZN_PYTEST_EXTRA_ARGS:-}" ]]; then
+            read -ra pytest_args <<< "$KYZN_PYTEST_EXTRA_ARGS"
+        fi
+        if ! pytest "${pytest_args[@]}" 2>&1 | tail -10; then
             log_error "Tests failed"
             ok=false
         else

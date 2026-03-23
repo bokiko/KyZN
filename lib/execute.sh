@@ -514,14 +514,18 @@ cmd_improve() {
     local verify_errors_file
     verify_errors_file=$(mktemp)
 
-    if verify_build; then
+    local verify_out
+    verify_out=$(mktemp)
+
+    if verify_build 2>&1 | tee "$verify_out" | tail -20; then
         log_ok "Build and tests passed!"
-        rm -f "$verify_errors_file"
+        rm -f "$verify_errors_file" "$verify_out"
     else
-        # Capture error output from verify_build for retry context
+        # Capture error output from first run (no double verify_build)
         local verify_errors
-        verify_errors=$(verify_build 2>&1) || true
+        verify_errors=$(tail -50 "$verify_out")
         echo "$verify_errors" > "$verify_errors_file"
+        rm -f "$verify_out"
 
         if $baseline_verify_ok && ! $retried; then
             # Baseline was clean, Claude broke it — attempt self-repair (one retry)
@@ -532,13 +536,16 @@ cmd_improve() {
             local retry_budget
             retry_budget=$(awk -v b="$budget" 'BEGIN { printf "%.2f", b / 2 }')
 
-            # Construct retry prompt with error context
+            # Construct retry prompt with error context + mock guidance
             local retry_prompt
-            retry_prompt="Your previous changes broke the build. Here are the errors:
+            retry_prompt="Your previous changes broke the build. Here are the errors (last 50 lines):
 
 ${verify_errors}
 
-Please fix these issues while preserving your improvements. Do not revert all changes — only fix what is broken."
+## Repair Instructions
+- Fix these issues while preserving your improvements. Do not revert all changes — only fix what is broken.
+- If a test import fails (ModuleNotFoundError), rewrite using unittest.mock (Python) or jest.mock (Node).
+- Do NOT install new packages or add dependencies."
 
             # Execute Claude again with error context
             if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then

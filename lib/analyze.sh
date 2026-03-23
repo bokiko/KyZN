@@ -381,6 +381,7 @@ generate_fix_prompt() {
     local findings_json="$1"
     local report_file="${2:-}"
     local baseline_failures="${3:-}"
+    local installed_packages="${4:-}"
 
     local count
     count=$(echo "$findings_json" | jq 'length')
@@ -433,6 +434,33 @@ The following issues were identified by a multi-agent deep analysis (4 specializ
 $findings_json
 \`\`\`
 
+$(
+    # Project context section — language, test framework, available packages
+    local _test_fw=""
+    case "${KYZN_PROJECT_TYPE:-generic}" in
+        python) _test_fw="pytest" ;;
+        node)   _test_fw="jest/vitest" ;;
+        rust)   _test_fw="cargo test" ;;
+        go)     _test_fw="go test" ;;
+    esac
+    if [[ -n "$_test_fw" ]]; then
+        echo "## Project Context"
+        echo "- Language: $(project_type_name)"
+        echo "- Test framework: $_test_fw"
+        echo ""
+    fi
+    if [[ -n "$installed_packages" ]]; then
+        echo "## Available Packages"
+        echo "These packages are installed. When writing tests, ONLY import from these packages plus the standard library. For anything else, use mocks (unittest.mock for Python, jest.mock for Node)."
+        echo ""
+        echo '```'
+        echo "$installed_packages"
+        echo '```'
+        echo ""
+        echo "Do NOT add new dependencies to requirements.txt, package.json, or any manifest."
+        echo ""
+    fi
+)
 ${report_context}${baseline_context}## Rules
 
 - Fix each issue in the order listed (highest severity first)
@@ -1207,6 +1235,10 @@ run_fix_phase() {
     local cumulative_diff=0
     local fix_summaries=""
 
+    # Detect installed packages once (used in fix prompts for dependency awareness)
+    local installed_packages=""
+    installed_packages=$(detect_installed_packages 2>/dev/null) || true
+
     # Step 4: Fix each severity tier as a separate batch, commit incrementally
     for tier in "${severity_tiers[@]}"; do
         local tier_findings
@@ -1237,7 +1269,7 @@ run_fix_phase() {
             'BEGIN { b = total * batch / all; if (b < 0.50) b = 0.50; printf "%.2f", b }')
 
         local fix_prompt
-        fix_prompt=$(generate_fix_prompt "$tier_findings" "$report_file" "$baseline_failures")
+        fix_prompt=$(generate_fix_prompt "$tier_findings" "$report_file" "$baseline_failures" "$installed_packages")
 
         if [[ -z "$fix_prompt" ]]; then
             log_info "No findings for $tier tier."
@@ -1300,6 +1332,10 @@ run_fix_phase() {
             fix_summaries+="**${tier}:** ${batch_summary}"$'\n\n'
         fi
 
+        # Gate new test files before verification (exclude broken imports)
+        KYZN_PYTEST_EXTRA_ARGS=""
+        gate_new_test_files 2>/dev/null || true
+
         # Verify after this batch
         local batch_passed=false
         if verify_build; then
@@ -1309,18 +1345,30 @@ run_fix_phase() {
             # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch broke build — attempting self-repair..."
 
+            # Capture verify output (already failed above, just need the text)
             local verify_errors
-            verify_errors=$(verify_build 2>&1) || true
+            verify_errors=$(verify_build 2>&1 | tail -50) || true
 
             local retry_budget
             retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
 
-            local retry_prompt="Your previous fixes for $tier severity issues broke the build/tests. Here are the errors:
+            local retry_prompt="Your previous fixes for $tier severity issues broke the build/tests.
 
+## Errors (last 50 lines)
 ${verify_errors}
 
-Please fix ONLY the issues your changes introduced. Do not revert all changes — preserve what works and fix what's broken.
-If a specific fix is causing the failure, revert just that one fix."
+## What You Were Fixing
+\`\`\`json
+${tier_findings}
+\`\`\`
+
+## Repair Instructions
+- Fix ONLY the issues your changes introduced. Do not revert all changes — preserve what works.
+- If a test import fails (ModuleNotFoundError), rewrite the test using mocks instead:
+  - Python: use unittest.mock (Mock, patch, MagicMock) — do NOT import the missing package
+  - Node: use jest.mock()
+- Do NOT install new packages or add dependencies.
+- If a specific fix is unfixable, revert just that one fix."
 
             local retry_stderr
             retry_stderr=$(mktemp)

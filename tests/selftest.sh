@@ -1185,6 +1185,15 @@ FAILED test_signup")
     assert_contains "baseline context included" "$prompt_with_baseline" "Pre-Existing Test Failures"
     assert_contains "baseline has test names" "$prompt_with_baseline" "test_login"
 
+    # Test with installed packages (4th arg)
+    local prompt_with_pkgs
+    prompt_with_pkgs=$(generate_fix_prompt "$findings_json" "" "" "fastapi
+pydantic
+pytest")
+    assert_contains "packages section present" "$prompt_with_pkgs" "Available Packages"
+    assert_contains "mock guidance present" "$prompt_with_pkgs" "unittest.mock"
+    assert_contains "package listed" "$prompt_with_pkgs" "fastapi"
+
     # Test empty findings
     local empty_prompt
     empty_prompt=$(generate_fix_prompt "[]" "" "")
@@ -1646,9 +1655,10 @@ test_reflexion_retry_loop() {
     # 3. Captures verify_build output to a temp file for error context
     assert_contains "captures verify errors to file" "$src" 'verify_errors_file'
 
-    # 4. Constructs retry prompt with error context
+    # 4. Constructs retry prompt with error context and mock guidance
     assert_contains "retry prompt has error message" "$src" 'Your previous changes broke the build'
     assert_contains "retry prompt includes errors" "$src" 'verify_errors'
+    assert_contains "retry has mock guidance" "$src" 'unittest.mock'
 
     # 5. Halves the budget for retry
     assert_contains "halves budget for retry" "$src" 'retry_budget'
@@ -1696,6 +1706,49 @@ GI
     count=$(grep -c 'history/' "$KYZN_DIR/.gitignore")
     assert_eq "no duplicate history/" "1" "$count"
 
+    rm -rf "$tmpdir"
+}
+
+test_capture_error_lines() {
+    log_header "53. capture_failing_tests captures ERROR lines with ERR: prefix"
+
+    local src
+    src=$(cat "$KYZN_ROOT/lib/verify.sh")
+
+    # Must grep for both FAILED and ERROR
+    assert_contains "captures FAILED lines" "$src" "FAILED"
+    assert_contains "captures ERROR lines" "$src" "ERROR"
+    assert_contains "ERR prefix for errors" "$src" "ERR:"
+    assert_contains "strips collecting prefix" "$src" "collecting"
+    assert_contains "deduplicates with sort -u" "$src" "sort -u"
+}
+
+test_detect_installed_packages() {
+    log_header "54. detect_installed_packages returns package list"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    # Test node project detection with a sandbox
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cd "$tmpdir"
+
+    # Create a minimal package.json
+    cat > package.json <<'PKG'
+{
+  "dependencies": {"express": "^4.0.0"},
+  "devDependencies": {"jest": "^29.0.0"}
+}
+PKG
+
+    KYZN_PROJECT_TYPE="node"
+    local pkgs
+    pkgs=$(detect_installed_packages 2>/dev/null) || true
+
+    assert_contains "node finds express" "$pkgs" "express"
+    assert_contains "node finds jest" "$pkgs" "jest"
+
+    cd "$KYZN_ROOT"
     rm -rf "$tmpdir"
 }
 
@@ -1768,6 +1821,8 @@ main() {
     test_validate_run_id
     test_reflexion_retry_loop
     test_gitignore_preserves_custom
+    test_capture_error_lines
+    test_detect_installed_packages
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

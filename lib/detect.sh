@@ -101,6 +101,38 @@ print_detection() {
     fi
 }
 
+# Detect installed packages for the current project type.
+# Python: uses pip list (accurate, handles name divergence).
+# Node/Rust/Go: parses manifests (import names match package names).
+detect_installed_packages() {
+    case "${KYZN_PROJECT_TYPE:-generic}" in
+        python)
+            if command -v pip &>/dev/null; then
+                pip list --format=freeze 2>/dev/null | sed 's/==.*//' | sort
+            elif command -v pip3 &>/dev/null; then
+                pip3 list --format=freeze 2>/dev/null | sed 's/==.*//' | sort
+            fi
+            ;;
+        node)
+            if [[ -f "package.json" ]]; then
+                jq -r '((.dependencies // {}) + (.devDependencies // {})) | keys[]' package.json 2>/dev/null | sort || true
+            fi
+            ;;
+        rust)
+            if [[ -f "Cargo.toml" ]]; then
+                sed -n '/^\[dependencies\]/,/^\[/p' Cargo.toml 2>/dev/null \
+                    | grep -v '^\[' | grep -v '^\s*$' | sed 's/\s*=.*//' | sort || true
+            fi
+            ;;
+        go)
+            if [[ -f "go.mod" ]]; then
+                sed -n '/^require/,/^)/p' go.mod 2>/dev/null \
+                    | grep -v '^require' | grep -v '^)' | awk '{print $1}' | sort || true
+            fi
+            ;;
+    esac
+}
+
 # Get a friendly name for the project type
 project_type_name() {
     case "${1:-$KYZN_PROJECT_TYPE}" in
