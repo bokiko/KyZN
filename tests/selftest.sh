@@ -1173,6 +1173,9 @@ test_generate_fix_prompt() {
     assert_contains "fix prompt has SEC-001" "$prompt" "SEC-001"
     assert_contains "fix prompt has rules" "$prompt" "Fix each issue"
     assert_contains "fix prompt has skip guidance" "$prompt" "contradicts reality"
+    assert_contains "fix prompt requires security tests" "$prompt" "regression test"
+    assert_contains "fix prompt requires critical bug tests" "$prompt" "verifies the fix"
+    assert_contains "fix prompt forbids test deletion" "$prompt" "Do NOT delete test files"
 
     # Test with baseline failures context
     local prompt_with_baseline
@@ -1663,6 +1666,39 @@ test_reflexion_retry_loop() {
     assert_contains "checks retried flag" "$src" '$retried'
 }
 
+test_gitignore_preserves_custom() {
+    log_header "52. setup_kyzn_gitignore preserves custom entries"
+
+    source "$KYZN_ROOT/lib/interview.sh"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    KYZN_DIR="$tmpdir/.kyzn"
+    mkdir -p "$KYZN_DIR"
+
+    # Create a gitignore with a custom entry
+    cat > "$KYZN_DIR/.gitignore" <<'GI'
+# kyzn — gitignored local data
+history/
+reports/
+local.yaml
+my-custom-scratch/
+GI
+
+    # Run setup — should append missing entries, not overwrite
+    setup_kyzn_gitignore
+
+    assert_contains "custom entry preserved" "$(cat "$KYZN_DIR/.gitignore")" "my-custom-scratch/"
+    assert_contains "kyzn-report.md added" "$(cat "$KYZN_DIR/.gitignore")" "kyzn-report.md"
+    assert_contains ".improve.lock/ added" "$(cat "$KYZN_DIR/.gitignore")" ".improve.lock/"
+    # history/ already existed — should not be duplicated
+    local count
+    count=$(grep -c 'history/' "$KYZN_DIR/.gitignore")
+    assert_eq "no duplicate history/" "1" "$count"
+
+    rm -rf "$tmpdir"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1731,6 +1767,7 @@ main() {
     test_path_traversal_reject_diff
     test_validate_run_id
     test_reflexion_retry_loop
+    test_gitignore_preserves_custom
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

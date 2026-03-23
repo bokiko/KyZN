@@ -440,8 +440,10 @@ ${report_context}${baseline_context}## Rules
 - After each fix, make sure the code still compiles/passes tests
 - If a finding describes something that contradicts reality (e.g., claims code is broken but it works), skip that finding and explain why
 - If a fix is too risky or you're not confident, skip it and note why
+- When fixing a security vulnerability (SEC-*), add at least one regression test that would have caught the vulnerability
+- When fixing a critical bug (BUG-* at CRITICAL/HIGH), add a test that verifies the fix
 - Do NOT make any changes beyond what's listed here — no drive-by refactoring
-- Do NOT modify test files unless a finding specifically targets test code AND the test is genuinely broken
+- Do NOT delete test files or remove large blocks of existing tests — only modify tests if a finding specifically targets test code AND the test is genuinely broken
 
 ## Output
 
@@ -1203,6 +1205,7 @@ run_fix_phase() {
     # Hard ceiling
     if (( diff_limit > 10000 )); then diff_limit=10000; fi
     local cumulative_diff=0
+    local fix_summaries=""
 
     # Step 4: Fix each severity tier as a separate batch, commit incrementally
     for tier in "${severity_tiers[@]}"; do
@@ -1241,6 +1244,14 @@ run_fix_phase() {
             continue
         fi
 
+        # Load profile overlay based on dominant finding category
+        local dominant_cat
+        dominant_cat=$(echo "$tier_findings" | jq -r '
+            [.[].category // "unknown"] | group_by(.) | sort_by(-length) | .[0][0] // ""
+        ' 2>/dev/null) || true
+        local sys_prompt_file
+        sys_prompt_file=$(get_system_prompt "$dominant_cat")
+
         # Execute Claude for this batch
         local fix_stderr
         fix_stderr=$(mktemp)
@@ -1259,7 +1270,7 @@ run_fix_phase() {
             --max-turns 30 \
             "${fix_allowlist_arr[@]}" \
             --settings "$KYZN_SETTINGS_JSON" \
-            --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
+            --append-system-prompt-file "$sys_prompt_file" \
             --output-format json \
             --no-session-persistence \
             2>"$fix_stderr") || {
@@ -1281,6 +1292,13 @@ run_fix_phase() {
         batch_cost=$(echo "$fix_result" | jq -r '.total_cost_usd // "0"')
         total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$batch_cost" 'BEGIN { printf "%.2f", a + b }')
         log_ok "$tier fixes applied (cost: \$$batch_cost)"
+
+        # Extract Claude's summary of what was fixed (for PR body)
+        local batch_summary
+        batch_summary=$(echo "$fix_result" | jq -r '.result // empty' 2>/dev/null) || true
+        if [[ -n "$batch_summary" ]]; then
+            fix_summaries+="**${tier}:** ${batch_summary}"$'\n\n'
+        fi
 
         # Verify after this batch
         local batch_passed=false
@@ -1320,7 +1338,7 @@ If a specific fix is causing the failure, revert just that one fix."
                 --max-turns 20 \
                 "${fix_allowlist_arr[@]}" \
                 --settings "$KYZN_SETTINGS_JSON" \
-                --append-system-prompt-file "$KYZN_ROOT/templates/system-prompt.md" \
+                --append-system-prompt-file "$sys_prompt_file" \
                 --output-format json \
                 --no-session-persistence \
                 2>"$retry_stderr") || true
@@ -1376,11 +1394,22 @@ If a specific fix is causing the failure, revert just that one fix."
             log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
         else
             log_error "$tier batch still broken after retry — reverting batch"
+            # Save user's local config before cleaning (gitignored, would be lost)
+            local _saved_local=""
+            [[ -f "$KYZN_DIR/local.yaml" ]] && _saved_local=$(cat "$KYZN_DIR/local.yaml")
             safe_git checkout -- . 2>/dev/null
-            # Only clean files Claude added, preserve user's untracked files
-            safe_git clean -fd --exclude='.kyzn/' --exclude='*.lock' --exclude='.claude/' 2>/dev/null
+            safe_git clean -fd 2>/dev/null
+            # Restore saved files
+            if [[ -n "$_saved_local" ]]; then
+                mkdir -p "$KYZN_DIR"
+                echo "$_saved_local" > "$KYZN_DIR/local.yaml"
+            fi
+            ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
             (( batches_failed++ )) || true
         fi
+
+        # Clean up combined prompt file if it was a temp file
+        [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
     done
 
     # Step 5: Check if any batches succeeded
@@ -1431,6 +1460,12 @@ Applied fixes for findings at severity **$min_severity** and above.
 \`\`\`
 $diff_stat
 \`\`\`
+
+$(if [[ -n "$fix_summaries" ]]; then
+echo "### What Was Fixed"
+echo ""
+echo "$fix_summaries"
+fi)
 
 ### Approach
 Findings were batched by severity tier (CRITICAL → HIGH → MEDIUM → LOW).

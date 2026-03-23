@@ -269,14 +269,12 @@ EOF
 # ---------------------------------------------------------------------------
 setup_kyzn_gitignore() {
     local gi="$KYZN_DIR/.gitignore"
-    cat > "$gi" <<'EOF'
-# kyzn — gitignored local data
-history/
-reports/
-local.yaml
-kyzn-report.md
-.improve.lock/
-EOF
+    local -a required=("history/" "reports/" "local.yaml" "kyzn-report.md" ".improve.lock/")
+    # Create with header if new, append missing entries if existing
+    [[ -f "$gi" ]] || echo "# kyzn — gitignored local data" > "$gi"
+    for entry in "${required[@]}"; do
+        grep -qF "$entry" "$gi" 2>/dev/null || echo "$entry" >> "$gi"
+    done
 }
 
 # ---------------------------------------------------------------------------

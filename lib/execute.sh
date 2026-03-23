@@ -41,6 +41,7 @@ stage_claude_changes() {
     # Run safety filters on what's staged
     unstage_secrets
     check_dangerous_files
+    check_test_deletions
 }
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,25 @@ count_diff_size() {
     printf -v "$_var_added" '%s' "$added"
     printf -v "$_var_deleted" '%s' "$deleted"
     printf -v "$_var_binary" '%s' "$binary"
+}
+
+# ---------------------------------------------------------------------------
+# Safety: check for dangerous staged files (CI pipelines, git hooks)
+# ---------------------------------------------------------------------------
+# Safety: flag and unstage test files with large deletions (>50% removed)
+# ---------------------------------------------------------------------------
+check_test_deletions() {
+    local deleted_tests
+    # Find test files where deletions exceed twice the additions (net loss >50%)
+    deleted_tests=$(git diff --cached --numstat HEAD 2>/dev/null \
+        | awk '$1 != "-" && $2 != "-" { if ($2 > $1 * 2 && $2 > 20 && $3 ~ /test/) print $3 }' || true)
+    if [[ -n "$deleted_tests" ]]; then
+        log_warn "Large test deletions detected — unstaging to protect test coverage:"
+        echo "$deleted_tests" | while IFS= read -r f; do
+            [[ -n "$f" ]] && log_dim "  - $f"
+        done
+        echo "$deleted_tests" | xargs git reset HEAD -- 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------
