@@ -743,6 +743,12 @@ cmd_analyze() {
             "Inspecting dependency usage..."
             "Evaluating API boundaries..."
             "Cross-referencing module dependencies..."
+            "Mapping input sanitization..."
+            "Checking resource cleanup paths..."
+            "Analyzing concurrency patterns..."
+            "Reviewing type safety..."
+            "Inspecting configuration handling..."
+            "Tracing data serialization..."
         )
         local spin_idx=0
 
@@ -766,7 +772,7 @@ cmd_analyze() {
             local mins=$(( elapsed / 60 ))
             local secs=$(( elapsed % 60 ))
             local frame="${spinner_frames[$((spin_idx % ${#spinner_frames[@]}))]}"
-            local hint="${phase_hints[$((elapsed / 12 % ${#phase_hints[@]}))]}"
+            local hint="${phase_hints[$((elapsed / 4 % ${#phase_hints[@]}))]}"
             spin_idx=$((spin_idx + 1))
 
             # Line 1: spinner + time + agent dots
@@ -817,13 +823,18 @@ cmd_analyze() {
         # Phase 2: Consensus merge
         # ---------------------------------------------------------------
         log_header "Phase 2: Consensus merge (dedup + rank)"
-        log_step "Opus is merging and ranking findings..."
 
         local consensus_prompt
         consensus_prompt=$(build_consensus_prompt "$sec_findings" "$cor_findings" "$perf_findings" "$arch_findings")
 
         local consensus_stderr
         consensus_stderr=$(mktemp)
+
+        start_progress "Opus merging $raw_count findings" \
+            "deduplicating across specialists..." \
+            "ranking by severity and confidence..." \
+            "cross-referencing related issues..." \
+            "building final report..."
 
         local consensus_result
         consensus_result=$(timeout "$claude_timeout" claude -p "$consensus_prompt" \
@@ -833,6 +844,7 @@ cmd_analyze() {
             --output-format json \
             --no-session-persistence \
             2>"$consensus_stderr") || {
+            stop_progress
             log_warn "Consensus merge failed — using raw concatenated findings"
             # Fallback: just concatenate all findings (sort by severity rank, not string)
             jq -s 'add | sort_by(if .severity == "CRITICAL" then 0 elif .severity == "HIGH" then 1 elif .severity == "MEDIUM" then 2 else 3 end)' \
@@ -843,6 +855,7 @@ cmd_analyze() {
         }
 
         if [[ -n "${consensus_result:-}" ]]; then
+            stop_progress
             rm -f "$consensus_stderr"
             local consensus_cost
             consensus_cost=$(echo "$consensus_result" | jq -r '.total_cost_usd // 0')
@@ -1081,6 +1094,7 @@ run_fix_phase() {
 
     # Cleanup on exit
     _kyzn_fix_cleanup() {
+        stop_progress 2>/dev/null
         rm -rf "${lockdir:-}" 2>/dev/null
         trap - EXIT INT TERM
     }
@@ -1229,6 +1243,13 @@ run_fix_phase() {
         local fix_stderr
         fix_stderr=$(mktemp)
 
+        start_progress "Sonnet fixing $tier ($tier_count issues)" \
+            "reading source files..." \
+            "analyzing issue context..." \
+            "writing fixes..." \
+            "verifying changes..." \
+            "checking for side effects..."
+
         local fix_result
         fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
             --model sonnet \
@@ -1241,6 +1262,7 @@ run_fix_phase() {
             --no-session-persistence \
             2>"$fix_stderr") || {
             local exit_code=$?
+            stop_progress
             if (( exit_code == 124 )); then
                 log_error "$tier batch timed out — skipping"
             else
@@ -1250,6 +1272,7 @@ run_fix_phase() {
             (( batches_failed++ )) || true
             continue
         }
+        stop_progress
         rm -f "$fix_stderr"
 
         local batch_cost
@@ -1282,6 +1305,12 @@ If a specific fix is causing the failure, revert just that one fix."
             local retry_stderr
             retry_stderr=$(mktemp)
 
+            start_progress "Self-repairing $tier batch" \
+                "reading error output..." \
+                "identifying broken changes..." \
+                "reverting problematic fixes..." \
+                "re-testing..."
+
             local retry_result
             retry_result=$(timeout "$claude_timeout" claude -p "$retry_prompt" \
                 --model sonnet \
@@ -1293,6 +1322,7 @@ If a specific fix is causing the failure, revert just that one fix."
                 --output-format json \
                 --no-session-persistence \
                 2>"$retry_stderr") || true
+            stop_progress
             rm -f "$retry_stderr"
 
             if [[ -n "$retry_result" ]]; then

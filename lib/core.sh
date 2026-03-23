@@ -290,6 +290,84 @@ write_history() {
     echo "$json" > "$KYZN_GLOBAL_HISTORY/$run_id.json" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------------
+# Progress animation — background process that shows continuous activity
+# Usage:
+#   start_progress "Fixing CRITICAL issues" "reading files" "analyzing code" "writing fixes"
+#   ... long-running work ...
+#   stop_progress
+#
+# The animated bar moves continuously. Optional hint messages cycle every 6s.
+# ---------------------------------------------------------------------------
+_KYZN_PROGRESS_PID=""
+
+start_progress() {
+    # Don't animate if not a terminal
+    [[ ! -t 1 ]] && return 0
+
+    local title="$1"
+    shift
+    local -a hints=("$@")
+
+    # Kill any existing progress animation
+    stop_progress 2>/dev/null
+
+    (
+        local bar_chars=("░" "▒" "▓" "█" "▓" "▒")
+        local spinner_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+        local start_time
+        start_time=$(date +%s)
+        local idx=0
+
+        while true; do
+            local elapsed=$(( $(date +%s) - start_time ))
+            local mins=$(( elapsed / 60 ))
+            local secs=$(( elapsed % 60 ))
+            local time_str="${mins}m$(printf '%02d' $secs)s"
+
+            # Spinning braille
+            local spin="${spinner_frames[$((idx % ${#spinner_frames[@]}))]}"
+
+            # Animated flowing bar (20 chars wide, wave pattern)
+            local bar=""
+            local i
+            for i in {0..19}; do
+                local ci=$(( (idx + i) % ${#bar_chars[@]} ))
+                bar+="${bar_chars[$ci]}"
+            done
+
+            # Cycling hint text
+            local hint=""
+            if (( ${#hints[@]} > 0 )); then
+                hint="${hints[$((elapsed / 6 % ${#hints[@]}))]}"
+            fi
+
+            # Render: spinner [time] title  ░▒▓█▓▒░▒▓█▓▒░▒▓█▓▒░▒  hint
+            printf '\033[2K\r  %b %b[%s]%b %s  %b%s%b  %b%s%b' \
+                "${CYAN}${spin}${RESET}" \
+                "${DIM}" "$time_str" "${RESET}" \
+                "$title" \
+                "${CYAN}" "$bar" "${RESET}" \
+                "${DIM}" "$hint" "${RESET}"
+
+            idx=$((idx + 1))
+            sleep 0.3
+        done
+    ) &
+    _KYZN_PROGRESS_PID=$!
+    disown $_KYZN_PROGRESS_PID 2>/dev/null
+}
+
+stop_progress() {
+    if [[ -n "$_KYZN_PROGRESS_PID" ]] && kill -0 "$_KYZN_PROGRESS_PID" 2>/dev/null; then
+        kill "$_KYZN_PROGRESS_PID" 2>/dev/null
+        wait "$_KYZN_PROGRESS_PID" 2>/dev/null || true
+        _KYZN_PROGRESS_PID=""
+        # Clear the progress line
+        printf '\033[2K\r'
+    fi
+}
+
 # Truncate string to N chars
 truncate_str() {
     local str="$1"
