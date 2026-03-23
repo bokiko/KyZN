@@ -73,16 +73,31 @@ assemble_prompt() {
 get_system_prompt() {
     local profile="${1:-}"
     local sys_prompt="$KYZN_ROOT/templates/system-prompt.md"
+    local lang="${KYZN_PROJECT_TYPE:-generic}"
+    local conventions="$KYZN_ROOT/templates/conventions/$lang.md"
 
-    if [[ -n "$profile" && -f "$KYZN_ROOT/profiles/$profile.md" ]]; then
-        # Combine system prompt with profile
+    # If we have a profile or language conventions, combine into a temp file
+    if [[ -n "$profile" && -f "$KYZN_ROOT/profiles/$profile.md" ]] || [[ -f "$conventions" ]]; then
         local combined
         combined=$(mktemp)
         cat "$sys_prompt" > "$combined"
-        echo "" >> "$combined"
-        echo "---" >> "$combined"
-        echo "" >> "$combined"
-        cat "$KYZN_ROOT/profiles/$profile.md" >> "$combined"
+
+        # Append language conventions (always, if available)
+        if [[ -f "$conventions" ]]; then
+            echo "" >> "$combined"
+            echo "---" >> "$combined"
+            echo "" >> "$combined"
+            cat "$conventions" >> "$combined"
+        fi
+
+        # Append focus profile (if specified)
+        if [[ -n "$profile" && -f "$KYZN_ROOT/profiles/$profile.md" ]]; then
+            echo "" >> "$combined"
+            echo "---" >> "$combined"
+            echo "" >> "$combined"
+            cat "$KYZN_ROOT/profiles/$profile.md" >> "$combined"
+        fi
+
         echo "$combined"
     else
         echo "$sys_prompt"
