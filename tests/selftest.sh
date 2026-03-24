@@ -1201,11 +1201,13 @@ pytest")
 }
 
 test_analyze_wired_in_kyzn() {
-    log_header "42. analyze command is wired into kyzn"
+    log_header "42. analyze and fix commands are wired into kyzn"
 
     local help_output
     help_output=$("$KYZN_ROOT/kyzn" help 2>&1)
     assert_contains "help shows analyze" "$help_output" "analyze"
+    assert_contains "help shows fix" "$help_output" "fix"
+    assert_contains "fix is first command" "$help_output" "Deep analysis + auto-fix"
 }
 
 test_reject_no_learn_message() {

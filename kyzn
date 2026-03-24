@@ -45,8 +45,9 @@ Usage:
   kyzn <command> [options]
 
 Commands:
-  improve         Run an improvement cycle (measure → improve → verify → PR)
-  analyze         Deep analysis with Opus — finds real bugs, security issues, arch problems
+  fix             Deep analysis + auto-fix (analyze → fix → verify → PR)
+  analyze         Deep analysis only — report, no changes
+  improve         Quick improvement cycle (measure → improve → verify → PR)
   measure         Measure project health (no changes)
   status          Show health score dashboard
   init            Interactive setup (creates .kyzn/config.yaml)
@@ -73,9 +74,16 @@ Improve options:
   --allow-ci          Allow CI/pipeline file creation
   -v, --verbose       Show live Claude progress
 
+Fix options:
+  --auto              Run without prompts
+  --fix-budget <USD>  Budget for fix phase (default: $5)
+  --min-severity <s>  Minimum severity to fix (CRITICAL|HIGH|MEDIUM|LOW)
+  --profile <p>       opus | hybrid | sonnet
+  --budget <USD>      Budget for analysis phase
+
 Analyze options:
   --auto              Run without prompts
-  --fix               Auto-fix findings after analysis
+  --fix               Auto-fix findings after analysis (same as 'kyzn fix')
   --fix-budget <USD>  Budget for fix phase
   --single            Use single reviewer instead of 4 specialists
   --focus <area>      Narrow analysis to one area
@@ -91,15 +99,15 @@ General:
 Examples:
   kyzn init                       # First-time setup
   kyzn doctor                     # Check prerequisites
-  kyzn improve                    # Interactive (choose model & budget)
+  kyzn fix                        # Deep analysis + auto-fix → PR
+  kyzn fix --auto                 # Non-interactive (cron-safe)
+  kyzn fix --profile hybrid       # Cheaper analysis model mix
+  kyzn analyze                    # Analysis report only, no changes
+  kyzn analyze --focus security   # Single-area deep dive
+  kyzn improve                    # Quick improvement cycle
   kyzn improve --auto             # Use saved config (for cron)
-  kyzn improve --focus security   # Target specific area
   kyzn improve --mode deep        # Real improvements only
-  kyzn improve --model opus       # Use specific model
-  kyzn improve --budget 5.00      # Set budget per run
-  kyzn improve -v                 # Show live progress
   kyzn measure                    # Measure only, no changes
-  kyzn analyze --fix              # Deep analysis + auto-fix
   kyzn history --global           # All projects
 EOF
 }
@@ -169,6 +177,18 @@ main() {
             source "$KYZN_ROOT/lib/allowlist.sh"
             source "$KYZN_ROOT/lib/report.sh"
             cmd_improve "$@"
+            ;;
+        fix)
+            shift
+            source "$KYZN_ROOT/lib/detect.sh"
+            source "$KYZN_ROOT/lib/measure.sh"
+            source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/execute.sh"
+            source "$KYZN_ROOT/lib/verify.sh"
+            source "$KYZN_ROOT/lib/allowlist.sh"
+            source "$KYZN_ROOT/lib/report.sh"
+            source "$KYZN_ROOT/lib/analyze.sh"
+            cmd_analyze --fix "$@"
             ;;
         analyze)
             shift

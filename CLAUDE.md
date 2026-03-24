@@ -14,8 +14,8 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 209 quick tests
-kyzn selftest --full       # 218 tests including stress tests
+kyzn selftest              # 250 quick tests
+kyzn selftest --full       # 259 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -25,10 +25,11 @@ shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
 kyzn doctor                # Check prerequisites
 kyzn init                  # Interactive setup → .kyzn/config.yaml
 kyzn measure               # Health score only
-kyzn improve               # Full improve cycle
+kyzn fix                   # Deep analysis + auto-fix → PR (recommended)
+kyzn fix --auto            # Non-interactive (cron-safe)
+kyzn analyze               # 4 Opus specialists + consensus report (no changes)
+kyzn improve               # Quick improve cycle
 kyzn improve --auto        # Non-interactive (cron-safe)
-kyzn analyze               # 4 Opus specialists + consensus report
-kyzn analyze --fix         # Analyze then auto-fix
 ```
 
 ## Architecture
@@ -50,9 +51,9 @@ Detect project type → Baseline measure → Create kyzn/ branch
 → git commit → git push → gh pr create
 ```
 
-### `kyzn analyze` pipeline
+### `kyzn fix` / `kyzn analyze` pipeline
 
-4 Opus specialists run in parallel background subshells (security, correctness, performance, architecture), each producing JSON findings. A 5th consensus Opus session deduplicates and ranks. Output goes to `kyzn-report.md`. Optional `--fix` passes the report to Sonnet for targeted fixes.
+Profiler agent (Sonnet) reads repo files and caches conventions to `.kyzn/repo-profile.md`. 4 Opus specialists run in parallel (security, correctness, performance, architecture), each producing JSON findings with fix_plan metadata. A 5th consensus session deduplicates and ranks. `kyzn analyze` stops at the report. `kyzn fix` continues: Sonnet implements fixes in severity batches with build/test verification and reflexion retry, then opens a PR.
 
 ### Key modules
 
