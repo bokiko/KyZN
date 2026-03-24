@@ -7,7 +7,7 @@ Status: **DONE**
 
 ## Summary
 
-Full audit of all source files in `/home/bokiko/Projects/kyzn/`. Found 27 fixable issues across typos, missing guards, quoting inconsistencies, missing `local` declarations, unused variables, logic issues, and color/formatting inconsistencies. Each is independently fixable in under 10 lines.
+Full audit of all source files in ``. Found 27 fixable issues across typos, missing guards, quoting inconsistencies, missing `local` declarations, unused variables, logic issues, and color/formatting inconsistencies. Each is independently fixable in under 10 lines.
 
 ---
 

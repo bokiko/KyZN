@@ -203,7 +203,7 @@ The lock mechanism uses `mkdir` (atomic on all filesystems) with a PID file insi
 
 ### BUG 1: `kyzn diff` crashes when no matching branch exists (MEDIUM)
 
-**File:** `/home/bokiko/Projects/kyzn/lib/history.sh`, line 256
+**File:** `lib/history.sh`, line 256
 
 **Problem:** The branch detection pipeline uses `grep "kyzn/"` which returns exit code 1 when no match is found. Under `set -euo pipefail`, this causes the entire script to exit before reaching the report fallback logic.
 
@@ -232,7 +232,7 @@ branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep "$run_id" | head -1 | t
 
 ### BUG 2: Global history pollution from selftest runs (LOW)
 
-**File:** `/home/bokiko/Projects/kyzn/tests/selftest.sh`
+**File:** `tests/selftest.sh`
 
 **Problem:** The selftest creates approve/reject entries in `~/.kyzn/history/` and never cleans them up. Over time (and repeated test runs), the global history accumulates dozens of test artifacts, polluting `kyzn dashboard` and `kyzn history --global` output.
 
@@ -248,7 +248,7 @@ branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep "$run_id" | head -1 | t
 
 ### BUG 3: `kyzn diff` with no matching run silently returns 0 (LOW, edge case)
 
-**File:** `/home/bokiko/Projects/kyzn/lib/history.sh`, line 256-270
+**File:** `lib/history.sh`, line 256-270
 
 **Problem:** When `cmd_diff` is called with a run ID that has no branch AND a report file does exist (the `$KYZN_REPORTS_DIR/$run_id.md` path), the function should `cat` the report. However, due to Bug 1 above, execution never reaches this code path. If Bug 1 is fixed, then this path works correctly.
 
@@ -306,4 +306,4 @@ This is a consequence of Bug 1, not a separate issue.
 
 - Test sandbox: `/tmp/kyzn-atlas-Q9HJ1T/` (temporary, will be cleaned by OS)
 - Selftest results: 178/178 passing (4s)
-- This report: `/home/bokiko/Projects/kyzn/full-audit-by-claude/atlas-report.md`
+- This report: `full-audit-by-claude/atlas-report.md`

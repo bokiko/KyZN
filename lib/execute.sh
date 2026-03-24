@@ -5,7 +5,11 @@
 # Safety: git wrapper that disables hooks to prevent RCE from malicious repos
 # ---------------------------------------------------------------------------
 safe_git() {
-    git -c core.hooksPath=/dev/null "$@"
+    git -c core.hooksPath=/dev/null \
+        -c filter.lfs.process= \
+        -c filter.lfs.smudge= \
+        -c filter.lfs.clean= \
+        "$@"
 }
 
 # ---------------------------------------------------------------------------

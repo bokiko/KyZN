@@ -995,6 +995,11 @@ test_tightened_allowlist() {
     assert_contains "go has go test" "$go_list" "go test"
     assert_contains "go has go build" "$go_list" "go build"
 
+    # Security: npm install and pip install should NOT be in allowlists (arbitrary code execution via install scripts)
+    assert_not_contains "node no npm install" "$node_list" 'Bash(npm install'
+    assert_not_contains "python no pip install" "$py_list" 'Bash(pip install'
+    assert_not_contains "python no python -m pip" "$py_list" 'Bash(python -m pip'
+
     # Generic: should NOT have 'cat *'
     local -a gen_arr=()
     build_allowlist gen_arr "generic"

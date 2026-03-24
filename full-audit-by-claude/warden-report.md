@@ -24,7 +24,7 @@ Since I don't have a Write tool, let me produce this as structured output that c
 
 # Warden Audit Report — KyZN v0.4.0
 
-Here is my complete audit with all findings. I'll present this as the report that should be written to `/home/bokiko/Projects/kyzn/full-audit-by-claude/warden-report.md`.
+Here is my complete audit with all findings. I'll present this as the report that should be written to `full-audit-by-claude/warden-report.md`.
 
 **FULL REPORT CONTENT:**
 
@@ -50,7 +50,7 @@ Status: DONE_WITH_CONCERNS
 
 #### 1. `trust` key committed to config.yaml — security isolation broken
 
-**File:** `/home/bokiko/Projects/kyzn/.kyzn/config.yaml:14`
+**File:** `.kyzn/config.yaml:14`
 
 **Gap:** The committed project config file contains `trust: guardian`. The entire trust-isolation design (documented in README and enforced by the interview/`save_interview_config`) separates `trust` into `.kyzn/local.yaml` (gitignored) specifically to prevent config poisoning. The actual `.kyzn/config.yaml` in the repo contains `trust: guardian` on line 14 — contradicting both the design and the test at `selftest.sh:1002` which asserts `config_get '.preferences.trust' 'MISSING'` must return `MISSING`.
 

@@ -2,7 +2,7 @@
 
 **Generated:** 2026-03-20
 **Agent:** Aegis (Claude Opus 4.6)
-**Scope:** All source files in /home/bokiko/Projects/kyzn/
+**Scope:** All source files in 
 
 ## Executive Summary
 

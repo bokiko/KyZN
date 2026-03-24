@@ -123,7 +123,7 @@ The `report.sh` module reads `KYZN_CLAUDE_COST`, `KYZN_CLAUDE_RESULT`, etc. that
 ### CRITICAL
 
 #### C1: `trust` field committed to `.kyzn/config.yaml` — security policy bypass possible
-**File:** `/home/bokiko/Projects/kyzn/.kyzn/config.yaml`, line 14
+**File:** `.kyzn/config.yaml`, line 14
 **Severity:** CRITICAL
 
 The `trust` key appears in the committed `.kyzn/config.yaml`:
@@ -144,7 +144,7 @@ The root cause is that `save_interview_config()` in `interview.sh` correctly wri
 ### HIGH
 
 #### H1: `config_set` and `config_set_str` are identical — dead function
-**File:** `/home/bokiko/Projects/kyzn/lib/core.sh`, lines 97-116
+**File:** `lib/core.sh`, lines 97-116
 **Severity:** HIGH (maintainability)
 
 `config_set_str()` (lines 108-116) is byte-for-byte identical to `config_set()` (lines 97-105). Neither function is clearly distinguished in intent. Grep confirms `config_set_str` is never called anywhere in the codebase. This dead function creates confusion: future contributors may call `config_set_str` thinking it handles strings differently, or copy it rather than using `config_set`.
@@ -152,7 +152,7 @@ The root cause is that `save_interview_config()` in `interview.sh` correctly wri
 **Fix:** Delete `config_set_str`. It is dead code.
 
 #### H2: `kyzn-report.md` written to project root, not gitignored
-**File:** `/home/bokiko/Projects/kyzn/lib/analyze.sh`, line 854-855; `/home/bokiko/Projects/kyzn/.gitignore`
+**File:** `lib/analyze.sh`, line 854-855; `.gitignore`
 **Severity:** HIGH
 
 `cmd_analyze` copies the analysis report to `kyzn-report.md` in the project root. This file is NOT in `.gitignore`. When kyzn is used on any project (including itself), `kyzn-report.md` will appear as an untracked file after every analysis run. Users either:
@@ -165,7 +165,7 @@ The README mentions `kyzn-report.md` prominently as the output location, so user
 **Fix:** In `setup_kyzn_gitignore()` (interview.sh), add `kyzn-report.md` to the written `.gitignore` entries. Also add it to the project-level `.gitignore` in the kyzn repo itself.
 
 #### H3: `.kyzn/local.yaml` missing from `.kyzn/.gitignore`
-**File:** `/home/bokiko/Projects/kyzn/.kyzn/.gitignore`
+**File:** `.kyzn/.gitignore`
 **Severity:** HIGH
 
 The file `.kyzn/.gitignore` currently contains:
@@ -176,10 +176,10 @@ reports/
 
 It does NOT contain `local.yaml`. The `setup_kyzn_gitignore()` function in `interview.sh` writes the correct content including `local.yaml`, but the `.kyzn/.gitignore` in the kyzn repository itself was not updated to match. If a user runs `kyzn init` on a fresh project, `local.yaml` IS gitignored correctly. But if someone forked this repo and ran `kyzn init` on kyzn itself, `local.yaml` could be committed.
 
-**Fix:** Add `local.yaml` to `/home/bokiko/Projects/kyzn/.kyzn/.gitignore`.
+**Fix:** Add `local.yaml` to `.kyzn/.gitignore`.
 
 #### H4: `eval` in `enforce_config_ceilings` is fragile — use namerefs instead
-**File:** `/home/bokiko/Projects/kyzn/lib/execute.sh`, lines 52-74
+**File:** `lib/execute.sh`, lines 52-74
 **Severity:** HIGH (security + correctness)
 
 `enforce_config_ceilings` uses `eval` to read and write caller variables by name:
@@ -208,7 +208,7 @@ enforce_config_ceilings() {
 ### MEDIUM
 
 #### M1: README test count claims are inconsistent
-**File:** `/home/bokiko/Projects/kyzn/README.md`
+**File:** `README.md`
 **Severity:** MEDIUM (accuracy)
 
 The README badge claims "156 passing tests" but the body text says:
@@ -220,7 +220,7 @@ The actual assertion count in `selftest.sh` is approximately 150 (grep count). T
 **Fix:** Run `kyzn selftest --full` and update all three mentions to match the actual count.
 
 #### M2: `govulncheck` JSON flag is wrong
-**File:** `/home/bokiko/Projects/kyzn/measurers/go.sh`, line 35
+**File:** `measurers/go.sh`, line 35
 **Severity:** MEDIUM (silent failure)
 
 ```bash
@@ -235,7 +235,7 @@ vuln_output=$(govulncheck --json ./... 2>/dev/null) || true
 ```
 
 #### M3: Missing `local.yaml` in `setup_kyzn_gitignore` generates incomplete gitignore content
-**File:** `/home/bokiko/Projects/kyzn/lib/interview.sh`, lines 264-272
+**File:** `lib/interview.sh`, lines 264-272
 **Severity:** MEDIUM
 
 The `setup_kyzn_gitignore()` function writes:
@@ -248,7 +248,7 @@ local.yaml
 But `.kyzn/.gitignore` in the kyzn repo only has `history/` and `reports/`. This means the kyzn project's own config directory is not self-consistent with what it writes to user projects. (Related to H3 above, but noting the write side here.)
 
 #### M4: Parallel analysis result costs cannot be summed (silent approximation)
-**File:** `/home/bokiko/Projects/kyzn/lib/analyze.sh`, line 831
+**File:** `lib/analyze.sh`, line 831
 **Severity:** MEDIUM (UX/accuracy)
 
 The multi-agent analyze mode runs 4 Opus sessions in parallel but cannot sum their costs. The code comment says "Total cost is approximate (we can't easily sum parallel costs)". The specialist cost is tracked per-agent via `run_specialist` writing to JSON, but the aggregation sums the data correctly from the files. However, if a specialist fails, its cost is 0 in the total — the user under-counts actual spend.
@@ -256,7 +256,7 @@ The multi-agent analyze mode runs 4 Opus sessions in parallel but cannot sum the
 This is a known limitation acknowledged in a comment, but it's not surfaced to the user. A "cost is approximate" disclaimer should appear in the terminal output.
 
 #### M5: `kyzn doctor` suggests haiku as a valid model option
-**File:** `/home/bokiko/Projects/kyzn/lib/execute.sh`, lines 282-290
+**File:** `lib/execute.sh`, lines 282-290
 **Severity:** MEDIUM (UX — inconsistency with design intent)
 
 The interactive model picker in `cmd_improve` offers:
@@ -271,7 +271,7 @@ The README clearly says KyZN uses Sonnet for improve and Opus for analyze. Offer
 **Fix:** Either remove haiku from the picker, or add a clear warning: "haiku — minimal quality, may produce incorrect changes".
 
 #### M6: `schedule.sh` cron command does not set `PATH` or use absolute kyzn path reliably
-**File:** `/home/bokiko/Projects/kyzn/lib/schedule.sh`, line 47
+**File:** `lib/schedule.sh`, line 47
 **Severity:** MEDIUM
 
 The generated cron line:
@@ -284,7 +284,7 @@ Cron runs with a minimal environment — `PATH` typically does not include `~/.l
 **Fix:** Prepend `PATH=/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin` in the cron line, or detect the actual paths at schedule time and inject them.
 
 #### M7: `generate_category_comparison` uses raw score averages, not weighted scores
-**File:** `/home/bokiko/Projects/kyzn/lib/report.sh`, lines 126-128
+**File:** `lib/report.sh`, lines 126-128
 **Severity:** MEDIUM (accuracy)
 
 ```bash
@@ -298,7 +298,7 @@ The report's category comparison table shows a simple average of raw scores, but
 ### LOW
 
 #### L1: `relative_time()` uses GNU-specific `date -d` with macOS fallback — fragile
-**File:** `/home/bokiko/Projects/kyzn/lib/history.sh`, lines 79-81
+**File:** `lib/history.sh`, lines 79-81
 **Severity:** LOW
 
 ```bash
@@ -309,13 +309,13 @@ elif then_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null); then :
 The macOS `date` fallback uses `-jf` with a format string. However, the timestamp stored is `%Y-%m-%dT%H:%M:%SZ` (UTC with literal Z). The macOS `date` command does not understand the trailing `Z` as a timezone indicator without extra handling, so the macOS fallback may silently fail and return `-` for all timestamps.
 
 #### L2: `check_dangerous_files` in `handle_build_failure` draft-pr mode does not abort on CI files
-**File:** `/home/bokiko/Projects/kyzn/lib/execute.sh`, lines 572-583
+**File:** `lib/execute.sh`, lines 572-583
 **Severity:** LOW
 
 In the `draft-pr` failure path, the code calls `check_dangerous_files` which will log a warning about CI files but then proceed to commit and push them. In the normal (success) flow via `report.sh`, CI files are also unstaged then committed — but the unstaging happens BEFORE the commit. In the draft-pr failure path, the order is: `safe_git add -A` → `unstage_secrets` → `check_dangerous_files` → `safe_git commit`. This is correct. However, `check_dangerous_files` calls `git reset HEAD -- <files>` to unstage CI files, but this reset is not checked for success. If the reset silently fails (e.g., on older git), CI files could be committed.
 
 #### L3: `cmd_status` loads history data without proper sorting — order is filesystem-dependent
-**File:** `/home/bokiko/Projects/kyzn/lib/history.sh`, lines 295-305
+**File:** `lib/history.sh`, lines 295-305
 **Severity:** LOW
 
 ```bash
@@ -327,7 +327,7 @@ The glob expands in filesystem order (typically inode order, not chronological).
 **Fix:** Use `ls -t "$KYZN_HISTORY_DIR"/*.json` or sort by embedded timestamp.
 
 #### L4: `binary_count` logic in diff checking is incorrect
-**File:** `/home/bokiko/Projects/kyzn/lib/execute.sh`, lines 414-419
+**File:** `lib/execute.sh`, lines 414-419
 **Severity:** LOW
 
 ```bash
@@ -341,7 +341,7 @@ binary_count=$(echo "$numstat" | grep -cP '^-\t-\t' 2>/dev/null) || true
 ```
 
 #### L5: `update` command recurses into `kyzn version` using a subshell — fragile
-**File:** `/home/bokiko/Projects/kyzn/kyzn`, lines 220-227
+**File:** `kyzn`, lines 220-227
 **Severity:** LOW
 
 ```bash
@@ -356,13 +356,13 @@ new_ver=$(grep 'KYZN_VERSION=' "$KYZN_ROOT/kyzn" | head -1 | cut -d'"' -f2 || ec
 ```
 
 #### L6: `selftest.sh` test count in README badge is hardcoded and will drift
-**File:** `/home/bokiko/Projects/kyzn/README.md`, line 18
+**File:** `README.md`, line 18
 **Severity:** LOW
 
 The badge `tests-156%20passing` is hardcoded. As tests are added or removed, the badge will show stale numbers. This should either be generated dynamically by CI or updated as part of the release process.
 
 #### L7: `docs/` research files are internal artifacts, not user documentation
-**File:** `/home/bokiko/Projects/kyzn/docs/`
+**File:** `docs/`
 **Severity:** LOW
 
 `docs/research-autonomous-agents.md` and `docs/research-self-improving-agents.md` are internal research notes, not user-facing documentation. They're not linked from the README. Shipping them in the public repo is fine but may confuse contributors who expect `docs/` to contain guides.
