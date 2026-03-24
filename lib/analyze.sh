@@ -1624,7 +1624,15 @@ ${tier_findings}
             current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
             if [[ "$current_branch" != "$branch_name" ]]; then
                 log_warn "Branch switched to '$current_branch' — restoring '$branch_name'"
-                safe_git checkout "$branch_name" 2>/dev/null || true
+                if ! safe_git checkout "$branch_name" 2>/dev/null; then
+                    # Branch may have been deleted or never created — recreate it
+                    if git rev-parse --verify "$branch_name" &>/dev/null; then
+                        safe_git checkout "$branch_name" 2>&1 || log_error "Failed to restore branch $branch_name"
+                    else
+                        log_warn "Branch $branch_name lost — recreating from current state"
+                        safe_git checkout -b "$branch_name" 2>/dev/null || log_error "Failed to recreate branch $branch_name"
+                    fi
+                fi
             fi
 
             # Commit this batch immediately — preserves work even if later batches fail
@@ -1687,14 +1695,20 @@ ${tier_findings}
     local push_branch
     push_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
     if [[ "$push_branch" == "main" || "$push_branch" == "master" ]]; then
-        log_error "On $push_branch instead of kyzn branch — attempting to recover"
-        # Try to find and switch to the kyzn branch
+        log_warn "On $push_branch instead of kyzn branch — recovering"
         if git rev-parse --verify "$branch_name" &>/dev/null; then
             safe_git checkout "$branch_name" 2>/dev/null
         else
-            log_error "Cannot find branch $branch_name — changes committed to $push_branch locally"
-            rm -rf "$lockdir" 2>/dev/null
-            return 1
+            # Branch lost — create it from current HEAD (which has the fix commits)
+            log_warn "Branch $branch_name lost — creating from current commits"
+            safe_git checkout -b "$branch_name" 2>/dev/null || {
+                log_error "Cannot create branch $branch_name"
+                rm -rf "$lockdir" 2>/dev/null
+                return 1
+            }
+            # Reset main back to before our commits so PR has a clean diff
+            local reset_target="HEAD~${batches_applied}"
+            safe_git branch -f "$push_branch" "$reset_target" 2>/dev/null || true
         fi
     fi
 
