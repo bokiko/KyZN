@@ -1169,55 +1169,14 @@ cmd_analyze() {
         return 0
     fi
 
-    # Count by severity for the menu
-    local critical high medium low
-    critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
-    high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
-    medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
-    low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
-
-    # Interactive fix menu (unless --fix or --auto)
+    # Fix phase: only runs when --fix flag is set (i.e. 'kyzn fix' or 'kyzn analyze --fix')
     if $fix; then
-        # --fix flag: use min_severity from CLI
         run_fix_phase "$findings_file" "$min_severity" "$run_id" "$fix_budget"
     elif ! $auto; then
         echo ""
-        log_info "Review the full report: ${BOLD}kyzn-report.md${RESET}"
+        echo -e "  ${DIM}To auto-fix these findings:${RESET}"
+        echo -e "  ${CYAN}kyzn fix${RESET}"
         echo ""
-        local fix_choice
-        fix_choice=$(prompt_choice "What would you like to do?" \
-            "Done — review kyzn-report.md manually" \
-            "Fix critical + high ($((critical + high)) issues)" \
-            "Fix all ($finding_count issues)" \
-            "Pick severity to fix")
-
-        case "$fix_choice" in
-            1)
-                echo ""
-                echo -e "  ${DIM}Tip: Feed the report to Claude for guided fixes:${RESET}"
-                echo -e "  ${CYAN}cat kyzn-report.md | claude${RESET}"
-                ;;
-            2)
-                run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget"
-                ;;
-            3)
-                run_fix_phase "$findings_file" "LOW" "$run_id" "$fix_budget"
-                ;;
-            4)
-                local sev_choice
-                sev_choice=$(prompt_choice "Minimum severity to fix?" \
-                    "CRITICAL only ($critical issues)" \
-                    "HIGH and above ($((critical + high)) issues)" \
-                    "MEDIUM and above ($((critical + high + medium)) issues)" \
-                    "All including LOW ($finding_count issues)")
-                case "$sev_choice" in
-                    1) run_fix_phase "$findings_file" "CRITICAL" "$run_id" "$fix_budget" ;;
-                    2) run_fix_phase "$findings_file" "HIGH" "$run_id" "$fix_budget" ;;
-                    3) run_fix_phase "$findings_file" "MEDIUM" "$run_id" "$fix_budget" ;;
-                    4) run_fix_phase "$findings_file" "LOW" "$run_id" "$fix_budget" ;;
-                esac
-                ;;
-        esac
     fi
 }
 
