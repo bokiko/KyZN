@@ -2,7 +2,7 @@
 
 All notable changes to KyZN are documented here.
 
-## [0.6.0] — 2026-03-24
+## [1.0.0] — 2026-03-24
 
 ### Added
 - `kyzn fix` command — unified deep analysis + auto-fix pipeline (analyze → fix → verify → PR)

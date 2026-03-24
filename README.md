@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-5.0+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-0.6.0-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.0.0-2ecc71?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/tests-259%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
@@ -51,10 +51,9 @@ $ kyzn measure
 
   ℹ Weakest area: testing (50%)
     Run kyzn fix for deep analysis + auto-fix.
-    Run kyzn fix for deep analysis + auto-fix.
 ```
 
-That's it — one command, zero config. KyZN runs your project's real tools (eslint, ruff, clippy, go vet) and produces a health score. Then `kyzn improve` sends the results to Claude Code, which makes targeted improvements, verifies them, and opens a PR.
+That's it — one command, zero config. KyZN runs your project's real tools (eslint, ruff, clippy, go vet) and produces a health score. Then `kyzn fix` runs 4 Opus specialists in parallel, deduplicates findings, and Sonnet fixes them in severity batches — all verified and shipped as a PR.
 
 See [`docs/examples/sample-report.md`](docs/examples/sample-report.md) for what a full analysis report looks like.
 
