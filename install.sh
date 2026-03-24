@@ -150,10 +150,11 @@ install_jq() {
                 elif has_cmd shasum; then
                     actual_checksum=$(shasum -a 256 "$tmp" | awk '{print $1}')
                 else
-                    warn "No sha256 tool found — skipping checksum verification"
-                    actual_checksum=""
+                    err "No sha256 tool found — cannot verify jq binary"
+                    rm -f "$tmp"
+                    return 1
                 fi
-                if [[ -n "$actual_checksum" && "$actual_checksum" != "$expected_checksum" ]]; then
+                if [[ "$actual_checksum" != "$expected_checksum" ]]; then
                     err "jq checksum verification failed!"
                     err "  Expected: $expected_checksum"
                     err "  Got:      $actual_checksum"
@@ -242,10 +243,11 @@ install_yq() {
         elif has_cmd shasum; then
             actual_checksum=$(shasum -a 256 "$tmp" | awk '{print $1}')
         else
-            warn "No sha256 tool found — skipping checksum verification"
-            actual_checksum=""
+            err "No sha256 tool found — cannot verify yq binary"
+            rm -f "$tmp"
+            return 1
         fi
-        if [[ -n "$actual_checksum" && "$actual_checksum" != "$expected_checksum" ]]; then
+        if [[ "$actual_checksum" != "$expected_checksum" ]]; then
             err "yq checksum verification failed!"
             err "  Expected: $expected_checksum"
             err "  Got:      $actual_checksum"

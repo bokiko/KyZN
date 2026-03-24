@@ -327,11 +327,11 @@ cmd_improve() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --auto)     auto=true; shift ;;
-            --focus)    focus="$2"; shift 2 ;;
-            --mode)     mode="$2"; shift 2 ;;
-            --budget)   budget="$2"; budget_from_cli=true; shift 2 ;;
-            --turns)    max_turns="$2"; shift 2 ;;
-            --model)    model="$2"; model_from_cli=true; shift 2 ;;
+            --focus)    [[ $# -ge 2 ]] || { log_error "--focus requires a value"; return 1; }; focus="$2"; shift 2 ;;
+            --mode)     [[ $# -ge 2 ]] || { log_error "--mode requires a value"; return 1; }; mode="$2"; shift 2 ;;
+            --budget)   [[ $# -ge 2 ]] || { log_error "--budget requires a value"; return 1; }; budget="$2"; budget_from_cli=true; shift 2 ;;
+            --turns)    [[ $# -ge 2 ]] || { log_error "--turns requires a value"; return 1; }; max_turns="$2"; shift 2 ;;
+            --model)    [[ $# -ge 2 ]] || { log_error "--model requires a value"; return 1; }; model="$2"; model_from_cli=true; shift 2 ;;
             --allow-ci) export KYZN_ALLOW_CI=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;

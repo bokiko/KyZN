@@ -72,7 +72,7 @@ cmd_reject() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -r|--reason) reason="$2"; shift 2 ;;
+            -r|--reason) [[ $# -ge 2 ]] || { log_error "--reason requires a value"; return 1; }; reason="$2"; shift 2 ;;
             *)           reason="$1"; shift ;;
         esac
     done

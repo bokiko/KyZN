@@ -677,16 +677,16 @@ cmd_analyze() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --focus)        focus="$2"; shift 2 ;;
-            --budget)       budget="$2"; shift 2
+            --focus)        [[ $# -ge 2 ]] || { log_error "--focus requires a value"; return 1; }; focus="$2"; shift 2 ;;
+            --budget)       [[ $# -ge 2 ]] || { log_error "--budget requires a value"; return 1; }; budget="$2"; shift 2
                 [[ "${budget:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log_error "Invalid budget value: $budget"; return 1; } ;;
             --fix)          fix=true; shift ;;
-            --fix-budget)   fix_budget="$2"; shift 2
+            --fix-budget)   [[ $# -ge 2 ]] || { log_error "--fix-budget requires a value"; return 1; }; fix_budget="$2"; shift 2
                 [[ "${fix_budget:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log_error "Invalid fix-budget value: $fix_budget"; return 1; } ;;
-            --min-severity) min_severity="$2"; shift 2 ;;
+            --min-severity) [[ $# -ge 2 ]] || { log_error "--min-severity requires a value"; return 1; }; min_severity="$2"; shift 2 ;;
             --single)       single=true; shift ;;
-            --profile)      profile="$2"; shift 2 ;;
-            --export)       export_path="$2"; shift 2 ;;
+            --profile)      [[ $# -ge 2 ]] || { log_error "--profile requires a value"; return 1; }; profile="$2"; shift 2 ;;
+            --export)       [[ $# -ge 2 ]] || { log_error "--export requires a value"; return 1; }; export_path="$2"; shift 2 ;;
             --auto)         auto=true; shift ;;
             *)              log_error "Unknown option: $1"; return 1 ;;
         esac
