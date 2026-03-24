@@ -20,6 +20,27 @@ KyZN runs AI agents with real tool access inside your codebase. We take this ser
 - **Secret detection** — regex-based heuristic matching on staged files (`.env`, `.pem`, `.key`, etc.)
 - **Trust isolation** — autopilot trust level stored in gitignored `local.yaml`, not committable config
 
+## Autopilot Mode
+
+**Autopilot mode auto-merges AI-generated PRs without human review.** When trust is set to `autopilot` (via `kyzn init`), any PR that passes the build gate, test gate, score regression gate, and diff size gate will be merged automatically via `gh pr merge --auto --squash`.
+
+**What this means:**
+- Claude-generated code changes are merged into your default branch with no human in the loop
+- The only gates are automated checks (build, tests, health score, diff size)
+- If your project has no CI pipeline, GitHub's auto-merge triggers immediately on PR creation
+
+**When autopilot is appropriate:**
+- You have comprehensive CI (tests, linting, type checking) that catches regressions
+- You are running KyZN for low-risk improvements on non-critical projects
+- You accept that AI-generated changes may introduce subtle issues not caught by automated tests
+
+**When autopilot is NOT appropriate:**
+- Production services handling user data or financial transactions
+- Projects without a test suite or with low test coverage
+- Security-sensitive code (auth, crypto, access control)
+
+**Recommendation:** Start with `guardian` mode. Only enable `autopilot` after you have reviewed several KyZN PRs and are confident in your test coverage.
+
 ## Threat Model
 
 The primary attack surface is **malicious repositories**. KyZN executes your project's build and test commands (`npm test`, `pytest`, `cargo test`, etc.). Do not run KyZN on repositories you don't trust.

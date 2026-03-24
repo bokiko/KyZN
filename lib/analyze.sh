@@ -678,9 +678,11 @@ cmd_analyze() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --focus)        focus="$2"; shift 2 ;;
-            --budget)       budget="$2"; shift 2 ;;
+            --budget)       budget="$2"; shift 2
+                [[ "${budget:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log_error "Invalid budget value: $budget"; return 1; } ;;
             --fix)          fix=true; shift ;;
-            --fix-budget)   fix_budget="$2"; shift 2 ;;
+            --fix-budget)   fix_budget="$2"; shift 2
+                [[ "${fix_budget:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log_error "Invalid fix-budget value: $fix_budget"; return 1; } ;;
             --min-severity) min_severity="$2"; shift 2 ;;
             --single)       single=true; shift ;;
             --profile)      profile="$2"; shift 2 ;;
@@ -766,8 +768,8 @@ cmd_analyze() {
         per_agent_budget="$budget"
     else
         local analysis_budget
-        analysis_budget=$(awk "BEGIN {printf \"%.2f\", $budget - $profiler_budget}")
-        per_agent_budget=$(awk "BEGIN {printf \"%.2f\", $analysis_budget / 5}")
+        analysis_budget=$(awk -v b="$budget" -v p="$profiler_budget" 'BEGIN {printf "%.2f", b - p}')
+        per_agent_budget=$(awk -v a="$analysis_budget" 'BEGIN {printf "%.2f", a / 5}')
     fi
 
     # Confirm
@@ -1078,6 +1080,8 @@ cmd_analyze() {
             --max-turns 10 \
             --output-format json \
             --no-session-persistence \
+            --settings "$KYZN_SETTINGS_JSON" \
+            --allowedTools Read \
             2>"$consensus_stderr") || {
             stop_progress
             log_warn "Consensus merge failed — using raw concatenated findings"
@@ -1115,7 +1119,7 @@ cmd_analyze() {
         rm -rf "$tmp_dir"
 
         # Total cost is approximate (we can't easily sum parallel costs)
-        total_cost="~$(awk "BEGIN {printf \"%.2f\", $per_agent_budget * 5}")"
+        total_cost="~$(awk -v p="$per_agent_budget" 'BEGIN {printf "%.2f", p * 5}')"
     fi
 
     # Clear trap variables (cleanup handled below, not by trap on success)
@@ -1471,6 +1475,10 @@ run_fix_phase() {
         local sys_prompt_file
         sys_prompt_file=$(get_system_prompt "$dominant_cat")
 
+        # Snapshot HEAD before batch so we can reset cleanly on failure
+        local pre_batch_head
+        pre_batch_head=$(git rev-parse HEAD)
+
         # Execute Claude for this batch
         local fix_stderr
         fix_stderr=$(mktemp)
@@ -1640,8 +1648,7 @@ ${tier_findings}
             # Save user's local config before cleaning (gitignored, would be lost)
             local _saved_local=""
             [[ -f "$KYZN_DIR/local.yaml" ]] && _saved_local=$(cat "$KYZN_DIR/local.yaml")
-            safe_git checkout -- . 2>/dev/null
-            safe_git clean -fd 2>/dev/null
+            safe_git reset --hard "$pre_batch_head" 2>/dev/null
             # Restore saved files
             if [[ -n "$_saved_local" ]]; then
                 mkdir -p "$KYZN_DIR"

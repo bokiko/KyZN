@@ -1951,6 +1951,112 @@ test_verify_node_no_test_files() {
 }
 
 # ---------------------------------------------------------------------------
+# Security hardening tests (from Cursor + Codex audits)
+# ---------------------------------------------------------------------------
+
+test_awk_budget_injection() {
+    log_header "63. awk budget calculation rejects injection payloads"
+
+    # awk -v safely passes the string — system() is NOT executed
+    rm -f /tmp/kyzn-pwned
+    awk -v b='1; system("touch /tmp/kyzn-pwned")' 'BEGIN {printf "%.2f", b + 0}' >/dev/null 2>&1 || true
+    if [[ -f /tmp/kyzn-pwned ]]; then
+        rm -f /tmp/kyzn-pwned
+        fail "awk injection" "injection payload created file on disk"
+    else
+        pass "awk -v does not execute injected system() calls"
+    fi
+
+    # Test numeric budget regex validation (defense-in-depth at parse time)
+    local good="2.50"
+    local bad='1; system("id")'
+    if [[ "$good" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        pass "valid budget passes regex"
+    else
+        fail "valid budget" "regex rejected valid budget"
+    fi
+    if [[ "$bad" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        fail "injection blocked" "regex accepted injection payload"
+    else
+        pass "injection budget blocked by regex"
+    fi
+}
+
+test_xargs_filename_with_spaces() {
+    log_header "64. unstage_secrets handles filenames with spaces"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Create a secret file with spaces in the name
+    echo "SECRET=abc" > "my secret.env"
+    echo "data" > "safe file.txt"
+    git add "my secret.env" "safe file.txt" 2>/dev/null
+
+    # Run unstage_secrets
+    unstage_secrets 2>/dev/null
+
+    local staged
+    staged=$(git diff --cached --name-only 2>/dev/null)
+
+    # The .env file should have been unstaged despite spaces
+    if echo "$staged" | grep -q 'secret\.env'; then
+        fail "unstage spaced .env" "my secret.env still staged"
+    else
+        pass "unstage spaced .env — removed from staging"
+    fi
+
+    # Safe file should remain staged
+    if echo "$staged" | grep -q 'safe file'; then
+        pass "safe file with spaces remains staged"
+    else
+        fail "safe file with spaces" "was incorrectly unstaged"
+    fi
+
+    cleanup_sandbox
+}
+
+test_safe_checkout_back_disables_hooks() {
+    log_header "65. safe_checkout_back uses safe_git (hooks disabled)"
+
+    # Verify the function body uses safe_git, not bare git
+    local func_body
+    func_body=$(awk '/^safe_checkout_back\(\)/,/^}/' "$KYZN_ROOT/lib/execute.sh")
+
+    local bare_count
+    bare_count=$(echo "$func_body" | grep -cE '^\s+git checkout' 2>/dev/null) || bare_count=0
+
+    assert_eq "no bare git checkout in safe_checkout_back" "0" "$bare_count"
+}
+
+test_profile_path_traversal() {
+    log_header "66. get_system_prompt rejects path traversal in profile"
+
+    source "$KYZN_ROOT/lib/prompt.sh"
+
+    # A traversal profile should be sanitized to empty — no profile content appended
+    local result
+    result=$(get_system_prompt "../../etc/passwd")
+
+    # The result might be a temp file (if conventions exist) or the base prompt,
+    # but it must NOT contain content from /etc/passwd
+    if [[ -f "$result" ]]; then
+        local content
+        content=$(cat "$result")
+        if echo "$content" | grep -q "root:"; then
+            fail "traversal blocked" "system prompt contains /etc/passwd content"
+        else
+            pass "traversal profile sanitized — no /etc/passwd content"
+        fi
+        [[ "$result" == /tmp/* ]] && rm -f "$result"
+    else
+        # Not a file — should be the base prompt path
+        pass "traversal returns base prompt path"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -2029,6 +2135,10 @@ main() {
     test_budget_carving
     test_specialist_prompt_has_fix_plan
     test_verify_node_no_test_files
+    test_awk_budget_injection
+    test_xargs_filename_with_spaces
+    test_safe_checkout_back_disables_hooks
+    test_profile_path_traversal
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

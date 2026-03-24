@@ -76,6 +76,11 @@ get_system_prompt() {
     local lang="${KYZN_PROJECT_TYPE:-generic}"
     local conventions="$KYZN_ROOT/templates/conventions/$lang.md"
 
+    # Sanitize profile name — reject path traversal and non-alphanumeric characters
+    if [[ -n "$profile" && "$profile" =~ [^a-zA-Z0-9_-] ]]; then
+        profile=""
+    fi
+
     # If we have a profile or language conventions, combine into a temp file
     if [[ -n "$profile" && -f "$KYZN_ROOT/profiles/$profile.md" ]] || [[ -f "$conventions" ]]; then
         local combined

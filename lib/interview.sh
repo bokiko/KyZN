@@ -69,6 +69,18 @@ run_interview() {
         2) trust="autopilot" ;;
     esac
 
+    if [[ "$trust" == "autopilot" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}WARNING:${RESET} ${YELLOW}Autopilot will auto-merge AI-generated PRs without human review.${RESET}"
+        echo -e "  ${YELLOW}Only safe if you have comprehensive CI (tests, lint, type checking).${RESET}"
+        echo -e "  ${YELLOW}Projects without CI will have PRs merge immediately on creation.${RESET}"
+        echo ""
+        if ! prompt_yn "Are you sure you want autopilot mode?"; then
+            trust="guardian"
+            log_info "Switched to guardian mode."
+        fi
+    fi
+
     # Step 6: Save config
     save_interview_config "$mode" "$budget" "$on_fail" "$trust" "${priorities[@]}"
 

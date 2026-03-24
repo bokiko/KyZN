@@ -19,7 +19,7 @@ unstage_secrets() {
     local staged_secrets
     staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc' || true)
     if [[ -n "$staged_secrets" ]]; then
-        echo "$staged_secrets" | xargs git reset HEAD -- 2>/dev/null || true
+        echo "$staged_secrets" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"
         echo "$staged_secrets" | while IFS= read -r f; do
             [[ -n "$f" ]] && log_dim "  - $f"
@@ -41,7 +41,7 @@ stage_claude_changes() {
     # Unstage any generated directories that add -u may have picked up
     git diff --cached --name-only 2>/dev/null \
         | grep -E "$_GENERATED_DIRS" \
-        | xargs -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+        | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
 
     # Stage new files Claude created, excluding KyZN artifacts and generated dirs
     local new_files
@@ -49,7 +49,7 @@ stage_claude_changes() {
         | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
         | grep -vE "$_GENERATED_DIRS" || true)
     if [[ -n "$new_files" ]]; then
-        echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
+        echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
 
     # Run safety filters on what's staged
@@ -71,14 +71,14 @@ count_diff_size() {
     # Unstage any generated directories that add -u may have picked up
     git diff --cached --name-only 2>/dev/null \
         | grep -E "$_GENERATED_DIRS" \
-        | xargs -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+        | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
 
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
         | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
         | grep -vE "$_GENERATED_DIRS" || true)
     if [[ -n "$new_files" ]]; then
-        echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
+        echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
 
     local numstat
@@ -112,7 +112,7 @@ check_test_deletions() {
         echo "$deleted_tests" | while IFS= read -r f; do
             [[ -n "$f" ]] && log_dim "  - $f"
         done
-        echo "$deleted_tests" | xargs git reset HEAD -- 2>/dev/null || true
+        echo "$deleted_tests" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
     fi
 }
 
@@ -134,7 +134,7 @@ check_dangerous_files() {
             echo "$dangerous" | while IFS= read -r f; do
                 [[ -n "$f" ]] && log_warn "  - $f"
             done
-            echo "$dangerous" | xargs git reset HEAD -- 2>/dev/null || true
+            echo "$dangerous" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
         fi
     fi
 }
@@ -173,11 +173,11 @@ enforce_config_ceilings() {
 safe_checkout_back() {
     local target="${KYZN_ORIGINAL_BRANCH:-}"
     if [[ -n "$target" ]]; then
-        git checkout "$target" 2>/dev/null && return
+        safe_git checkout "$target" 2>/dev/null && return
     fi
-    git checkout - 2>/dev/null ||
-    git checkout main 2>/dev/null ||
-    git checkout master 2>/dev/null ||
+    safe_git checkout - 2>/dev/null ||
+    safe_git checkout main 2>/dev/null ||
+    safe_git checkout master 2>/dev/null ||
     log_warn "Could not return to previous branch — run 'git checkout main' manually"
 }
 

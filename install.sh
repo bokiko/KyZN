@@ -107,25 +107,65 @@ install_jq() {
             sudo apk add -q jq
             ;;
         *)
-            # Fallback: download binary (no sudo needed)
+            # Fallback: download binary with checksum verification (no sudo needed)
             local arch
             arch=$(uname -m)
             case "$arch" in
                 x86_64)       arch="amd64" ;;
                 aarch64|arm64) arch="arm64" ;;
             esac
-            local url="https://github.com/jqlang/jq/releases/latest/download/jq-linux-${arch}"
-            if [[ "$(uname)" == "Darwin" ]]; then
-                url="https://github.com/jqlang/jq/releases/latest/download/jq-macos-${arch}"
-            fi
+            local os="linux"
+            [[ "$(uname)" == "Darwin" ]] && os="macos"
+
+            # Pinned version + SHA256 checksums for supply chain safety
+            local JQ_VERSION="1.7.1"
+            local expected_checksum=""
+            case "${os}_${arch}" in
+                linux_amd64)  expected_checksum="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5" ;;
+                linux_arm64)  expected_checksum="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;;
+                macos_amd64)  expected_checksum="4155822bbf5ea90f5c79cf254665975eb4274d426d0709770c21774de5407443" ;;
+                macos_arm64)  expected_checksum="0bbe619e663e0de2c550be2fe0d240d076799d6f8a652b70fa04aea8a8362e8a" ;;
+            esac
+
+            local url="https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-${os}-${arch}"
             mkdir -p "$BIN_DIR"
+            local tmp
+            tmp=$(mktemp)
+
             if has_cmd curl; then
-                curl -fsSL -o "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+                curl -fsSL -o "$tmp" "$url" || { err "Failed to download jq"; rm -f "$tmp"; return 1; }
             elif has_cmd wget; then
-                wget -qO "$BIN_DIR/jq" "$url" && chmod +x "$BIN_DIR/jq"
+                wget -qO "$tmp" "$url" || { err "Failed to download jq"; rm -f "$tmp"; return 1; }
             else
                 err "Neither curl nor wget found — cannot download jq"
+                rm -f "$tmp"
+                return 1
             fi
+
+            # Verify checksum if available for this platform
+            if [[ -n "$expected_checksum" ]]; then
+                local actual_checksum
+                if has_cmd sha256sum; then
+                    actual_checksum=$(sha256sum "$tmp" | awk '{print $1}')
+                elif has_cmd shasum; then
+                    actual_checksum=$(shasum -a 256 "$tmp" | awk '{print $1}')
+                else
+                    warn "No sha256 tool found — skipping checksum verification"
+                    actual_checksum=""
+                fi
+                if [[ -n "$actual_checksum" && "$actual_checksum" != "$expected_checksum" ]]; then
+                    err "jq checksum verification failed!"
+                    err "  Expected: $expected_checksum"
+                    err "  Got:      $actual_checksum"
+                    rm -f "$tmp"
+                    return 1
+                fi
+                [[ -n "$actual_checksum" ]] && ok "jq checksum verified"
+            else
+                warn "No checksum available for ${os}_${arch} — skipping verification"
+            fi
+
+            mv "$tmp" "$BIN_DIR/jq" && chmod +x "$BIN_DIR/jq"
             ;;
     esac
     has_cmd jq && ok "jq installed" || err "jq install failed"
