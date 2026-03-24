@@ -385,35 +385,6 @@ kyzn selftest --full       # Full suite with stress tests (259 cases)
 
 ---
 
-## Roadmap
-
-- [x] Core improvement cycle (detect → measure → improve → verify → PR)
-- [x] Node.js, Python, Rust, Go support
-- [x] Interactive model and budget selection
-- [x] Score regression gate
-- [x] Pre-existing test failure detection
-- [x] Branch cleanup on all failure paths
-- [x] Multi-agent analysis — 4 Opus specialists + consensus (`kyzn analyze`)
-- [x] Two-model architecture (Opus thinks, Sonnet executes)
-- [x] Live progress indicator during analysis
-- [x] Security hardening (file restrictions, CI blocking, timeouts, checksums)
-- [x] Compact terminal output + `kyzn-report.md` detailed report
-- [x] Full report context passed to fix phase for accurate Sonnet fixes
-- [x] 16-agent parallel security audit with published reports
-- [x] Audit-driven hardening: eval removal, array allowlists, input validation, crash safety
-- [x] Reflexion loop (retry with self-reflection on failure)
-- [x] Per-language convention injection into system prompts
-- [x] Profiler agent — Sonnet scans repo conventions before analysis
-- [x] `kyzn fix` — unified deep analysis + auto-fix pipeline
-- [x] fix_plan metadata for targeted Sonnet fixes
-- [x] 259-test self-test suite
-- [ ] Multi-candidate patches (generate 3, pick best)
-- [ ] Experience bank (store/retrieve successful fix patterns)
-- [ ] Learning from rejection feedback
-- [ ] Coverage-aware test generation
-
----
-
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
