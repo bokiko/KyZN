@@ -575,7 +575,7 @@ $baseline_failures
     if [[ -n "$repo_profile" && -f "$repo_profile" ]]; then
         local profile_content
         # Strip SHA comment line
-        profile_content=$(sed '1{/^<!-- sha:/d}' "$repo_profile")
+        profile_content=$(tail -n +2 "$repo_profile")
         if [[ -n "$profile_content" ]]; then
             profile_context="## Repo Profile
 
@@ -862,7 +862,7 @@ cmd_analyze() {
             echo "---" >> "$sys_prompt_file"
             echo "" >> "$sys_prompt_file"
             # Strip SHA comment line from output
-            sed '1{/^<!-- sha:/d}' "$repo_profile_file" >> "$sys_prompt_file"
+            tail -n +2 "$repo_profile_file" >> "$sys_prompt_file"
         else
             rm -f "$repo_profile_file"
             repo_profile_file=""
