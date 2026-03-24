@@ -17,16 +17,51 @@ KyZN runs AI agents with real tool access inside your codebase. We take this ser
 - **Build/test gate** — PR only created if build and tests pass
 - **Score gate** — aborts if health score drops after changes
 - **Diff guard** — aborts if changes exceed threshold
+- **Secret detection** — regex-based heuristic matching on staged files (`.env`, `.pem`, `.key`, etc.)
+- **Trust isolation** — autopilot trust level stored in gitignored `local.yaml`, not committable config
 
 ## Threat Model
 
 The primary attack surface is **malicious repositories**. KyZN executes your project's build and test commands (`npm test`, `pytest`, `cargo test`, etc.). Do not run KyZN on repositories you don't trust.
 
-## Audit Reports
+## How We Audit
 
-We publish our security audit reports transparently:
-- [Executive Summary](full-audit-by-claude/EXECUTIVE-SUMMARY.md)
-- [All 16 agent reports](full-audit-by-claude/)
+Before every major release, we run a **parallel multi-agent security audit** — 16 specialist AI agents independently review the entire codebase, each from a different angle:
+
+| Specialist | Focus |
+|-----------|-------|
+| Security agent | Injection vectors, input validation, access control |
+| Architecture agent | Trust boundaries, isolation design, module coupling |
+| Testing agent | Coverage gaps, untested critical paths |
+| Performance agent | Subprocess bottlenecks, scaling limits |
+| + 12 more | Correctness, dead code, crash safety, competitive analysis |
+
+The agents work in parallel and don't see each other's findings. A consensus step deduplicates and ranks the results.
+
+## What We Found and Fixed (v0.5.0)
+
+Our v0.4.0 audit produced **~350KB of findings across 8,400 lines** from 16 agents:
+
+| Category | Issues Found | How We Fixed Them |
+|----------|-------------|-------------------|
+| **Input handling** | Unsafe variable expansion patterns | Replaced with safe bash built-ins (`${!var}`, `printf -v`, `awk -v`) |
+| **Tool restrictions** | Permissions not applied correctly | Converted to proper bash arrays with quoted expansion |
+| **Config isolation** | Trust setting in committed config | Moved to gitignored `local.yaml` |
+| **Path validation** | Missing input validation | Added format validation with positive pattern matching |
+| **File access** | Restricted file list incomplete | Expanded to include shell configs, package manager credentials, container configs |
+| **Crash recovery** | Missing cleanup on interrupt | Added trap that kills child processes, updates history, cleans temp files |
+| **Measurement accuracy** | Parsers producing inflated counts | Fixed to use structured JSON parsing |
+
+Every finding was verified, fixed, and tested. The full test suite grew from 156 to 259 tests.
+
+## Published Audit Reports
+
+The complete audit reports are published in this repository:
+
+- [`full-audit-by-claude/EXECUTIVE-SUMMARY.md`](full-audit-by-claude/EXECUTIVE-SUMMARY.md) — Overall assessment, prioritized findings, agent report card
+- [`full-audit-by-claude/`](full-audit-by-claude/) — All 16 individual agent reports with file-level detail
+
+We publish these because we believe you should be able to read exactly what was found, how serious it was, and how it was resolved — before you decide to run KyZN on your code.
 
 ## Disclaimer
 

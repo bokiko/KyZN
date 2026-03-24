@@ -17,8 +17,21 @@
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Improve+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+in+parallel;259+tests+passing;Security+audited+%26+published" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+in+parallel;259+tests+passing;Security+audited+%26+published" alt="Typing SVG"></a>
 </p>
+
+## Contents
+
+- [Quick Demo](#quick-demo)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Features](#features)
+- [Usage](#usage)
+- [How It Works](#how-it-works)
+- [Safety](#safety)
+- [Security](#security)
+- [Project Structure](#project-structure)
+- [License](#license)
 
 ---
 
@@ -112,8 +125,8 @@ To switch between methods:
 ### First Run
 
 ```bash
-kyzn doctor     # Verify prerequisites are installed
 cd your-project
+kyzn doctor     # Verify prerequisites
 kyzn init       # One-time setup
 kyzn measure    # See your health score
 kyzn fix        # Deep analysis + auto-fix → PR
@@ -121,9 +134,35 @@ kyzn fix        # Deep analysis + auto-fix → PR
 
 ---
 
+## Configuration
+
+Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement modes: **deep** (real bugs only), **clean** (dead code + naming), **full** (everything). See [`.kyzn.example.yaml`](.kyzn.example.yaml) for all options or [`docs/how-it-works.md`](docs/how-it-works.md) for full reference.
+
+---
+
 ## Features
 
 <table>
+<tr>
+<td width="50%">
+
+### Fix
+- **Full pipeline**: analyze → fix → verify → PR in one command
+- Profiler scans repo conventions before analysis
+- Severity-batched: CRITICAL → HIGH → MEDIUM → LOW
+- Reflexion retry on build failure
+
+</td>
+<td width="50%">
+
+### Analyze
+- **4 Opus specialists in parallel** — security, correctness, performance, architecture
+- Consensus engine deduplicates and ranks findings
+- Compact one-liner terminal output + detailed `kyzn-report.md`
+- `--fix` mode: full report context passed to Sonnet for accurate fixes
+
+</td>
+</tr>
 <tr>
 <td width="50%">
 
@@ -136,31 +175,11 @@ kyzn fix        # Deep analysis + auto-fix → PR
 </td>
 <td width="50%">
 
-### Fix
-- **Full pipeline**: analyze → fix → verify → PR in one command
-- Profiler scans repo conventions before analysis
-- Severity-batched: CRITICAL → HIGH → MEDIUM → LOW
-- Reflexion retry on build failure
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### Analyze
-- **4 Opus specialists in parallel** — security, correctness, performance, architecture
-- Consensus engine deduplicates and ranks findings
-- Compact one-liner terminal output + detailed `kyzn-report.md`
-- `--fix` mode: full report context passed to Sonnet for accurate fixes
-
-</td>
-<td width="50%">
-
-### Improve
-- Sonnet-powered incremental improvements
-- Deep, clean, or full improvement modes
-- Configurable budget cap per run
-- Focus targeting (security, testing, quality)
+### Doctor
+- Checks all prerequisites (git, gh, claude, jq, yq)
+- Reports missing optional tools per language
+- Shows Claude authentication method
+- Verifies Bash version compatibility
 
 </td>
 </tr>
@@ -222,18 +241,18 @@ Terminal output is compact (one line per finding). Full details are saved to `ky
   <img src="images/kyzn-analyze.png" alt="KyZN analyze — multi-agent findings" width="580">
 </div>
 
-### Improve (Sonnet incremental)
+### Quick (lightweight single-pass)
 
 ```bash
-kyzn improve                        # Interactive — choose model & budget
-kyzn improve --auto                 # Non-interactive (for cron)
-kyzn improve --mode deep            # Real improvements only
-kyzn improve --mode clean           # Cleanup only (dead code, naming)
-kyzn improve --mode full            # Everything
-kyzn improve --focus security       # Target a specific area
-kyzn improve --model opus           # Use a specific model
-kyzn improve --budget 5.00          # Override budget cap
-kyzn improve -v                     # Show live progress
+kyzn quick                          # Interactive — choose model & budget
+kyzn quick --auto                   # Non-interactive (for cron)
+kyzn quick --mode deep              # Real improvements only
+kyzn quick --mode clean             # Cleanup only (dead code, naming)
+kyzn quick --mode full              # Everything
+kyzn quick --focus security         # Target a specific area
+kyzn quick --model opus             # Use a specific model
+kyzn quick --budget 5.00            # Override budget cap
+kyzn quick -v                       # Show live progress
 ```
 
 ### Review
@@ -259,13 +278,13 @@ kyzn schedule off                   # Remove schedule
 
 ```mermaid
 graph LR
-    A[Detect] --> P[Profile]
-    P --> B[Measure]
-    B --> C{Mode?}
-    C -->|fix| E[4x Opus]
-    C -->|improve| D[Sonnet]
+    A[Detect] --> B[Measure]
+    B --> C{Command?}
+    C -->|fix| P[Profile]
+    P --> E[4x Opus]
     E --> G[Consensus]
     G --> H[Sonnet Fix]
+    C -->|quick| D[Sonnet]
     D --> F[Verify]
     H --> F
     F -->|fail| R[Reflexion]
@@ -279,13 +298,9 @@ graph LR
 
 ---
 
-## Configuration
-
-Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement modes: **deep** (real bugs only), **clean** (dead code + naming), **full** (everything). See [`.kyzn.example.yaml`](.kyzn.example.yaml) for all options or [`docs/how-it-works.md`](docs/how-it-works.md) for full reference.
-
----
-
 ## Safety
+
+KyZN runs AI with real tool access on your code. Every layer of the pipeline has safety constraints to prevent damage, overspending, and data leaks.
 
 | Layer | Protection |
 |-------|-----------|
@@ -307,59 +322,13 @@ Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement m
 
 ---
 
-## Security Transparency
+## Security
 
-We believe security is built on trust, and trust requires transparency.
-
-KyZN runs AI agents with real tool access inside your codebase. That's a serious responsibility. Rather than asking you to take our word that it's safe, we publish our audit process and findings so you can verify it yourself.
-
-### How We Audit
-
-Before every major release, we run a **parallel multi-agent security audit** — 16 specialist AI agents independently review the entire codebase, each from a different angle:
-
-| Specialist | Focus |
-|-----------|-------|
-| Security agent | Injection vectors, input validation, access control |
-| Architecture agent | Trust boundaries, isolation design, module coupling |
-| Testing agent | Coverage gaps, untested critical paths |
-| Performance agent | Subprocess bottlenecks, scaling limits |
-| + 12 more | Correctness, dead code, crash safety, competitive analysis |
-
-The agents work in parallel and don't see each other's findings. A consensus step then deduplicates and ranks the results. This catches issues that any single reviewer — human or AI — would miss.
-
-### What We Found and Fixed (v0.5.0)
-
-Our v0.4.0 audit produced **~350KB of findings across 8,400 lines** from 16 agents. The consensus identified issues in these categories:
-
-| Category | Issues Found | How We Fixed Them |
-|----------|-------------|-------------------|
-| **Input handling** | Unsafe variable expansion patterns in internal functions | Replaced with safe bash built-ins (`${!var}`, `printf -v`, `awk -v`) |
-| **Tool restrictions** | Language-specific tool permissions not applied correctly due to string-vs-array expansion | Converted to proper bash arrays with quoted expansion |
-| **Config isolation** | Trust setting in committed config (should be local-only) | Moved to gitignored `local.yaml`, added comment guidance |
-| **Path validation** | Missing input validation in some user-facing commands | Added format validation with positive pattern matching |
-| **File access** | Restricted file list didn't cover all sensitive paths | Expanded to include shell configs, package manager credentials, container configs |
-| **Crash recovery** | Missing cleanup on interrupt during multi-agent analysis | Added trap that kills child processes, updates history, cleans temp files |
-| **Measurement accuracy** | Parsers for Go and Rust tools producing inflated counts | Fixed to use structured JSON parsing instead of line counting |
-
-Every finding was verified, fixed, and tested. The full test suite grew from 156 to 259 tests, with new tests specifically covering the fixed attack surfaces.
-
-### Published Reports
-
-The complete audit reports are published in this repository:
-
-- [`full-audit-by-claude/EXECUTIVE-SUMMARY.md`](full-audit-by-claude/EXECUTIVE-SUMMARY.md) — Overall assessment, prioritized findings, agent report card
-- [`full-audit-by-claude/`](full-audit-by-claude/) — All 16 individual agent reports with file-level detail
-
-We publish these because we believe you should be able to read exactly what was found, how serious it was, and how it was resolved — before you decide to run KyZN on your code.
-
-### Reporting Security Issues
-
-If you find a security issue in KyZN, please open a GitHub issue. Since KyZN runs locally (no server, no data collection, no network calls beyond Claude API and GitHub), most issues can be discussed openly. For issues involving the Claude API key or token handling, please reach out privately.
+KyZN is security-audited before every major release using 16 parallel AI specialist agents. See [SECURITY.md](SECURITY.md) for our full security model, threat analysis, audit methodology, and published reports.
 
 ---
 
-<details>
-<summary><b>Project Structure</b></summary>
+## Project Structure
 
 ```
 kyzn/
@@ -375,8 +344,6 @@ kyzn/
 └── tests/
     └── selftest.sh            # 259 tests (250 quick + 9 stress)
 ```
-
-</details>
 
 ```bash
 kyzn selftest              # Quick tests (250 cases)

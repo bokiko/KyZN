@@ -47,11 +47,11 @@ Usage:
 Commands:
   fix             Deep analysis + auto-fix (analyze → fix → verify → PR)
   analyze         Deep analysis only — report, no changes
-  improve         Quick improvement cycle (measure → improve → verify → PR)
+  quick           Quick single-pass improvement (lighter, cheaper)
   measure         Measure project health (no changes)
-  status          Show health score dashboard
-  init            Interactive setup (creates .kyzn/config.yaml)
   doctor          Check prerequisites
+  init            Interactive setup (creates .kyzn/config.yaml)
+  status          Show health score dashboard
 
   approve <id>    Sign off on a completed improvement
   reject <id>     Reject with reason
@@ -64,7 +64,7 @@ Commands:
   update          Pull latest version
   version         Show version
 
-Improve options:
+Quick options:
   --auto              Use saved config (no prompts, for cron)
   --focus <area>      Target specific area (security, testing, perf, quality, doc)
   --mode <mode>       deep | clean | full
@@ -104,9 +104,9 @@ Examples:
   kyzn fix --profile hybrid       # Cheaper analysis model mix
   kyzn analyze                    # Analysis report only, no changes
   kyzn analyze --focus security   # Single-area deep dive
-  kyzn improve                    # Quick improvement cycle
-  kyzn improve --auto             # Use saved config (for cron)
-  kyzn improve --mode deep        # Real improvements only
+  kyzn quick                      # Quick single-pass improvement
+  kyzn quick --auto               # Use saved config (for cron)
+  kyzn quick --mode deep          # Real improvements only
   kyzn measure                    # Measure only, no changes
   kyzn history --global           # All projects
 EOF
@@ -166,7 +166,7 @@ main() {
     esac
 
     case "$cmd" in
-        improve)
+        quick|improve)
             shift
             source "$KYZN_ROOT/lib/detect.sh"
             source "$KYZN_ROOT/lib/interview.sh"

@@ -28,17 +28,17 @@ kyzn measure               # Health score only
 kyzn fix                   # Deep analysis + auto-fix → PR (recommended)
 kyzn fix --auto            # Non-interactive (cron-safe)
 kyzn analyze               # 4 Opus specialists + consensus report (no changes)
-kyzn improve               # Quick improve cycle
-kyzn improve --auto        # Non-interactive (cron-safe)
+kyzn quick                 # Quick single-pass improvement
+kyzn quick --auto          # Non-interactive (cron-safe)
 ```
 
 ## Architecture
 
 ### Entry point and library loading
 
-`kyzn` is the entry point — it routes subcommands and lazy-loads only the `lib/*.sh` modules needed. `improve` loads 8 libs; `measure` loads 2; `doctor` loads none (all inline).
+`kyzn` is the entry point — it routes subcommands and lazy-loads only the `lib/*.sh` modules needed. `quick` loads 8 libs; `measure` loads 2; `doctor` loads none (all inline).
 
-### `kyzn improve` pipeline
+### `kyzn quick` pipeline
 
 ```
 Detect project type → Baseline measure → Create kyzn/ branch
