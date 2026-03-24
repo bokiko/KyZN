@@ -13,7 +13,7 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) ))
     exit 1
 fi
 
-KYZN_VERSION="0.5.0"
+KYZN_VERSION="0.6.0"
 # Resolve symlinks portably (readlink -f doesn't exist on macOS)
 _kyzn_resolve() {
     local f="$1"

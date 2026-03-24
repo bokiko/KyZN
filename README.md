@@ -10,14 +10,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-5.0+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-0.5.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-218%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/version-0.6.0-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-259%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Improve+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+in+parallel;218+tests+passing;Security+audited+%26+published" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Improve+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+in+parallel;259+tests+passing;Security+audited+%26+published" alt="Typing SVG"></a>
 </p>
 
 ---
@@ -50,8 +50,8 @@ $ kyzn measure
   documentation   ████████████░░░░░░░░  60%
 
   ℹ Weakest area: testing (50%)
-    Run kyzn improve --focus testing to improve it.
-    Run kyzn analyze for a deep multi-agent code review.
+    Run kyzn fix for deep analysis + auto-fix.
+    Run kyzn fix for deep analysis + auto-fix.
 ```
 
 That's it — one command, zero config. KyZN runs your project's real tools (eslint, ruff, clippy, go vet) and produces a health score. Then `kyzn improve` sends the results to Claude Code, which makes targeted improvements, verifies them, and opens a PR.
@@ -71,6 +71,8 @@ See [`docs/examples/sample-report.md`](docs/examples/sample-report.md) for what 
 | `claude` | Yes | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
 | `jq` | Yes | JSON processing |
 | `yq` | Yes | YAML config |
+
+> **macOS:** Requires Bash 4.3+ (`brew install bash`). The system `/bin/bash` is v3.2 and will not work.
 
 ### Installation
 
@@ -114,7 +116,7 @@ To switch between methods:
 cd your-project
 kyzn init       # One-time setup
 kyzn measure    # See your health score
-kyzn improve    # Run improvement cycle
+kyzn fix        # Deep analysis + auto-fix → PR
 ```
 
 ---
@@ -134,6 +136,17 @@ kyzn improve    # Run improvement cycle
 </td>
 <td width="50%">
 
+### Fix
+- **Full pipeline**: analyze → fix → verify → PR in one command
+- Profiler scans repo conventions before analysis
+- Severity-batched: CRITICAL → HIGH → MEDIUM → LOW
+- Reflexion retry on build failure
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
 ### Analyze
 - **4 Opus specialists in parallel** — security, correctness, performance, architecture
 - Consensus engine deduplicates and ranks findings
@@ -141,8 +154,6 @@ kyzn improve    # Run improvement cycle
 - `--fix` mode: full report context passed to Sonnet for accurate fixes
 
 </td>
-</tr>
-<tr>
 <td width="50%">
 
 ### Improve
@@ -152,6 +163,8 @@ kyzn improve    # Run improvement cycle
 - Focus targeting (security, testing, quality)
 
 </td>
+</tr>
+<tr>
 <td width="50%">
 
 ### Verify
@@ -161,8 +174,6 @@ kyzn improve    # Run improvement cycle
 - Per-category floor — aborts if any area drops > 5pts
 
 </td>
-</tr>
-<tr>
 <td width="50%">
 
 ### Ship
@@ -172,21 +183,24 @@ kyzn improve    # Run improvement cycle
 - Schedule daily or weekly via cron
 
 </td>
-<td width="50%">
-
-### Progress
-- Live status line during multi-agent analysis
-- Per-agent completion tracking (◌ running, ● done, ✗ failed)
-- Elapsed time display
-- Cost tracking per session
-
-</td>
 </tr>
 </table>
 
 ---
 
 ## Usage
+
+### Fix (recommended — deep analysis + auto-fix)
+
+```bash
+kyzn fix                           # Full pipeline: analyze → fix → verify → PR
+kyzn fix --auto                    # Non-interactive (cron-safe)
+kyzn fix --profile hybrid          # Cheaper analysis model mix
+kyzn fix --min-severity HIGH       # Only fix HIGH+ severity findings
+kyzn fix --fix-budget 10.00        # Budget for fix phase
+```
+
+One command does everything: profiler scans your repo's conventions, 4 Opus specialists find issues in parallel, consensus deduplicates, Sonnet fixes in severity batches with build/test verification, and opens a PR. If a fix breaks the build, reflexion retry gives Sonnet a second chance.
 
 ### Analyze (multi-agent Opus deep analysis)
 
@@ -201,6 +215,12 @@ kyzn analyze --export report.md     # Export report to custom path
 ```
 
 Terminal output is compact (one line per finding). Full details are saved to `kyzn-report.md` in the project root and archived in `.kyzn/reports/`. When `--fix` runs, the full report is passed to Sonnet so it has complete context for each fix.
+
+> **Tip:** `kyzn analyze --fix` is equivalent to `kyzn fix`.
+
+<div align="center">
+  <img src="images/kyzn-analyze.png" alt="KyZN analyze — multi-agent findings" width="580">
+</div>
 
 ### Improve (Sonnet incremental)
 
@@ -239,15 +259,17 @@ kyzn schedule off                   # Remove schedule
 
 ```mermaid
 graph LR
-    A[Detect] --> B[Measure]
+    A[Detect] --> P[Profile]
+    P --> B[Measure]
     B --> C{Mode?}
+    C -->|fix| E[4x Opus]
     C -->|improve| D[Sonnet]
-    C -->|analyze| E[4x Opus]
-    D --> F[Verify]
     E --> G[Consensus]
-    G --> F
-    F -->|fail| H[Self-Repair]
+    G --> H[Sonnet Fix]
+    D --> F[Verify]
     H --> F
+    F -->|fail| R[Reflexion]
+    R --> F
     F -->|pass| I[Score Gate]
     I -->|pass| J[PR]
 ```
@@ -267,6 +289,7 @@ Run `kyzn init` to create `.kyzn/config.yaml` interactively. Three improvement m
 
 | Layer | Protection |
 |-------|-----------|
+| **Untrusted repos** | Do not run KyZN on repositories you don't trust — build/test commands are executed |
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
 | **Budget cap** | Configurable per-run spending limit (default $2.50) |
 | **Tool allowlist** | Per-language restrictions — tightened to specific subcommands (no `python -c`, no `rm`) |
@@ -318,7 +341,7 @@ Our v0.4.0 audit produced **~350KB of findings across 8,400 lines** from 16 agen
 | **Crash recovery** | Missing cleanup on interrupt during multi-agent analysis | Added trap that kills child processes, updates history, cleans temp files |
 | **Measurement accuracy** | Parsers for Go and Rust tools producing inflated counts | Fixed to use structured JSON parsing instead of line counting |
 
-Every finding was verified, fixed, and tested. The full test suite grew from 156 to 208 tests, with new tests specifically covering the fixed attack surfaces.
+Every finding was verified, fixed, and tested. The full test suite grew from 156 to 259 tests, with new tests specifically covering the fixed attack surfaces.
 
 ### Published Reports
 
@@ -350,14 +373,14 @@ kyzn/
 ├── full-audit-by-claude/      # Published security audit (16 agent reports)
 ├── .github/workflows/         # CI (ShellCheck on push/PR)
 └── tests/
-    └── selftest.sh            # 218 tests (50 core + 4 stress)
+    └── selftest.sh            # 259 tests (250 quick + 9 stress)
 ```
 
 </details>
 
 ```bash
-kyzn selftest              # Quick tests (209 cases)
-kyzn selftest --full       # Full suite with stress tests (218 cases)
+kyzn selftest              # Quick tests (250 cases)
+kyzn selftest --full       # Full suite with stress tests (259 cases)
 ```
 
 ---
@@ -370,7 +393,6 @@ kyzn selftest --full       # Full suite with stress tests (218 cases)
 - [x] Score regression gate
 - [x] Pre-existing test failure detection
 - [x] Branch cleanup on all failure paths
-- [x] 218-test self-test suite
 - [x] Multi-agent analysis — 4 Opus specialists + consensus (`kyzn analyze`)
 - [x] Two-model architecture (Opus thinks, Sonnet executes)
 - [x] Live progress indicator during analysis
@@ -380,6 +402,11 @@ kyzn selftest --full       # Full suite with stress tests (218 cases)
 - [x] 16-agent parallel security audit with published reports
 - [x] Audit-driven hardening: eval removal, array allowlists, input validation, crash safety
 - [x] Reflexion loop (retry with self-reflection on failure)
+- [x] Per-language convention injection into system prompts
+- [x] Profiler agent — Sonnet scans repo conventions before analysis
+- [x] `kyzn fix` — unified deep analysis + auto-fix pipeline
+- [x] fix_plan metadata for targeted Sonnet fixes
+- [x] 259-test self-test suite
 - [ ] Multi-candidate patches (generate 3, pick best)
 - [ ] Experience bank (store/retrieve successful fix patterns)
 - [ ] Learning from rejection feedback

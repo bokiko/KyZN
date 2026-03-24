@@ -2,6 +2,35 @@
 
 All notable changes to KyZN are documented here.
 
+## [0.6.0] — 2026-03-24
+
+### Added
+- `kyzn fix` command — unified deep analysis + auto-fix pipeline (analyze → fix → verify → PR)
+- Profiler agent — Sonnet reads repo conventions, caches to `.kyzn/repo-profile.md` with SHA invalidation
+- fix_plan metadata in analysis findings — structured guidance for targeted Sonnet fixes
+- Per-language convention injection into analyze path (Node, Python, Rust, Go)
+- `--profile` flag for analysis model selection (opus/hybrid/sonnet)
+- `--min-severity` flag for fix severity filtering
+
+### Changed
+- `kyzn analyze` is now report-only — no interactive fix menu (use `kyzn fix` instead)
+- `kyzn analyze --fix` is now equivalent to `kyzn fix`
+- Consensus enforces JSON-only output — prevents truncation on large finding sets
+
+### Fixed
+- vitest "No test files found" exit code 1 no longer treated as failure
+- `CI=true` set for all npm test calls (prevents vitest/jest watch mode hang)
+- 300s timeout on npm test calls (prevents indefinite hangs)
+
+### Security
+- Removed `npm install*` and `pip install*` from tool allowlist (arbitrary code execution via install scripts)
+- Expanded `~` to `$HOME` in file access restrictions (ensures Claude Code resolves home paths)
+- Added gitattributes filter protection to `safe_git` (prevents code execution via clean/smudge)
+- Scrubbed personal paths from published audit reports
+
+### Testing
+- **259 tests passing** (was 208)
+
 ## [0.5.0] — 2026-03-21
 
 ### Security
