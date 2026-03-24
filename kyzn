@@ -148,11 +148,14 @@ check_for_updates() {
     if [[ "$local_head" != "$remote_head" ]]; then
         local behind
         behind=$(git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
-        echo ""
-        echo -e "${YELLOW}⚠ KyZN update available${RESET} (${behind} commits behind)"
-        echo -e "  ${YELLOW}Update for better analysis accuracy and security fixes.${RESET}"
-        echo -e "  Run: ${CYAN}kyzn update${RESET}"
-        echo ""
+        # Only warn if actually behind — local-only commits (ahead) are not an update
+        if [[ "$behind" != "0" ]]; then
+            echo ""
+            echo -e "${YELLOW}⚠ KyZN update available${RESET} (${behind} commits behind)"
+            echo -e "  ${YELLOW}Update for better analysis accuracy and security fixes.${RESET}"
+            echo -e "  Run: ${CYAN}kyzn update${RESET}"
+            echo ""
+        fi
     fi
 }
 
