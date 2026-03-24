@@ -31,13 +31,23 @@ unstage_secrets() {
 # Safety: stage only Claude's changes, excluding KyZN artifacts
 # ---------------------------------------------------------------------------
 stage_claude_changes() {
+    # Common generated/dependency directories that must never be staged,
+    # even when the repo lacks a .gitignore (which would normally exclude them).
+    local _GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
+
     # Stage modified tracked files
     safe_git add -u 2>/dev/null
 
-    # Stage new files Claude created, excluding KyZN artifacts
+    # Unstage any generated directories that add -u may have picked up
+    git diff --cached --name-only 2>/dev/null \
+        | grep -E "$_GENERATED_DIRS" \
+        | xargs -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+
+    # Stage new files Claude created, excluding KyZN artifacts and generated dirs
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
+        | grep -vE "$_GENERATED_DIRS" || true)
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
@@ -53,12 +63,20 @@ stage_claude_changes() {
 # ---------------------------------------------------------------------------
 count_diff_size() {
     local _var_added=$1 _var_deleted=$2 _var_binary=$3
+    local _GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
 
     # Stage temporarily to count
     safe_git add -u 2>/dev/null
+
+    # Unstage any generated directories that add -u may have picked up
+    git diff --cached --name-only 2>/dev/null \
+        | grep -E "$_GENERATED_DIRS" \
+        | xargs -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
+        | grep -vE "$_GENERATED_DIRS" || true)
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | xargs git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
