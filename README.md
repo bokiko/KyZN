@@ -112,6 +112,7 @@ To switch between methods:
 ### First Run
 
 ```bash
+kyzn doctor     # Verify prerequisites are installed
 cd your-project
 kyzn init       # One-time setup
 kyzn measure    # See your health score
