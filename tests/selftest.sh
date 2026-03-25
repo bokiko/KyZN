@@ -27,7 +27,7 @@ FAILURES=()
 
 pass() { TESTS_PASSED=$((TESTS_PASSED + 1)); echo -e "  ${GREEN}✓${RESET} $1"; }
 fail() { TESTS_FAILED=$((TESTS_FAILED + 1)); FAILURES+=("$1: $2"); echo -e "  ${RED}✗${RESET} $1 — $2"; }
-skip() { TESTS_SKIPPED=$((TESTS_SKIPPED + 1)); echo -e "  ${DIM}⊘${RESET} $1 — skipped ($2)"; }
+skip() { TESTS_SKIPPED=$((TESTS_SKIPPED + 1)); echo -e "  ${DIM}⊘${RESET} $1 — skipped${2:+ ($2)}"; }
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
