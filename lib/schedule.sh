@@ -50,8 +50,11 @@ schedule_cron() {
     local project_tag
     project_tag=$(basename "$project_dir")
 
+    # Escape % in PATH — crontab treats % as a newline delimiter
+    local safe_path="${PATH//%/\\%}"
+
     # Prepend PATH so cron's minimal environment can find claude, jq, yq, gh
-    local cron_line="$cron_expr PATH=$PATH; cd $safe_project_dir && $safe_kyzn_path improve --auto >> $safe_project_dir/.kyzn/reports/cron.log 2>&1 # kyzn:${project_tag}:$label"
+    local cron_line="$cron_expr PATH=$safe_path; cd $safe_project_dir && $safe_kyzn_path improve --auto >> $safe_project_dir/.kyzn/reports/cron.log 2>&1 # kyzn:${project_tag}:$label"
 
     # Remove existing kyzn entry for THIS project only, then add new one
     (crontab -l 2>/dev/null || true) | grep -vF "# kyzn:${project_tag}:" | { cat; echo "$cron_line"; } | crontab -

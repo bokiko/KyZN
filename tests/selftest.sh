@@ -1145,18 +1145,37 @@ test_extract_findings() {
 
     source "$KYZN_ROOT/lib/analyze.sh"
 
-    # Simulate Claude response with embedded JSON
-    local fake_result
-    fake_result=$(jq -n '{result: "Here are my findings:\n```json\n[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]\n```"}')
-
-    local findings
+    # Case 1: direct JSON array in .result field
+    local fake_result findings len
+    fake_result=$(jq -n '{result: "[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]"}')
     findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=0
+    assert_eq "extract_findings direct JSON array" "1" "$len"
 
-    if echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
-        pass "extract_findings returns array"
+    # Case 2: JSON embedded in prose text
+    fake_result=$(jq -n '{result: "I found these issues:\n[\n{\"id\":\"SEC-001\",\"severity\":\"MEDIUM\",\"title\":\"injection\"}\n]\nPlease fix them."}')
+    findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=0
+    if (( len >= 1 )); then
+        pass "extract_findings JSON embedded in prose"
     else
-        fail "extract_findings" "did not return JSON array"
+        fail "extract_findings prose" "expected >=1 findings, got $len"
     fi
+
+    # Case 3: JSON in markdown code fences
+    fake_result=$(jq -n '{result: "Here are my findings:\n```json\n[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]\n```"}')
+    findings=$(extract_findings "$fake_result")
+    if echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
+        pass "extract_findings JSON in code fences returns array"
+    else
+        fail "extract_findings code fences" "did not return JSON array"
+    fi
+
+    # Case 4: invalid/empty response returns empty array
+    fake_result=$(jq -n '{result: "No findings to report."}')
+    findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=-1
+    assert_eq "extract_findings invalid/empty returns []" "0" "$len"
 }
 
 test_generate_fix_prompt() {

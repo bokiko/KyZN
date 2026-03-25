@@ -11,9 +11,11 @@ if command -v ruff &>/dev/null; then
     ruff_output=$(ruff check . --output-format json 2>/dev/null) || true
 
     if [[ -n "$ruff_output" ]] && echo "$ruff_output" | jq . &>/dev/null; then
-        error_count=$(echo "$ruff_output" | jq '[.[] | select(.fix == null)] | length')
-        fixable_count=$(echo "$ruff_output" | jq '[.[] | select(.fix != null)] | length')
-        total_issues=$(echo "$ruff_output" | jq 'length')
+        IFS=$'\t' read -r error_count fixable_count total_issues <<< "$(echo "$ruff_output" | jq -r '[
+            ([.[] | select(.fix == null)] | length),
+            ([.[] | select(.fix != null)] | length),
+            length
+        ] | @tsv')"
 
         lint_score=100
         (( lint_score -= error_count * 3 )) || true

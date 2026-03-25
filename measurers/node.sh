@@ -11,11 +11,13 @@ if command -v npm &>/dev/null && [[ -f "package-lock.json" ]]; then
     audit_output=$(npm audit --json 2>/dev/null) || true
 
     if [[ -n "$audit_output" ]] && echo "$audit_output" | jq . &>/dev/null; then
-        critical=$(echo "$audit_output" | jq '.metadata.vulnerabilities.critical // 0')
-        high=$(echo "$audit_output" | jq '.metadata.vulnerabilities.high // 0')
-        moderate=$(echo "$audit_output" | jq '.metadata.vulnerabilities.moderate // 0')
-        low=$(echo "$audit_output" | jq '.metadata.vulnerabilities.low // 0')
-        total=$(echo "$audit_output" | jq '.metadata.vulnerabilities.total // 0')
+        IFS=$'\t' read -r critical high moderate low total <<< "$(echo "$audit_output" | jq -r '[
+            .metadata.vulnerabilities.critical // 0,
+            .metadata.vulnerabilities.high // 0,
+            .metadata.vulnerabilities.moderate // 0,
+            .metadata.vulnerabilities.low // 0,
+            .metadata.vulnerabilities.total // 0
+        ] | @tsv')"
 
         sec_score=100
         (( sec_score -= critical * 30 )) || true
@@ -52,8 +54,10 @@ if command -v npx &>/dev/null; then
     fi
 
     if [[ -n "$eslint_output" ]] && echo "$eslint_output" | jq . &>/dev/null; then
-        error_count=$(echo "$eslint_output" | jq '[.[] | .errorCount] | add // 0')
-        warning_count=$(echo "$eslint_output" | jq '[.[] | .warningCount] | add // 0')
+        IFS=$'\t' read -r error_count warning_count <<< "$(echo "$eslint_output" | jq -r '[
+            ([.[] | .errorCount] | add // 0),
+            ([.[] | .warningCount] | add // 0)
+        ] | @tsv')"
 
         lint_score=100
         (( lint_score -= error_count * 5 )) || true
@@ -129,8 +133,10 @@ if command -v npm &>/dev/null && [[ -f "package.json" ]]; then
     outdated_output=$(npm outdated --json 2>/dev/null) || true
 
     if [[ -n "$outdated_output" ]] && echo "$outdated_output" | jq . &>/dev/null; then
-        outdated_count=$(echo "$outdated_output" | jq 'length')
-        major_outdated=$(echo "$outdated_output" | jq '[to_entries[] | select(.value.current != .value.latest)] | length')
+        IFS=$'\t' read -r outdated_count major_outdated <<< "$(echo "$outdated_output" | jq -r '[
+            length,
+            ([to_entries[] | select(.value.current != .value.latest)] | length)
+        ] | @tsv')"
 
         dep_score=100
         (( dep_score -= major_outdated * 3 )) || true

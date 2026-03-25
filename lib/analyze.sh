@@ -1406,10 +1406,12 @@ run_fix_phase() {
     # Step 3: Split findings into severity batches
     local -a severity_tiers=()
     local crit_count high_count med_count low_count
-    crit_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "CRITICAL")] | length')
-    high_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "HIGH")] | length')
-    med_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "MEDIUM")] | length')
-    low_count=$(echo "$all_selected" | jq '[.[] | select(.severity == "LOW")] | length')
+    IFS=$'\t' read -r crit_count high_count med_count low_count <<< "$(echo "$all_selected" | jq -r '[
+        ([.[] | select(.severity == "CRITICAL")] | length),
+        ([.[] | select(.severity == "HIGH")] | length),
+        ([.[] | select(.severity == "MEDIUM")] | length),
+        ([.[] | select(.severity == "LOW")] | length)
+    ] | @tsv')"
 
     (( crit_count > 0 )) && severity_tiers+=("CRITICAL")
     (( high_count > 0 )) && severity_tiers+=("HIGH")
