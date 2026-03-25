@@ -3,7 +3,8 @@
 # Outputs JSON array of measurement results
 set -euo pipefail
 
-results='[]'
+# Collect individual JSON objects; combined with a single jq -s call at the end
+_measurements=()
 
 # ---------------------------------------------------------------------------
 # 1. TODO/FIXME/HACK count (quality indicator)
@@ -22,15 +23,14 @@ if (( todo_count > 0 )); then
     if (( todo_score < 0 )); then todo_score=0; fi
 fi
 
-results=$(echo "$results" | jq --argjson s "$todo_score" --argjson c "$todo_count" \
-    '. + [{
-        "category": "quality",
-        "score": $s,
-        "max_score": 100,
-        "details": {"todo_count": $c},
-        "tool": "grep-todos",
-        "raw_output": ""
-    }]')
+_measurements+=("$(jq -n --argjson s "$todo_score" --argjson c "$todo_count" '{
+    "category": "quality",
+    "score": $s,
+    "max_score": 100,
+    "details": {"todo_count": $c},
+    "tool": "grep-todos",
+    "raw_output": ""
+}')")
 
 # ---------------------------------------------------------------------------
 # 2. Git health (uncommitted changes, unpushed commits)
@@ -44,15 +44,14 @@ if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null
     if (( dirty_files > 0 )); then git_score=$(( git_score - 10 )); fi
     if (( unpushed > 5 )); then git_score=$(( git_score - 20 )); fi
 
-    results=$(echo "$results" | jq --argjson s "$git_score" --argjson d "$dirty_files" --argjson u "$unpushed" \
-        '. + [{
-            "category": "quality",
-            "score": $s,
-            "max_score": 100,
-            "details": {"dirty_files": $d, "unpushed_commits": $u},
-            "tool": "git-health",
-            "raw_output": ""
-        }]')
+    _measurements+=("$(jq -n --argjson s "$git_score" --argjson d "$dirty_files" --argjson u "$unpushed" '{
+        "category": "quality",
+        "score": $s,
+        "max_score": 100,
+        "details": {"dirty_files": $d, "unpushed_commits": $u},
+        "tool": "git-health",
+        "raw_output": ""
+    }')")
 fi
 
 # ---------------------------------------------------------------------------
@@ -72,15 +71,14 @@ large_score=100
 if (( large_files > 0 )); then large_score=$(( 100 - (large_files * 10) )); fi
 if (( large_score < 0 )); then large_score=0; fi
 
-results=$(echo "$results" | jq --argjson s "$large_score" --argjson c "$large_files" \
-    '. + [{
-        "category": "performance",
-        "score": $s,
-        "max_score": 100,
-        "details": {"large_files_count": $c},
-        "tool": "file-size-check",
-        "raw_output": ""
-    }]')
+_measurements+=("$(jq -n --argjson s "$large_score" --argjson c "$large_files" '{
+    "category": "performance",
+    "score": $s,
+    "max_score": 100,
+    "details": {"large_files_count": $c},
+    "tool": "file-size-check",
+    "raw_output": ""
+}')")
 
 # ---------------------------------------------------------------------------
 # 4. Security: check for potential secrets in code
@@ -98,15 +96,14 @@ secret_score=100
 if (( secrets_found > 0 )); then secret_score=$(( 100 - (secrets_found * 25) )); fi
 if (( secret_score < 0 )); then secret_score=0; fi
 
-results=$(echo "$results" | jq --argjson s "$secret_score" --argjson c "$secrets_found" \
-    '. + [{
-        "category": "security",
-        "score": $s,
-        "max_score": 100,
-        "details": {"potential_secrets": $c},
-        "tool": "secret-scan",
-        "raw_output": ""
-    }]')
+_measurements+=("$(jq -n --argjson s "$secret_score" --argjson c "$secrets_found" '{
+    "category": "security",
+    "score": $s,
+    "max_score": 100,
+    "details": {"potential_secrets": $c},
+    "tool": "secret-scan",
+    "raw_output": ""
+}')")
 
 # ---------------------------------------------------------------------------
 # 5. Documentation: README exists and has content
@@ -140,15 +137,14 @@ if [[ -f "README.md" ]]; then
     if (( doc_score > 100 )); then doc_score=100; fi
 fi
 
-results=$(echo "$results" | jq --argjson s "$doc_score" \
-    '. + [{
-        "category": "documentation",
-        "score": $s,
-        "max_score": 100,
-        "details": {},
-        "tool": "readme-check",
-        "raw_output": ""
-    }]')
+_measurements+=("$(jq -n --argjson s "$doc_score" '{
+    "category": "documentation",
+    "score": $s,
+    "max_score": 100,
+    "details": {},
+    "tool": "readme-check",
+    "raw_output": ""
+}')")
 
-# Output
-echo "$results"
+# Output: combine all measurements in a single jq call
+printf '%s\n' "${_measurements[@]}" | jq -s '.'

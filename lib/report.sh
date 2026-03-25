@@ -125,8 +125,8 @@ generate_category_comparison() {
 
     for cat in security testing performance quality documentation; do
         local before_val after_val
-        before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add / length) else "-" end' "$before_file" 2>/dev/null)
-        after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c) | .score] | if length > 0 then (add / length) else "-" end' "$after_file" 2>/dev/null)
+        before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add) | tostring) else "-" end' "$before_file" 2>/dev/null)
+        after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add) | tostring) else "-" end' "$after_file" 2>/dev/null)
 
         if [[ "$before_val" != "-" && "$after_val" != "-" && -n "$before_val" && -n "$after_val" ]]; then
             local bv="${before_val%.*}"; bv="${bv:-0}"

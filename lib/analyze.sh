@@ -1310,10 +1310,12 @@ run_fix_phase() {
     fi
     echo $$ > "$lockdir/pid"
 
-    # Cleanup on exit
+    # Cleanup on exit — also calls analyze-phase cleanup to ensure pids/tmpfiles
+    # from the preceding analyze phase are cleaned up if interrupted here.
     _kyzn_fix_cleanup() {
         stop_progress 2>/dev/null
         rm -rf "${lockdir:-}" 2>/dev/null
+        _kyzn_analyze_cleanup 2>/dev/null || true
         trap - EXIT INT TERM
     }
     trap _kyzn_fix_cleanup EXIT INT TERM
@@ -1417,10 +1419,12 @@ run_fix_phase() {
     if [[ -z "$diff_limit" ]]; then
         diff_limit=$(config_get '.preferences.diff_limit' '5000')
         # Ensure analyze default is at least 5000 even if improve's limit is lower
-        if (( diff_limit < 5000 )); then
+        if [[ "$diff_limit" =~ ^[0-9]+$ ]] && (( diff_limit < 5000 )); then
             diff_limit=5000
         fi
     fi
+    # Validate diff_limit is a numeric integer before arithmetic operations
+    [[ "$diff_limit" =~ ^[0-9]+$ ]] || { log_warn "Invalid diff_limit '$diff_limit' — using default 5000"; diff_limit=5000; }
     # Hard ceiling
     if (( diff_limit > 10000 )); then diff_limit=10000; fi
     local cumulative_diff=0

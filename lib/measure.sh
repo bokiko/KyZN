@@ -85,18 +85,20 @@ run_measurer() {
     fi
     rm -f "$stderr_tmp"
 
-    if [[ -n "$output" ]] && echo "$output" | jq . &>/dev/null; then
-        # Measurer may return a single object or array of objects
-        local merged tmp_output
-        tmp_output=$(mktemp)
-        echo "$output" > "$tmp_output"
-        if echo "$output" | jq -e 'type == "array"' &>/dev/null; then
-            merged=$(jq -s '.[0] + .[1]' "$results_file" "$tmp_output")
+    if [[ -n "$output" ]]; then
+        # Validate, check type, and merge in a single jq pass (no tempfile needed)
+        local merged
+        merged=$(echo "$output" | jq -s --slurpfile existing "$results_file" '
+            .[0] as $new |
+            if ($new | type) == "array" then $existing[0] + $new
+            else $existing[0] + [$new]
+            end
+        ' 2>/dev/null) || true
+        if [[ -n "$merged" ]]; then
+            echo "$merged" > "$results_file"
         else
-            merged=$(jq -s '.[0] + [.[1]]' "$results_file" "$tmp_output")
+            log_dim "  (no results from $(basename "$measurer"))"
         fi
-        rm -f "$tmp_output"
-        echo "$merged" > "$results_file"
     else
         log_dim "  (no results from $(basename "$measurer"))"
     fi

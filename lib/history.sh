@@ -304,15 +304,17 @@ cmd_status() {
         echo ""
         log_info "Recent runs:"
         local count=0
-        for f in "$KYZN_HISTORY_DIR"/*.json; do
-            [[ -f "$f" ]] || continue
+        # Use reverse sort so most recent (latest date prefix) appears first
+        local _hist_file
+        while IFS= read -r _hist_file; do
+            [[ -f "$_hist_file" ]] || continue
             if (( count >= 5 )); then break; fi
 
             local run_id status
-            run_id=$(jq -r '.run_id // "unknown"' "$f")
-            status=$(jq -r '.status // "pending"' "$f")
+            run_id=$(jq -r '.run_id // "unknown"' "$_hist_file")
+            status=$(jq -r '.status // "pending"' "$_hist_file")
             echo -e "  $run_id  ($status)"
             ((count++)) || true
-        done
+        done < <(ls -r "$KYZN_HISTORY_DIR"/*.json 2>/dev/null)
     fi
 }
