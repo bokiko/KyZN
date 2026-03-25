@@ -1145,18 +1145,37 @@ test_extract_findings() {
 
     source "$KYZN_ROOT/lib/analyze.sh"
 
-    # Simulate Claude response with embedded JSON
-    local fake_result
-    fake_result=$(jq -n '{result: "Here are my findings:\n```json\n[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]\n```"}')
-
-    local findings
+    # Case 1: direct JSON array in .result field
+    local fake_result findings len
+    fake_result=$(jq -n '{result: "[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]"}')
     findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=0
+    assert_eq "extract_findings direct JSON array" "1" "$len"
 
-    if echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
-        pass "extract_findings returns array"
+    # Case 2: JSON embedded in prose text
+    fake_result=$(jq -n '{result: "I found these issues:\n[\n{\"id\":\"SEC-001\",\"severity\":\"MEDIUM\",\"title\":\"injection\"}\n]\nPlease fix them."}')
+    findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=0
+    if (( len >= 1 )); then
+        pass "extract_findings JSON embedded in prose"
     else
-        fail "extract_findings" "did not return JSON array"
+        fail "extract_findings prose" "expected >=1 findings, got $len"
     fi
+
+    # Case 3: JSON in markdown code fences
+    fake_result=$(jq -n '{result: "Here are my findings:\n```json\n[{\"id\":\"BUG-001\",\"severity\":\"HIGH\",\"title\":\"test\"}]\n```"}')
+    findings=$(extract_findings "$fake_result")
+    if echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
+        pass "extract_findings JSON in code fences returns array"
+    else
+        fail "extract_findings code fences" "did not return JSON array"
+    fi
+
+    # Case 4: invalid/empty response returns empty array
+    fake_result=$(jq -n '{result: "No findings to report."}')
+    findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=-1
+    assert_eq "extract_findings invalid/empty returns []" "0" "$len"
 }
 
 test_generate_fix_prompt() {
@@ -2057,6 +2076,58 @@ test_profile_path_traversal() {
 }
 
 # ---------------------------------------------------------------------------
+# Progress animation lifecycle
+# ---------------------------------------------------------------------------
+test_progress_animation() {
+    log_header "67. progress animation: start/stop lifecycle and no orphan on double-start"
+
+    # Skip in CI or when /dev/tty unavailable — animation needs a tty
+    if [[ ! -e /dev/tty ]]; then
+        skip "progress animation (/dev/tty unavailable)"
+        return
+    fi
+
+    source "$KYZN_ROOT/lib/core.sh"
+
+    # Test 1: start_progress sets PID; process is alive
+    _KYZN_PROGRESS_PID=""
+    start_progress "test" 2>/dev/null || true
+    if [[ -z "$_KYZN_PROGRESS_PID" ]]; then
+        skip "progress animation (not a tty)"
+        return
+    fi
+    local pid1="$_KYZN_PROGRESS_PID"
+    if kill -0 "$pid1" 2>/dev/null; then
+        pass "start_progress spawns live background process"
+    else
+        fail "start_progress PID alive" "process $pid1 is not running"
+    fi
+
+    # Test 2: stop_progress kills the process
+    stop_progress 2>/dev/null || true
+    sleep 0.1
+    if kill -0 "$pid1" 2>/dev/null; then
+        fail "stop_progress kills process" "process $pid1 still running after stop"
+    else
+        pass "stop_progress terminates background process"
+    fi
+
+    # Test 3: double start_progress kills the first before spawning second
+    start_progress "first" 2>/dev/null || true
+    local pid2="$_KYZN_PROGRESS_PID"
+    start_progress "second" 2>/dev/null || true
+    local pid3="$_KYZN_PROGRESS_PID"
+    sleep 0.1
+    if [[ -n "$pid2" ]] && kill -0 "$pid2" 2>/dev/null; then
+        fail "double start kills first process" "first process $pid2 still alive after second start"
+    else
+        pass "double start_progress kills first process before spawning second"
+    fi
+    stop_progress 2>/dev/null || true
+    [[ -n "$pid3" ]] && kill "$pid3" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -2139,6 +2210,7 @@ main() {
     test_xargs_filename_with_spaces
     test_safe_checkout_back_disables_hooks
     test_profile_path_traversal
+    test_progress_animation
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

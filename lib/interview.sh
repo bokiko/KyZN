@@ -250,7 +250,7 @@ save_interview_config() {
 # Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 project:
-  name: "$(project_name)"
+  name: ""
   type: $KYZN_PROJECT_TYPE
 
 preferences:
@@ -264,6 +264,9 @@ preferences:
 focus:
   priorities: $pri_yaml
 EOF
+
+    # Safely write project name via config_set to handle YAML-special chars
+    config_set '.project.name' "$(project_name)"
 
     # Write trust to gitignored local config (prevents config poisoning)
     cat > "$KYZN_LOCAL_CONFIG" <<EOF

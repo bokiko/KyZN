@@ -133,21 +133,21 @@ check_for_updates() {
 
     if $needs_fetch; then
         if command -v timeout &>/dev/null; then
-            timeout 5 git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
+            timeout 5 safe_git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
         else
-            git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
+            safe_git -C "$KYZN_ROOT" fetch origin --quiet 2>/dev/null || true
         fi
         date +%s > "$check_file" 2>/dev/null || true
     fi
 
     # Compare local vs remote
     local local_head remote_head
-    local_head=$(git -C "$KYZN_ROOT" rev-parse HEAD 2>/dev/null) || return
-    remote_head=$(git -C "$KYZN_ROOT" rev-parse origin/main 2>/dev/null) || return
+    local_head=$(safe_git -C "$KYZN_ROOT" rev-parse HEAD 2>/dev/null) || return
+    remote_head=$(safe_git -C "$KYZN_ROOT" rev-parse origin/main 2>/dev/null) || return
 
     if [[ "$local_head" != "$remote_head" ]]; then
         local behind
-        behind=$(git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
+        behind=$(safe_git -C "$KYZN_ROOT" rev-list --count HEAD..origin/main 2>/dev/null) || behind="?"
         # Only warn if actually behind — local-only commits (ahead) are not an update
         if [[ "$behind" != "0" ]]; then
             echo ""

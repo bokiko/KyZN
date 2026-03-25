@@ -10,17 +10,27 @@ generate_report() {
     local after_file="$3"
     local mode="$4"
     local focus="$5"
+    local before_score_param="${6:-}"
+    local after_score_param="${7:-}"
 
     ensure_kyzn_dirs
 
     local report_file="$KYZN_REPORTS_DIR/$run_id.md"
-    # Compute before score fresh from before_file
-    compute_health_score "$before_file"
-    local before_score="${KYZN_HEALTH_SCORE:-0}"
+    local before_score after_score
+    # Use pre-computed scores when provided to avoid redundant compute_health_score calls
+    if [[ -n "$before_score_param" ]]; then
+        before_score="$before_score_param"
+    else
+        compute_health_score "$before_file"
+        before_score="${KYZN_HEALTH_SCORE:-0}"
+    fi
 
-    # Re-compute after score
-    compute_health_score "$after_file"
-    local after_score="${KYZN_HEALTH_SCORE:-0}"
+    if [[ -n "$after_score_param" ]]; then
+        after_score="$after_score_param"
+    else
+        compute_health_score "$after_file"
+        after_score="${KYZN_HEALTH_SCORE:-0}"
+    fi
     local delta=$(( after_score - before_score ))
 
     # Determine trend indicator
@@ -28,10 +38,7 @@ generate_report() {
     if (( delta > 0 )); then trend="↑"; fi
     if (( delta < 0 )); then trend="↓"; fi
 
-    # Generate diff summary (stage temporarily, excluding KyZN artifacts)
-    local _add=0 _del=0 _bin=0
-    count_diff_size _add _del _bin
-    # Re-stage briefly to get --stat output
+    # Stage changes to get diff summary (excluding KyZN artifacts)
     stage_claude_changes
     local diff_stat
     diff_stat=$(git diff --cached --stat HEAD 2>/dev/null || echo "No changes")

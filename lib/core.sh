@@ -102,7 +102,8 @@ config_get() {
     local key="$1"
     local default="${2:-}"
     # Validate key is a safe yq dot-notation path (prevent arbitrary expression injection)
-    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.]+$ ]]; then echo "$default"; return; fi
+    # Brackets allowed for array access (.foo[0]) but dangerous chars (; | ( ) $ ` blocked
+    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.\[\]]+$ ]]; then echo "$default"; return; fi
     if has_config; then
         local val
         val=$(yq eval "$key" "$KYZN_CONFIG" 2>/dev/null)
@@ -120,6 +121,8 @@ config_get() {
 local_config_get() {
     local key="$1"
     local default="${2:-}"
+    # Validate key — same protection as config_get to prevent yq expression injection
+    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.\[\]]+$ ]]; then echo "$default"; return; fi
     if [[ -f "$KYZN_LOCAL_CONFIG" ]]; then
         local val
         val=$(yq eval "$key" "$KYZN_LOCAL_CONFIG" 2>/dev/null)
@@ -137,6 +140,8 @@ local_config_get() {
 config_set() {
     local key="$1"
     local value="$2"
+    # Validate key to prevent arbitrary yq expression injection
+    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.\[\]]+$ ]]; then log_error "Invalid config key: $key"; return 1; fi
     ensure_kyzn_dirs
     if [[ ! -f "$KYZN_CONFIG" ]]; then
         echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
@@ -147,6 +152,17 @@ config_set() {
 # Set a string config value (alias for backward compat)
 config_set_str() {
     config_set "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Safety: git wrapper that disables hooks to prevent RCE from malicious repos
+# ---------------------------------------------------------------------------
+safe_git() {
+    git -c core.hooksPath=/dev/null \
+        -c filter.lfs.process= \
+        -c filter.lfs.smudge= \
+        -c filter.lfs.clean= \
+        "$@"
 }
 
 # ---------------------------------------------------------------------------

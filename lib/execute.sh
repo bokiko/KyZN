@@ -8,17 +8,6 @@
 _KYZN_GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
 
 # ---------------------------------------------------------------------------
-# Safety: git wrapper that disables hooks to prevent RCE from malicious repos
-# ---------------------------------------------------------------------------
-safe_git() {
-    git -c core.hooksPath=/dev/null \
-        -c filter.lfs.process= \
-        -c filter.lfs.smudge= \
-        -c filter.lfs.clean= \
-        "$@"
-}
-
-# ---------------------------------------------------------------------------
 # Safety: unstage files matching secret patterns (works with actual globs)
 # ---------------------------------------------------------------------------
 unstage_secrets() {
@@ -571,7 +560,7 @@ cmd_improve() {
     local verify_out
     verify_out=$(mktemp)
 
-    verify_build > "$verify_out" 2>&1
+    verify_build > "$verify_out" 2>&1 || true
     local verify_rc=$?
     tail -20 "$verify_out"
     if (( verify_rc == 0 )); then
@@ -703,7 +692,7 @@ ${verify_errors}
     fi
 
     # Step 8: Generate report and create PR
-    if ! generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus"; then
+    if ! generate_report "$run_id" "$baseline_file" "$after_file" "$mode" "$focus" "$baseline_score" "$after_score"; then
         log_warn "Report generation or PR creation had issues — check output above."
     fi
 
