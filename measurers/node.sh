@@ -2,7 +2,8 @@
 # kyzn/measurers/node.sh — Node.js/TypeScript measurements
 set -euo pipefail
 
-results='[]'
+# Collect individual JSON objects; combined with a single jq -s call at the end
+_measurements=()
 
 # ---------------------------------------------------------------------------
 # 1. npm audit (security)
@@ -26,10 +27,9 @@ if command -v npm &>/dev/null && [[ -f "package-lock.json" ]]; then
         (( sec_score -= low * 1 )) || true
         if (( sec_score < 0 )); then sec_score=0; fi
 
-        results=$(echo "$results" | jq --argjson s "$sec_score" \
+        _measurements+=("$(jq -n --argjson s "$sec_score" \
             --argjson c "$critical" --argjson h "$high" --argjson m "$moderate" \
-            --argjson l "$low" --argjson t "$total" \
-            '. + [{
+            --argjson l "$low" --argjson t "$total" '{
                 "category": "security",
                 "score": $s,
                 "max_score": 100,
@@ -39,7 +39,7 @@ if command -v npm &>/dev/null && [[ -f "package-lock.json" ]]; then
                 },
                 "tool": "npm-audit",
                 "raw_output": ""
-            }]')
+            }')")
     fi
 fi
 
@@ -64,16 +64,15 @@ if command -v npx &>/dev/null; then
         (( lint_score -= warning_count * 1 )) || true
         if (( lint_score < 0 )); then lint_score=0; fi
 
-        results=$(echo "$results" | jq --argjson s "$lint_score" \
-            --argjson e "$error_count" --argjson w "$warning_count" \
-            '. + [{
+        _measurements+=("$(jq -n --argjson s "$lint_score" \
+            --argjson e "$error_count" --argjson w "$warning_count" '{
                 "category": "quality",
                 "score": $s,
                 "max_score": 100,
                 "details": {"errors": $e, "warnings": $w},
                 "tool": "eslint",
                 "raw_output": ""
-            }]')
+            }')")
     fi
 fi
 
@@ -88,15 +87,14 @@ if command -v npx &>/dev/null && [[ -f "tsconfig.json" ]]; then
     (( ts_score -= tsc_errors * 3 )) || true
     if (( ts_score < 0 )); then ts_score=0; fi
 
-    results=$(echo "$results" | jq --argjson s "$ts_score" --argjson e "$tsc_errors" \
-        '. + [{
-            "category": "quality",
-            "score": $s,
-            "max_score": 100,
-            "details": {"type_errors": $e},
-            "tool": "tsc",
-            "raw_output": ""
-        }]')
+    _measurements+=("$(jq -n --argjson s "$ts_score" --argjson e "$tsc_errors" '{
+        "category": "quality",
+        "score": $s,
+        "max_score": 100,
+        "details": {"type_errors": $e},
+        "tool": "tsc",
+        "raw_output": ""
+    }')")
 fi
 
 # ---------------------------------------------------------------------------
@@ -114,16 +112,15 @@ fi
 if $coverage_found; then
     # Convert to integer
     coverage_int=${coverage_pct%.*}
-    results=$(echo "$results" | jq --argjson s "$coverage_int" \
-        --argjson p "$coverage_int" \
-        '. + [{
-            "category": "testing",
-            "score": $s,
-            "max_score": 100,
-            "details": {"coverage_percent": $p},
-            "tool": "coverage-report",
-            "raw_output": ""
-        }]')
+
+    _measurements+=("$(jq -n --argjson s "$coverage_int" --argjson p "$coverage_int" '{
+        "category": "testing",
+        "score": $s,
+        "max_score": 100,
+        "details": {"coverage_percent": $p},
+        "tool": "coverage-report",
+        "raw_output": ""
+    }')")
 fi
 
 # ---------------------------------------------------------------------------
@@ -142,16 +139,19 @@ if command -v npm &>/dev/null && [[ -f "package.json" ]]; then
         (( dep_score -= major_outdated * 3 )) || true
         if (( dep_score < 0 )); then dep_score=0; fi
 
-        results=$(echo "$results" | jq --argjson s "$dep_score" --argjson c "$outdated_count" \
-            '. + [{
-                "category": "quality",
-                "score": $s,
-                "max_score": 100,
-                "details": {"outdated_packages": $c},
-                "tool": "npm-outdated",
-                "raw_output": ""
-            }]')
+        _measurements+=("$(jq -n --argjson s "$dep_score" --argjson c "$outdated_count" '{
+            "category": "quality",
+            "score": $s,
+            "max_score": 100,
+            "details": {"outdated_packages": $c},
+            "tool": "npm-outdated",
+            "raw_output": ""
+        }')")
     fi
 fi
 
-echo "$results"
+if (( ${#_measurements[@]} > 0 )); then
+    printf '%s\n' "${_measurements[@]}" | jq -s '.'
+else
+    echo '[]'
+fi

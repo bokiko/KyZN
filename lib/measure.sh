@@ -210,36 +210,43 @@ display_health_dashboard() {
     # Category breakdown
     echo -e "${BOLD}Categories:${RESET}"
 
-    local categories=("security" "testing" "performance" "quality" "documentation")
-    for cat in "${categories[@]}"; do
-        local cat_score
-        cat_score=$(printf '%s' "$scores" | jq -r --arg c "$cat" '.[$c] // empty')
+    # Extract all category scores in a single jq call (one TSV row per present category)
+    local _cat_tsv
+    _cat_tsv=$(printf '%s' "$scores" | jq -r '
+        [
+            ["security",      (.security      // empty | tostring)],
+            ["testing",       (.testing       // empty | tostring)],
+            ["performance",   (.performance   // empty | tostring)],
+            ["quality",       (.quality       // empty | tostring)],
+            ["documentation", (.documentation // empty | tostring)]
+        ][] | select(.[1] != "") | @tsv
+    ' 2>/dev/null) || true
 
-        if [[ -n "$cat_score" ]]; then
-            local bar=""
-            local cs_int="${cat_score%%.*}"
-            cs_int="${cs_int:-0}"
-            local filled=$(( cs_int / 5 ))
-            local empty=$(( 20 - filled ))
+    while IFS=$'\t' read -r cat cat_score; do
+        [[ -z "$cat_score" ]] && continue
+        local bar=""
+        local cs_int="${cat_score%%.*}"
+        cs_int="${cs_int:-0}"
+        local filled=$(( cs_int / 5 ))
+        local empty=$(( 20 - filled ))
 
-            # Color per score
-            if (( cs_int >= 80 )); then
-                color="$GREEN"
-            elif (( cs_int >= 50 )); then
-                color="$YELLOW"
-            else
-                color="$RED"
-            fi
-
-            printf -v bar '%*s' "$filled" ''
-            bar="${bar// /█}"
-            local bar_empty
-            printf -v bar_empty '%*s' "$empty" ''
-            bar_empty="${bar_empty// /░}"
-
-            printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cs_int"
+        # Color per score
+        if (( cs_int >= 80 )); then
+            color="$GREEN"
+        elif (( cs_int >= 50 )); then
+            color="$YELLOW"
+        else
+            color="$RED"
         fi
-    done
+
+        printf -v bar '%*s' "$filled" ''
+        bar="${bar// /█}"
+        local bar_empty
+        printf -v bar_empty '%*s' "$empty" ''
+        bar_empty="${bar_empty// /░}"
+
+        printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cs_int"
+    done <<< "$_cat_tsv"
     echo ""
 }
 
