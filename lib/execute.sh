@@ -23,7 +23,7 @@ safe_git() {
 # ---------------------------------------------------------------------------
 unstage_secrets() {
     local staged_secrets
-    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc' || true)
+    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json' || true)
     if [[ -n "$staged_secrets" ]]; then
         echo "$staged_secrets" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"
@@ -34,9 +34,9 @@ unstage_secrets() {
 }
 
 # ---------------------------------------------------------------------------
-# Safety: stage only Claude's changes, excluding KyZN artifacts
+# Internal helper: stage Claude's changes excluding KyZN artifacts (shared logic)
 # ---------------------------------------------------------------------------
-stage_claude_changes() {
+_stage_for_count() {
     # Stage modified tracked files
     safe_git add -u 2>/dev/null
 
@@ -53,6 +53,13 @@ stage_claude_changes() {
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Safety: stage only Claude's changes, excluding KyZN artifacts
+# ---------------------------------------------------------------------------
+stage_claude_changes() {
+    _stage_for_count
 
     # Run safety filters on what's staged
     unstage_secrets
@@ -66,21 +73,8 @@ stage_claude_changes() {
 count_diff_size() {
     local _var_added=$1 _var_deleted=$2 _var_binary=$3
 
-    # Stage temporarily to count
-    safe_git add -u 2>/dev/null
-
-    # Unstage any generated directories that add -u may have picked up
-    git diff --cached --name-only 2>/dev/null \
-        | grep -E "$_KYZN_GENERATED_DIRS" \
-        | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
-
-    local new_files
-    new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_KYZN_GENERATED_DIRS" || true)
-    if [[ -n "$new_files" ]]; then
-        echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
-    fi
+    # Stage temporarily to count (shared logic with stage_claude_changes)
+    _stage_for_count
 
     local numstat
     numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true

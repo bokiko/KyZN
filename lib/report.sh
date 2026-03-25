@@ -123,10 +123,32 @@ generate_category_comparison() {
     echo "| Category | Before | After | Change |"
     echo "|----------|--------|-------|--------|"
 
-    for cat in security testing performance quality documentation; do
-        local before_val after_val
-        before_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add) | tostring) else "-" end' "$before_file" 2>/dev/null)
-        after_val=$(jq -r --arg c "$cat" '[.[] | select(.category == $c)] | if length > 0 then (([.[].score] | add) * 100 / ([.[].max_score] | add) | tostring) else "-" end' "$after_file" 2>/dev/null)
+    # Pre-compute all 5 category scores per file in a single jq call each (10→2 jq spawns)
+    local _jq_expr='. as $data |
+        ["security","testing","performance","quality","documentation"] |
+        map(. as $c |
+            [$data[] | select(.category == $c)] |
+            if length > 0 then
+                (([.[].score] | add) * 100 / ([.[].max_score] | add) | tostring)
+            else "-" end
+        ) | @tsv'
+    local before_tsv after_tsv
+    before_tsv=$(jq -r "$_jq_expr" "$before_file" 2>/dev/null) || before_tsv="-	-	-	-	-"
+    after_tsv=$(jq -r "$_jq_expr" "$after_file" 2>/dev/null) || after_tsv="-	-	-	-	-"
+
+    local bsec btest bperf bqual bdoc asec atest aperf aqual adoc
+    IFS=$'\t' read -r bsec btest bperf bqual bdoc <<< "$before_tsv"
+    IFS=$'\t' read -r asec atest aperf aqual adoc <<< "$after_tsv"
+
+    local _cats=(security testing performance quality documentation)
+    local _bvals=("$bsec" "$btest" "$bperf" "$bqual" "$bdoc")
+    local _avals=("$asec" "$atest" "$aperf" "$aqual" "$adoc")
+
+    local idx=0
+    for cat in "${_cats[@]}"; do
+        local before_val="${_bvals[$idx]}"
+        local after_val="${_avals[$idx]}"
+        ((idx++)) || true
 
         if [[ "$before_val" != "-" && "$after_val" != "-" && -n "$before_val" && -n "$after_val" ]]; then
             local bv="${before_val%.*}"; bv="${bv:-0}"
