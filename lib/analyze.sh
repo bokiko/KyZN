@@ -1533,16 +1533,22 @@ run_fix_phase() {
 
         # Verify after this batch
         local batch_passed=false
-        if verify_build; then
+        local first_verify_out
+        first_verify_out=$(mktemp)
+        if verify_build > "$first_verify_out" 2>&1; then
+            cat "$first_verify_out"
             log_ok "Build/tests pass after $tier batch"
             batch_passed=true
+            rm -f "$first_verify_out"
         else
+            cat "$first_verify_out"
             # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch broke build — attempting self-repair..."
 
-            # Capture verify output (already failed above, just need the text)
+            # Use saved output from first verify_build run (avoids running tests twice)
             local verify_errors
-            verify_errors=$(verify_build 2>&1 | tail -50) || true
+            verify_errors=$(tail -50 "$first_verify_out")
+            rm -f "$first_verify_out"
 
             local retry_budget
             retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
