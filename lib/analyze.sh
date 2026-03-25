@@ -502,14 +502,7 @@ display_findings() {
     echo ""
 
     # One-liner per finding — full details are in the report
-    local i=0
-    while (( i < count )); do
-        local id severity title file
-        id=$(jq -r ".[$i].id // \"F-$((i+1))\"" "$findings_file")
-        severity=$(jq -r ".[$i].severity // \"MEDIUM\"" "$findings_file")
-        title=$(jq -r ".[$i].title // \"Untitled\"" "$findings_file")
-        file=$(jq -r ".[$i].file // \"unknown\"" "$findings_file")
-
+    while IFS=$'\t' read -r id severity title file; do
         local sev_color="$DIM"
         local sev_pad=""
         case "$severity" in
@@ -521,9 +514,7 @@ display_findings() {
 
         printf "  ${sev_color}[%s]${RESET}%s ${BOLD}%s${RESET} — %-50s ${DIM}%s${RESET}\n" \
             "$severity" "$sev_pad" "$id" "$title" "$file"
-
-        ((i++)) || true
-    done
+    done < <(jq -r '.[] | [(.id // "?"), (.severity // "MEDIUM"), (.title // "?"), (.file // "?")] | @tsv' "$findings_file")
     echo ""
 }
 
