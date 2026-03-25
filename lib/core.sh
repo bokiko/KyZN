@@ -140,6 +140,8 @@ local_config_get() {
 config_set() {
     local key="$1"
     local value="$2"
+    # Validate key to prevent arbitrary yq expression injection
+    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.\[\]]+$ ]]; then log_error "Invalid config key: $key"; return 1; fi
     ensure_kyzn_dirs
     if [[ ! -f "$KYZN_CONFIG" ]]; then
         echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
@@ -150,6 +152,17 @@ config_set() {
 # Set a string config value (alias for backward compat)
 config_set_str() {
     config_set "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Safety: git wrapper that disables hooks to prevent RCE from malicious repos
+# ---------------------------------------------------------------------------
+safe_git() {
+    git -c core.hooksPath=/dev/null \
+        -c filter.lfs.process= \
+        -c filter.lfs.smudge= \
+        -c filter.lfs.clean= \
+        "$@"
 }
 
 # ---------------------------------------------------------------------------

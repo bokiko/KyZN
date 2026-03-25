@@ -10,17 +10,27 @@ generate_report() {
     local after_file="$3"
     local mode="$4"
     local focus="$5"
+    local before_score_param="${6:-}"
+    local after_score_param="${7:-}"
 
     ensure_kyzn_dirs
 
     local report_file="$KYZN_REPORTS_DIR/$run_id.md"
-    # Compute before score fresh from before_file
-    compute_health_score "$before_file"
-    local before_score="${KYZN_HEALTH_SCORE:-0}"
+    local before_score after_score
+    # Use pre-computed scores when provided to avoid redundant compute_health_score calls
+    if [[ -n "$before_score_param" ]]; then
+        before_score="$before_score_param"
+    else
+        compute_health_score "$before_file"
+        before_score="${KYZN_HEALTH_SCORE:-0}"
+    fi
 
-    # Re-compute after score
-    compute_health_score "$after_file"
-    local after_score="${KYZN_HEALTH_SCORE:-0}"
+    if [[ -n "$after_score_param" ]]; then
+        after_score="$after_score_param"
+    else
+        compute_health_score "$after_file"
+        after_score="${KYZN_HEALTH_SCORE:-0}"
+    fi
     local delta=$(( after_score - before_score ))
 
     # Determine trend indicator
