@@ -230,10 +230,17 @@ save_interview_config() {
     # Detect project info
     detect_project_type
 
-    # Build priorities YAML array
+    # Build priorities YAML array (validate against whitelist to prevent YAML injection)
+    local -a valid_priorities=("security" "testing" "performance" "quality" "documentation")
     local pri_yaml="["
     local first=true
     for p in "${priorities[@]}"; do
+        local valid=false
+        local vp
+        for vp in "${valid_priorities[@]}"; do
+            if [[ "$p" == "$vp" ]]; then valid=true; break; fi
+        done
+        $valid || continue
         if $first; then
             pri_yaml+="\"$p\""
             first=false

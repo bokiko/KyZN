@@ -1529,6 +1529,7 @@ run_fix_phase() {
                 log_error "$tier batch failed — skipping"
             fi
             rm -f "$fix_stderr"
+            [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
             continue
         }

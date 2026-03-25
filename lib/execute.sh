@@ -62,18 +62,26 @@ stage_claude_changes() {
 count_diff_size() {
     local _var_added=$1 _var_deleted=$2 _var_binary=$3
 
-    # Stage temporarily to count (shared logic with stage_claude_changes)
-    _stage_for_count
-
+    # Count tracked changes without touching the index (avoids expensive add+reset cycle)
     local numstat
-    numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
-    safe_git reset -q HEAD 2>/dev/null || true
+    numstat=$(git diff HEAD --numstat 2>/dev/null | \
+        grep -vE "$_KYZN_GENERATED_DIRS" | \
+        grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
+
+    # Also count new untracked files (excluding KyZN artifacts and generated dirs)
+    local new_files_stat
+    new_files_stat=$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
+        | grep -vE "$_KYZN_GENERATED_DIRS" \
+        | awk '{print "1\t0\t" $0}' || true)
+
+    local combined="${numstat}"$'\n'"${new_files_stat}"
 
     local added=0 deleted=0 binary=0
-    if [[ -n "$numstat" ]]; then
-        added=$(echo "$numstat" | awk '{sum+=$1} END {print sum+0}')
-        deleted=$(echo "$numstat" | awk '{sum+=$2} END {print sum+0}')
-        binary=$(echo "$numstat" | grep -c '^-' 2>/dev/null) || true
+    if [[ -n "$combined" ]]; then
+        added=$(echo "$combined" | awk '/^[0-9]/ {sum+=$1} END {print sum+0}')
+        deleted=$(echo "$combined" | awk '/^[0-9]/ {sum+=$2} END {print sum+0}')
+        binary=$(echo "$combined" | grep -c '^-' 2>/dev/null) || true
     fi
 
     printf -v "$_var_added" '%s' "$added"
@@ -173,7 +181,13 @@ check_symlink_escapes() {
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
 
     local escaping
-    escaping=$(find . -type l 2>/dev/null | while IFS= read -r link; do
+    escaping=$(find . -type l \
+        -not -path './node_modules/*' \
+        -not -path './.venv/*' \
+        -not -path './vendor/*' \
+        -not -path './target/*' \
+        -not -path './.git/*' \
+        2>/dev/null | while IFS= read -r link; do
         local target
         target=$(readlink -f "$link" 2>/dev/null) || continue
         # Allow symlinks whose resolved target is within the repo root
@@ -496,7 +510,6 @@ cmd_improve() {
     local prompt
     prompt=$(assemble_prompt "$baseline_file" "$mode" "$focus" "$KYZN_PROJECT_TYPE")
 
-    local sys_prompt_file
     # Pick profile based on focus
     local profile=""
     case "$focus" in
@@ -560,8 +573,8 @@ cmd_improve() {
     local verify_out
     verify_out=$(mktemp)
 
-    verify_build > "$verify_out" 2>&1 || true
-    local verify_rc=$?
+    local verify_rc=0
+    verify_build > "$verify_out" 2>&1 || verify_rc=$?
     tail -20 "$verify_out"
     if (( verify_rc == 0 )); then
         log_ok "Build and tests passed!"
@@ -649,7 +662,6 @@ ${verify_errors}
     fi
 
     # Step 7: Re-measure
-    local after_dir
     after_dir=$(mktemp -d)
     run_measurements "$KYZN_PROJECT_TYPE" "$after_dir"
     local after_file="$KYZN_MEASUREMENTS_FILE"

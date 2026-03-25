@@ -266,7 +266,7 @@ cmd_diff() {
 
     # Try to find the branch (use fixed-string grep to prevent regex injection)
     local branch
-    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -F "$run_id" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
+    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -E "${run_id}\$" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
 
     if [[ -n "$branch" ]]; then
         git diff "main...$branch" 2>/dev/null || git diff "master...$branch" 2>/dev/null
@@ -299,23 +299,23 @@ cmd_status() {
 
     run_measurements "$KYZN_PROJECT_TYPE"
     display_health_dashboard "$KYZN_MEASUREMENTS_FILE"
+    # Clean up temp measurement dir created by run_measurements (if any)
+    [[ -d "${KYZN_MEASUREMENTS_DIR:-}" ]] && rm -rf "$KYZN_MEASUREMENTS_DIR" 2>/dev/null || true
+    KYZN_MEASUREMENTS_DIR=""
 
     # Show recent history
     if [[ -d "$KYZN_HISTORY_DIR" ]] && [[ -n "$(ls -A "$KYZN_HISTORY_DIR" 2>/dev/null)" ]]; then
         echo ""
         log_info "Recent runs:"
-        local count=0
-        # Use reverse sort so most recent (latest date prefix) appears first
-        local _hist_file
-        while IFS= read -r _hist_file; do
-            [[ -f "$_hist_file" ]] || continue
-            if (( count >= 5 )); then break; fi
-
-            local run_id status
-            run_id=$(jq -r '.run_id // "unknown"' "$_hist_file")
-            status=$(jq -r '.status // "pending"' "$_hist_file")
+        # Batch: single jq -s call for all entries, limit to 5 most recent
+        local _status_tsv
+        _status_tsv=$(ls -r "$KYZN_HISTORY_DIR"/*.json 2>/dev/null | head -5 | xargs cat 2>/dev/null | jq -s '
+            [.[] | select(. != null and type == "object")]
+            | .[] | [(.run_id // "unknown"), (.status // "pending")] | @tsv
+        ' -r 2>/dev/null) || true
+        while IFS=$'\t' read -r run_id status; do
+            [[ -z "$run_id" ]] && continue
             echo -e "  $run_id  ($status)"
-            ((count++)) || true
-        done < <(ls -r "$KYZN_HISTORY_DIR"/*.json 2>/dev/null)
+        done <<< "$_status_tsv"
     fi
 }

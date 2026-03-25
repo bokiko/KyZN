@@ -10,6 +10,7 @@ run_measurements() {
 
     if [[ -z "$output_dir" ]]; then
         output_dir=$(mktemp -d)
+        KYZN_MEASUREMENTS_DIR="$output_dir"
     fi
 
     log_header "KyZN measure — analyzing project health"
@@ -142,12 +143,26 @@ compute_health_score() {
     local total_score=0
     local total_weight=0
 
+    # Read all weights upfront to avoid spawning yq once per category
+    local w_security w_testing w_performance w_quality w_documentation
+    w_security=$(_kyzn_weight security)
+    w_testing=$(_kyzn_weight testing)
+    w_performance=$(_kyzn_weight performance)
+    w_quality=$(_kyzn_weight quality)
+    w_documentation=$(_kyzn_weight documentation)
+
     for cat in security testing performance quality documentation; do
         local pct
         pct=$(echo "$category_scores" | jq -r --arg c "$cat" '.[$c] // empty')
         if [[ -n "$pct" ]]; then
             local weight
-            weight=$(_kyzn_weight "$cat")
+            case "$cat" in
+                security)      weight=$w_security ;;
+                testing)       weight=$w_testing ;;
+                performance)   weight=$w_performance ;;
+                quality)       weight=$w_quality ;;
+                documentation) weight=$w_documentation ;;
+            esac
             # jq may return floats, round properly
             local pct_int
             pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo "${pct%.*}")
@@ -195,36 +210,43 @@ display_health_dashboard() {
     # Category breakdown
     echo -e "${BOLD}Categories:${RESET}"
 
-    local categories=("security" "testing" "performance" "quality" "documentation")
-    for cat in "${categories[@]}"; do
-        local cat_score
-        cat_score=$(printf '%s' "$scores" | jq -r --arg c "$cat" '.[$c] // empty')
+    # Extract all category scores in a single jq call (one TSV row per present category)
+    local _cat_tsv
+    _cat_tsv=$(printf '%s' "$scores" | jq -r '
+        [
+            ["security",      (.security      // empty | tostring)],
+            ["testing",       (.testing       // empty | tostring)],
+            ["performance",   (.performance   // empty | tostring)],
+            ["quality",       (.quality       // empty | tostring)],
+            ["documentation", (.documentation // empty | tostring)]
+        ][] | select(.[1] != "") | @tsv
+    ' 2>/dev/null) || true
 
-        if [[ -n "$cat_score" ]]; then
-            local bar=""
-            local cs_int="${cat_score%%.*}"
-            cs_int="${cs_int:-0}"
-            local filled=$(( cs_int / 5 ))
-            local empty=$(( 20 - filled ))
+    while IFS=$'\t' read -r cat cat_score; do
+        [[ -z "$cat_score" ]] && continue
+        local bar=""
+        local cs_int="${cat_score%%.*}"
+        cs_int="${cs_int:-0}"
+        local filled=$(( cs_int / 5 ))
+        local empty=$(( 20 - filled ))
 
-            # Color per score
-            if (( cs_int >= 80 )); then
-                color="$GREEN"
-            elif (( cs_int >= 50 )); then
-                color="$YELLOW"
-            else
-                color="$RED"
-            fi
-
-            printf -v bar '%*s' "$filled" ''
-            bar="${bar// /█}"
-            local bar_empty
-            printf -v bar_empty '%*s' "$empty" ''
-            bar_empty="${bar_empty// /░}"
-
-            printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cs_int"
+        # Color per score
+        if (( cs_int >= 80 )); then
+            color="$GREEN"
+        elif (( cs_int >= 50 )); then
+            color="$YELLOW"
+        else
+            color="$RED"
         fi
-    done
+
+        printf -v bar '%*s' "$filled" ''
+        bar="${bar// /█}"
+        local bar_empty
+        printf -v bar_empty '%*s' "$empty" ''
+        bar_empty="${bar_empty// /░}"
+
+        printf "  %-15s ${color}%s%s${RESET} %3d%%\n" "$cat" "$bar" "$bar_empty" "$cs_int"
+    done <<< "$_cat_tsv"
     echo ""
 }
 
@@ -259,4 +281,8 @@ cmd_measure() {
     ensure_kyzn_dirs
     declare -A _hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
     write_history "measure-$(date +%Y%m%d-%H%M%S)" "measure" "completed" _hist
+
+    # Clean up temp measurement dir created by run_measurements (if any)
+    [[ -d "${KYZN_MEASUREMENTS_DIR:-}" ]] && rm -rf "$KYZN_MEASUREMENTS_DIR" 2>/dev/null || true
+    KYZN_MEASUREMENTS_DIR=""
 }
