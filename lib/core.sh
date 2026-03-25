@@ -263,13 +263,20 @@ if ! command -v timeout &>/dev/null; then
         local secs="$1"; shift
         "$@" &
         local pid=$!
-        ( sleep "$secs" && kill "$pid" 2>/dev/null ) &
+        ( sleep "$secs" && kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null ) &
         local watcher=$!
         wait "$pid" 2>/dev/null
         local ret=$?
-        kill "$watcher" 2>/dev/null
-        wait "$watcher" 2>/dev/null
-        return $ret
+        if kill -0 "$watcher" 2>/dev/null; then
+            # Process finished before timeout — cancel watcher
+            kill "$watcher" 2>/dev/null
+            wait "$watcher" 2>/dev/null
+            return $ret
+        else
+            # Watcher already exited = timeout fired
+            wait "$watcher" 2>/dev/null
+            return 124
+        fi
     }
 fi
 

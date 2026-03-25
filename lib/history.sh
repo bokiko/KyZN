@@ -299,6 +299,9 @@ cmd_status() {
 
     run_measurements "$KYZN_PROJECT_TYPE"
     display_health_dashboard "$KYZN_MEASUREMENTS_FILE"
+    # Clean up temp measurement dir created by run_measurements (if any)
+    [[ -d "${KYZN_MEASUREMENTS_DIR:-}" ]] && rm -rf "$KYZN_MEASUREMENTS_DIR" 2>/dev/null || true
+    KYZN_MEASUREMENTS_DIR=""
 
     # Show recent history
     if [[ -d "$KYZN_HISTORY_DIR" ]] && [[ -n "$(ls -A "$KYZN_HISTORY_DIR" 2>/dev/null)" ]]; then

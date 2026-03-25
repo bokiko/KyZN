@@ -10,6 +10,7 @@ run_measurements() {
 
     if [[ -z "$output_dir" ]]; then
         output_dir=$(mktemp -d)
+        KYZN_MEASUREMENTS_DIR="$output_dir"
     fi
 
     log_header "KyZN measure — analyzing project health"
@@ -142,12 +143,26 @@ compute_health_score() {
     local total_score=0
     local total_weight=0
 
+    # Read all weights upfront to avoid spawning yq once per category
+    local w_security w_testing w_performance w_quality w_documentation
+    w_security=$(_kyzn_weight security)
+    w_testing=$(_kyzn_weight testing)
+    w_performance=$(_kyzn_weight performance)
+    w_quality=$(_kyzn_weight quality)
+    w_documentation=$(_kyzn_weight documentation)
+
     for cat in security testing performance quality documentation; do
         local pct
         pct=$(echo "$category_scores" | jq -r --arg c "$cat" '.[$c] // empty')
         if [[ -n "$pct" ]]; then
             local weight
-            weight=$(_kyzn_weight "$cat")
+            case "$cat" in
+                security)      weight=$w_security ;;
+                testing)       weight=$w_testing ;;
+                performance)   weight=$w_performance ;;
+                quality)       weight=$w_quality ;;
+                documentation) weight=$w_documentation ;;
+            esac
             # jq may return floats, round properly
             local pct_int
             pct_int=$(printf '%.0f' "$pct" 2>/dev/null || echo "${pct%.*}")
@@ -259,4 +274,8 @@ cmd_measure() {
     ensure_kyzn_dirs
     declare -A _hist=([health_score]="${KYZN_HEALTH_SCORE:-0}")
     write_history "measure-$(date +%Y%m%d-%H%M%S)" "measure" "completed" _hist
+
+    # Clean up temp measurement dir created by run_measurements (if any)
+    [[ -d "${KYZN_MEASUREMENTS_DIR:-}" ]] && rm -rf "$KYZN_MEASUREMENTS_DIR" 2>/dev/null || true
+    KYZN_MEASUREMENTS_DIR=""
 }

@@ -2076,6 +2076,39 @@ test_profile_path_traversal() {
 }
 
 # ---------------------------------------------------------------------------
+# Security: check_symlink_escapes coverage
+# ---------------------------------------------------------------------------
+test_check_symlink_escapes() {
+    log_header "68. check_symlink_escapes blocks symlinks pointing outside repo"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    # Test 1: symlink pointing outside repo is rejected
+    create_sandbox generic
+    ln -s /tmp escape_link
+    local exit_code=0
+    check_symlink_escapes 2>/dev/null || exit_code=$?
+    if (( exit_code != 0 )); then
+        pass "escaping symlink rejected (exit $exit_code)"
+    else
+        fail "escaping symlink check" "check_symlink_escapes returned 0 for /tmp symlink"
+    fi
+    cleanup_sandbox
+
+    # Test 2: symlink pointing within the repo is allowed
+    create_sandbox generic
+    ln -s scripts/run.sh internal_link
+    exit_code=0
+    check_symlink_escapes 2>/dev/null || exit_code=$?
+    if (( exit_code == 0 )); then
+        pass "internal symlink allowed"
+    else
+        fail "internal symlink check" "check_symlink_escapes rejected an internal symlink"
+    fi
+    cleanup_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Progress animation lifecycle
 # ---------------------------------------------------------------------------
 test_progress_animation() {
@@ -2210,6 +2243,7 @@ main() {
     test_xargs_filename_with_spaces
     test_safe_checkout_back_disables_hooks
     test_profile_path_traversal
+    test_check_symlink_escapes
     test_progress_animation
 
     # Stress tests
