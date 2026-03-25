@@ -560,8 +560,8 @@ cmd_improve() {
     local verify_out
     verify_out=$(mktemp)
 
-    verify_build > "$verify_out" 2>&1 || true
-    local verify_rc=$?
+    local verify_rc=0
+    verify_build > "$verify_out" 2>&1 || verify_rc=$?
     tail -20 "$verify_out"
     if (( verify_rc == 0 )); then
         log_ok "Build and tests passed!"
