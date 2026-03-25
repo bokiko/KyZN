@@ -10,7 +10,7 @@ cmd_history() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --global) global=true; shift ;;
-            *)        shift ;;
+            *) log_error "Unknown option: $1"; return 1 ;;
         esac
     done
 
@@ -190,16 +190,21 @@ cmd_dashboard() {
     printf "${BOLD}%-16s %-12s %-10s %s${RESET}\n" "PROJECT" "LAST RUN" "TYPE" "RESULT"
     printf "%-16s %-12s %-10s %s\n" "───────────────" "───────────" "─────────" "──────────────────────"
 
-    local i=0
-    while (( i < count )); do
-        local proj type status ts hb ha fc
-        proj=$(echo "$dashboard_data" | jq -r ".[$i].project")
-        type=$(echo "$dashboard_data" | jq -r ".[$i].type // \"-\"")
-        status=$(echo "$dashboard_data" | jq -r ".[$i].status // \"-\"")
-        ts=$(echo "$dashboard_data" | jq -r ".[$i].ts // .[$i].timestamp // .[$i].created_at // \"\"")
-        hb=$(echo "$dashboard_data" | jq -r ".[$i].health_before // \"\"")
-        ha=$(echo "$dashboard_data" | jq -r ".[$i].health_after // \"\"")
-        fc=$(echo "$dashboard_data" | jq -r ".[$i].finding_count // \"\"")
+    # Batch: single jq call → TSV (proj, type, status, ts, hb, ha, fc, hs)
+    local _dash_tsv
+    _dash_tsv=$(echo "$dashboard_data" | jq -r '.[] | [
+        (.project // "-"),
+        (.type // "-"),
+        (.status // "-"),
+        (.ts // .timestamp // .created_at // ""),
+        (.health_before // "" | tostring),
+        (.health_after // "" | tostring),
+        (.finding_count // "" | tostring),
+        (.health_score // "" | tostring)
+    ] | @tsv' 2>/dev/null) || _dash_tsv=""
+
+    while IFS=$'\t' read -r proj type status ts hb ha fc hs; do
+        [[ -z "$proj" || "$proj" == "-" ]] && continue
 
         local rel
         rel=$(relative_time "$ts")
@@ -221,8 +226,6 @@ cmd_dashboard() {
                 else result="$status"
                 fi ;;
             measure)
-                local hs
-                hs=$(echo "$dashboard_data" | jq -r ".[$i].health_score // \"\"")
                 if [[ -n "$hs" ]]; then result="health ${hs}/100"
                 else result="$status"
                 fi ;;
@@ -237,9 +240,7 @@ cmd_dashboard() {
 
         printf "%-16s %-12s %-10s " "$(truncate_str "$proj" 15)" "$rel" "$type"
         echo -e "$result"
-
-        ((i++)) || true
-    done
+    done <<< "$_dash_tsv"
 
     echo ""
     echo -e "  ${DIM}Run ${CYAN}kyzn history${RESET}${DIM} inside a project for detailed run history.${RESET}"
@@ -304,15 +305,17 @@ cmd_status() {
         echo ""
         log_info "Recent runs:"
         local count=0
-        for f in "$KYZN_HISTORY_DIR"/*.json; do
-            [[ -f "$f" ]] || continue
+        # Use reverse sort so most recent (latest date prefix) appears first
+        local _hist_file
+        while IFS= read -r _hist_file; do
+            [[ -f "$_hist_file" ]] || continue
             if (( count >= 5 )); then break; fi
 
             local run_id status
-            run_id=$(jq -r '.run_id // "unknown"' "$f")
-            status=$(jq -r '.status // "pending"' "$f")
+            run_id=$(jq -r '.run_id // "unknown"' "$_hist_file")
+            status=$(jq -r '.status // "pending"' "$_hist_file")
             echo -e "  $run_id  ($status)"
             ((count++)) || true
-        done
+        done < <(ls -r "$KYZN_HISTORY_DIR"/*.json 2>/dev/null)
     fi
 }

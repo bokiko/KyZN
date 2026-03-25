@@ -2,6 +2,12 @@
 # kyzn/lib/execute.sh — Claude Code invocation + safety
 
 # ---------------------------------------------------------------------------
+# Module-level constant: generated/dependency directory pattern
+# (defined once here; referenced in stage_claude_changes and count_diff_size)
+# ---------------------------------------------------------------------------
+_KYZN_GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
+
+# ---------------------------------------------------------------------------
 # Safety: git wrapper that disables hooks to prevent RCE from malicious repos
 # ---------------------------------------------------------------------------
 safe_git() {
@@ -17,7 +23,7 @@ safe_git() {
 # ---------------------------------------------------------------------------
 unstage_secrets() {
     local staged_secrets
-    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc' || true)
+    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json' || true)
     if [[ -n "$staged_secrets" ]]; then
         echo "$staged_secrets" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"
@@ -28,29 +34,32 @@ unstage_secrets() {
 }
 
 # ---------------------------------------------------------------------------
-# Safety: stage only Claude's changes, excluding KyZN artifacts
+# Internal helper: stage Claude's changes excluding KyZN artifacts (shared logic)
 # ---------------------------------------------------------------------------
-stage_claude_changes() {
-    # Common generated/dependency directories that must never be staged,
-    # even when the repo lacks a .gitignore (which would normally exclude them).
-    local _GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
-
+_stage_for_count() {
     # Stage modified tracked files
     safe_git add -u 2>/dev/null
 
     # Unstage any generated directories that add -u may have picked up
     git diff --cached --name-only 2>/dev/null \
-        | grep -E "$_GENERATED_DIRS" \
+        | grep -E "$_KYZN_GENERATED_DIRS" \
         | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
 
     # Stage new files Claude created, excluding KyZN artifacts and generated dirs
     local new_files
     new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
         | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_GENERATED_DIRS" || true)
+        | grep -vE "$_KYZN_GENERATED_DIRS" || true)
     if [[ -n "$new_files" ]]; then
         echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Safety: stage only Claude's changes, excluding KyZN artifacts
+# ---------------------------------------------------------------------------
+stage_claude_changes() {
+    _stage_for_count
 
     # Run safety filters on what's staged
     unstage_secrets
@@ -63,23 +72,9 @@ stage_claude_changes() {
 # ---------------------------------------------------------------------------
 count_diff_size() {
     local _var_added=$1 _var_deleted=$2 _var_binary=$3
-    local _GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
 
-    # Stage temporarily to count
-    safe_git add -u 2>/dev/null
-
-    # Unstage any generated directories that add -u may have picked up
-    git diff --cached --name-only 2>/dev/null \
-        | grep -E "$_GENERATED_DIRS" \
-        | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
-
-    local new_files
-    new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_GENERATED_DIRS" || true)
-    if [[ -n "$new_files" ]]; then
-        echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
-    fi
+    # Stage temporarily to count (shared logic with stage_claude_changes)
+    _stage_for_count
 
     local numstat
     numstat=$(git diff --cached --numstat HEAD 2>/dev/null) || true
@@ -182,6 +177,34 @@ safe_checkout_back() {
 }
 
 # ---------------------------------------------------------------------------
+# Safety: detect symlinks that escape the repository root (symlink exfiltration)
+# ---------------------------------------------------------------------------
+check_symlink_escapes() {
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+
+    local escaping
+    escaping=$(find . -type l 2>/dev/null | while IFS= read -r link; do
+        local target
+        target=$(readlink -f "$link" 2>/dev/null) || continue
+        # Allow symlinks whose resolved target is within the repo root
+        if [[ "$target" != "$repo_root"/* && "$target" != "$repo_root" ]]; then
+            echo "$link -> $target"
+        fi
+    done)
+
+    if [[ -n "$escaping" ]]; then
+        log_error "Repository contains symlinks pointing outside the repo root:"
+        echo "$escaping" | while IFS= read -r line; do
+            log_dim "  $line"
+        done
+        log_error "Aborting: symlinks could bypass disallowedFileGlobs restrictions."
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Execute Claude Code with safety layers
 # ---------------------------------------------------------------------------
 execute_claude() {
@@ -196,6 +219,9 @@ execute_claude() {
     # Build allowlist
     local -a allowlist_arr=()
     build_allowlist allowlist_arr "$project_type"
+
+    # Pre-flight: reject symlinks that escape the repo root (prevents secret exfiltration)
+    check_symlink_escapes || return 1
 
     log_step "Invoking Claude Code (model: $model, budget: \$$budget, max turns: $max_turns)..."
 
@@ -304,6 +330,8 @@ cmd_improve() {
             # Stale lock — previous run crashed or was interrupted
             log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
             rm -rf "$lockdir"
+            # Brief delay before retry to narrow the TOCTOU window
+            sleep 0.1
             mkdir "$lockdir" 2>/dev/null || { log_error "Another KyZN improve is already running on this repo."; return 1; }
         else
             log_error "Another KyZN improve is already running on this repo (PID: $stale_pid)."
@@ -373,6 +401,10 @@ cmd_improve() {
         log_warn "Invalid budget '$budget' — using default 2.50"
         budget="2.50"
     fi
+
+    # Validate max_turns and diff_limit are numeric integers
+    [[ "$max_turns" =~ ^[0-9]+$ ]] || { log_warn "Invalid max_turns '$max_turns' — using default 30"; max_turns=30; }
+    [[ "$diff_limit" =~ ^[0-9]+$ ]] || { log_warn "Invalid diff_limit '$diff_limit' — using default 2000"; diff_limit=2000; }
 
     # Enforce hard ceilings (prevents config poisoning)
     enforce_config_ceilings budget max_turns diff_limit
@@ -539,7 +571,10 @@ cmd_improve() {
     local verify_out
     verify_out=$(mktemp)
 
-    if verify_build 2>&1 | tee "$verify_out" | tail -20; then
+    verify_build > "$verify_out" 2>&1
+    local verify_rc=$?
+    tail -20 "$verify_out"
+    if (( verify_rc == 0 )); then
         log_ok "Build and tests passed!"
         rm -f "$verify_errors_file" "$verify_out"
     else

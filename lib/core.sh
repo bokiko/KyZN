@@ -43,7 +43,7 @@ KYZN_PROFILE_CACHE="$KYZN_DIR/repo-profile.md"
 
 # Sensitive file access restrictions (single constant — used by execute.sh + analyze.sh)
 # Note: ~ is expanded to $HOME at runtime to ensure Claude Code resolves home directory paths
-KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["**/.git/**","~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**"]}}'
+KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["**/.git/**","~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**","**/*.tfstate","**/*.tfstate.backup","**/.credentials"]}}'
 KYZN_SETTINGS_JSON="${KYZN_SETTINGS_JSON//\~/$HOME}"
 
 # Ensure .kyzn directories exist (restrictive permissions for global dirs)
@@ -101,6 +101,8 @@ has_config() {
 config_get() {
     local key="$1"
     local default="${2:-}"
+    # Validate key is a safe yq dot-notation path (prevent arbitrary expression injection)
+    if [[ ! "$key" =~ ^\.[a-zA-Z0-9_.]+$ ]]; then echo "$default"; return; fi
     if has_config; then
         local val
         val=$(yq eval "$key" "$KYZN_CONFIG" 2>/dev/null)

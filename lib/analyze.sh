@@ -462,6 +462,12 @@ Be specific — reference actual file names and patterns you observed. Do not gu
 display_findings() {
     local findings_file="$1"
     local report_path="${2:-kyzn-report.md}"
+    # Optional pre-computed severity counts (args 3-6) — computed from file if absent
+    local critical="${3:-}"
+    local high="${4:-}"
+    local medium="${5:-}"
+    local low="${6:-}"
+
     local count
     count=$(jq 'length' "$findings_file")
 
@@ -483,12 +489,13 @@ display_findings() {
     local title_col=$(( term_width - indent - id_col - gap - file_col - gap ))
     if (( title_col < 20 )); then title_col=20; fi
 
-    # Severity counts
-    local critical high medium low
-    critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
-    high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
-    medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
-    low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+    # Severity counts (use pre-computed values if provided)
+    if [[ -z "$critical" ]]; then
+        critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
+        high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
+        medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
+        low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+    fi
 
     echo ""
     echo -e "  ${BOLD}Analysis Findings${RESET} — $count issues"
@@ -1148,7 +1155,17 @@ cmd_analyze() {
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
     local report_basename
     report_basename=$(basename "$report_file")
-    generate_detailed_report "$findings_file" "$report_file" "$run_id" "$profile" "$total_cost" "$finding_count"
+    # Compute severity counts once (shared by generate_detailed_report + display_findings)
+    local _sev_counts _sev_c _sev_h _sev_m _sev_l
+    _sev_counts=$(jq -r '[
+        [.[] | select(.severity == "CRITICAL")] | length,
+        [.[] | select(.severity == "HIGH")] | length,
+        [.[] | select(.severity == "MEDIUM")] | length,
+        [.[] | select(.severity == "LOW")] | length
+    ] | @tsv' "$findings_file" 2>/dev/null) || _sev_counts="0	0	0	0"
+    IFS=$'\t' read -r _sev_c _sev_h _sev_m _sev_l <<< "$_sev_counts"
+
+    generate_detailed_report "$findings_file" "$report_file" "$run_id" "$profile" "$total_cost" "$finding_count" "$_sev_c" "$_sev_h" "$_sev_m" "$_sev_l"
 
     # Copy report to project root for easy access (archive stays in .kyzn/)
     local root_report="kyzn-report.md"
@@ -1160,7 +1177,7 @@ cmd_analyze() {
     log_dim "  JSON:    $findings_file"
 
     # Display compact findings summary in terminal
-    display_findings "$findings_file"
+    display_findings "$findings_file" "" "$_sev_c" "$_sev_h" "$_sev_m" "$_sev_l"
 
     # Export if requested
     if [[ -n "$export_path" ]]; then
@@ -1194,12 +1211,18 @@ generate_detailed_report() {
     local profile="$4"
     local total_cost="$5"
     local finding_count="$6"
+    # Optional pre-computed severity counts (args 7-10) — computed from file if absent
+    local critical="${7:-}"
+    local high="${8:-}"
+    local medium="${9:-}"
+    local low="${10:-}"
 
-    local critical high medium low
-    critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
-    high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
-    medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
-    low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+    if [[ -z "$critical" ]]; then
+        critical=$(jq '[.[] | select(.severity == "CRITICAL")] | length' "$findings_file")
+        high=$(jq '[.[] | select(.severity == "HIGH")] | length' "$findings_file")
+        medium=$(jq '[.[] | select(.severity == "MEDIUM")] | length' "$findings_file")
+        low=$(jq '[.[] | select(.severity == "LOW")] | length' "$findings_file")
+    fi
 
     {
         echo "# KyZN Deep Analysis Report"
@@ -1310,10 +1333,12 @@ run_fix_phase() {
     fi
     echo $$ > "$lockdir/pid"
 
-    # Cleanup on exit
+    # Cleanup on exit — also calls analyze-phase cleanup to ensure pids/tmpfiles
+    # from the preceding analyze phase are cleaned up if interrupted here.
     _kyzn_fix_cleanup() {
         stop_progress 2>/dev/null
         rm -rf "${lockdir:-}" 2>/dev/null
+        _kyzn_analyze_cleanup 2>/dev/null || true
         trap - EXIT INT TERM
     }
     trap _kyzn_fix_cleanup EXIT INT TERM
@@ -1417,10 +1442,12 @@ run_fix_phase() {
     if [[ -z "$diff_limit" ]]; then
         diff_limit=$(config_get '.preferences.diff_limit' '5000')
         # Ensure analyze default is at least 5000 even if improve's limit is lower
-        if (( diff_limit < 5000 )); then
+        if [[ "$diff_limit" =~ ^[0-9]+$ ]] && (( diff_limit < 5000 )); then
             diff_limit=5000
         fi
     fi
+    # Validate diff_limit is a numeric integer before arithmetic operations
+    [[ "$diff_limit" =~ ^[0-9]+$ ]] || { log_warn "Invalid diff_limit '$diff_limit' — using default 5000"; diff_limit=5000; }
     # Hard ceiling
     if (( diff_limit > 10000 )); then diff_limit=10000; fi
     local cumulative_diff=0
@@ -1533,16 +1560,22 @@ run_fix_phase() {
 
         # Verify after this batch
         local batch_passed=false
-        if verify_build; then
+        local first_verify_out
+        first_verify_out=$(mktemp)
+        if verify_build > "$first_verify_out" 2>&1; then
+            cat "$first_verify_out"
             log_ok "Build/tests pass after $tier batch"
             batch_passed=true
+            rm -f "$first_verify_out"
         else
+            cat "$first_verify_out"
             # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch broke build — attempting self-repair..."
 
-            # Capture verify output (already failed above, just need the text)
+            # Use saved output from first verify_build run (avoids running tests twice)
             local verify_errors
-            verify_errors=$(verify_build 2>&1 | tail -50) || true
+            verify_errors=$(tail -50 "$first_verify_out")
+            rm -f "$first_verify_out"
 
             local retry_budget
             retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
