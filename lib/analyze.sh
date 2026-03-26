@@ -273,10 +273,17 @@ run_specialist() {
     }
     rm -f "$stderr_file"
 
-    # Extract findings and save
+    # Extract findings and save (validate JSON before writing)
     local findings
     findings=$(extract_findings "$result")
-    echo "$findings" | jq '.' > "$output_file" 2>/dev/null || echo '[]' > "$output_file"
+    local validated
+    validated=$(echo "$findings" | jq -e 'type == "array"' > /dev/null 2>&1 && echo "$findings" | jq '.' 2>/dev/null) || validated=""
+    if [[ -n "$validated" ]]; then
+        echo "$validated" > "$output_file"
+    else
+        log_warn "[$specialist] returned malformed findings — skipping"
+        echo '[]' > "$output_file"
+    fi
 
     local cost count
     cost=$(echo "$result" | jq -r '.total_cost_usd // "?"')
@@ -1042,16 +1049,17 @@ cmd_analyze() {
             log_warn "Some specialists failed — continuing with available results"
         fi
 
-        # Read results
+        # Read results (validate each file is a JSON array; fallback to [] if corrupt)
+        _safe_read_json() { local f="$1"; jq -e 'type == "array"' "$f" > /dev/null 2>&1 && cat "$f" || echo '[]'; }
         local sec_findings cor_findings perf_findings arch_findings
-        sec_findings=$(cat "$tmp_dir/security.json" 2>/dev/null || echo '[]')
-        cor_findings=$(cat "$tmp_dir/correctness.json" 2>/dev/null || echo '[]')
-        perf_findings=$(cat "$tmp_dir/performance.json" 2>/dev/null || echo '[]')
-        arch_findings=$(cat "$tmp_dir/architecture.json" 2>/dev/null || echo '[]')
+        sec_findings=$(_safe_read_json "$tmp_dir/security.json")
+        cor_findings=$(_safe_read_json "$tmp_dir/correctness.json")
+        perf_findings=$(_safe_read_json "$tmp_dir/performance.json")
+        arch_findings=$(_safe_read_json "$tmp_dir/architecture.json")
 
         # Count raw findings
         local raw_count
-        raw_count=$(echo "[$sec_findings, $cor_findings, $perf_findings, $arch_findings]" | jq '[.[] | length] | add')
+        raw_count=$(echo "[$sec_findings, $cor_findings, $perf_findings, $arch_findings]" | jq '[.[] | length] | add' 2>/dev/null) || raw_count=0
         log_info "Raw findings from specialists: $raw_count total"
 
         # ---------------------------------------------------------------
