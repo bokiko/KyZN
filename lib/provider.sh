@@ -81,12 +81,18 @@ resolve_provider_model() {
             echo "$hint"
             ;;
         codex)
-            # Map KyZN model hints to OpenAI models
+            # Use the user's configured default model (from ~/.codex/config.toml)
+            # Codex model availability depends on the account type (API key vs ChatGPT)
+            # so we don't force a specific model — pass through or use default
             case "$hint" in
-                opus|o3)    echo "o3" ;;
-                sonnet)     echo "o4-mini" ;;
-                haiku)      echo "o4-mini" ;;
-                *)          echo "$hint" ;;  # pass through if already an OpenAI model
+                opus|sonnet|haiku)
+                    # Let Codex use its configured default model
+                    echo ""
+                    ;;
+                *)
+                    # Pass through if already an OpenAI model name
+                    echo "$hint"
+                    ;;
             esac
             ;;
     esac
@@ -250,16 +256,9 @@ extract_findings_from_result() {
             extract_findings "$result"
             ;;
         codex)
-            # Codex returns JSON directly — extract text content
+            # Codex result is now a Claude-compatible JSON with .result containing the text
             local text_content
-            text_content=$(echo "$result" | jq -r '
-                .message // .output // .result // ""
-                | if type == "array" then
-                    map(select(.type == "text") | .text) | join("\n")
-                  else
-                    .
-                  end
-            ' 2>/dev/null) || text_content=""
+            text_content=$(echo "$result" | jq -r '.result // ""' 2>/dev/null) || text_content=""
 
             # Try direct JSON array parse
             if echo "$text_content" | jq -e 'type == "array"' &>/dev/null; then
@@ -367,7 +366,13 @@ _invoke_claude() {
 }
 
 # ---------------------------------------------------------------------------
-# Codex backend — strict output handling, fail-closed
+# Codex backend — uses `codex exec` with JSONL output, strict handling
+# ---------------------------------------------------------------------------
+# Codex CLI outputs JSONL events. Key event types:
+#   {"type":"item.completed","item":{"text":"..."}}  — agent message
+#   {"type":"turn.completed","usage":{...}}          — turn done
+#   {"type":"turn.failed","error":{...}}             — error
+#   {"type":"exec.completed","exit_code":0,"output":"..."} — command result
 # ---------------------------------------------------------------------------
 _invoke_codex() {
     local prompt="$1"
@@ -382,28 +387,43 @@ _invoke_codex() {
     # Max output bytes (configurable via env, default 512KB)
     local max_output="${KYZN_CODEX_MAX_OUTPUT_BYTES:-524288}"
 
-    # Build command args
-    local -a cmd_args=(codex --json -p "$prompt")
-
-    [[ -n "$model" ]] && cmd_args+=(--model "$model")
-
-    # Append system prompt as prefix to the prompt if provided
-    # (Codex CLI doesn't have --append-system-prompt-file)
+    # Prepend system prompt to the user prompt if provided
+    local full_prompt="$prompt"
     if [[ -n "$system_prompt_file" && -f "$system_prompt_file" ]]; then
         local sys_content
         sys_content=$(cat "$system_prompt_file")
-        local combined_prompt="${sys_content}
+        full_prompt="${sys_content}
 
 ---
 
 ${prompt}"
-        cmd_args=(codex --json -p "$combined_prompt")
-        [[ -n "$model" ]] && cmd_args+=(--model "$model")
     fi
 
-    local raw_result
-    raw_result=$(timeout "$ai_timeout" "${cmd_args[@]}" 2>"$stderr_file" | head -c "$max_output") || {
+    # Determine sandbox mode based on contract:
+    # - findings_json/consensus_json (analysis) → read-only
+    # - improve_json (quick/fix execution) → workspace-write
+    # - free_text → workspace-write (used by fix batches; profiler is read-only
+    #   but won't write anyway, so workspace-write is safe for both)
+    local sandbox_mode="read-only"
+    case "$contract" in
+        improve_json|free_text) sandbox_mode="workspace-write" ;;
+    esac
+
+    # Write prompt to temp file (prompts can be very large, avoid arg limits)
+    local prompt_file
+    prompt_file=$(mktemp)
+    echo "$full_prompt" > "$prompt_file"
+
+    # Build command: codex exec --json --ephemeral -s <sandbox>
+    local -a cmd_args=(codex exec --json --ephemeral -s "$sandbox_mode")
+
+    [[ -n "$model" ]] && cmd_args+=(-m "$model")
+
+    # Feed prompt via stdin
+    local raw_jsonl
+    raw_jsonl=$(timeout "$ai_timeout" "${cmd_args[@]}" < "$prompt_file" 2>"$stderr_file" | head -c "$max_output") || {
         local exit_code=$?
+        rm -f "$prompt_file"
         if (( exit_code == 124 )); then
             log_error "Codex timed out after ${ai_timeout}s"
         else
@@ -417,21 +437,57 @@ ${prompt}"
         fi
         return 1
     }
+    rm -f "$prompt_file"
 
     # Check output size — if truncated by head -c, fail closed
-    local output_len=${#raw_result}
+    local output_len=${#raw_jsonl}
     if (( output_len >= max_output )); then
         log_error "Codex output exceeded max size (${max_output} bytes) — aborting"
         return 1
     fi
 
-    # Validate JSON
-    if ! echo "$raw_result" | jq . &>/dev/null; then
-        log_error "Codex returned invalid JSON"
+    # Check for errors in the JSONL stream
+    local error_msg
+    error_msg=$(echo "$raw_jsonl" | jq -r 'select(.type == "turn.failed") | .error.message // "unknown error"' 2>/dev/null | head -1)
+    if [[ -n "$error_msg" ]]; then
+        log_error "Codex turn failed: $error_msg"
         return 1
     fi
 
-    echo "$raw_result"
+    # Extract the last agent message text from the JSONL event stream
+    local agent_text
+    agent_text=$(echo "$raw_jsonl" | jq -r 'select(.type == "item.completed" and .item.type == "agent_message") | .item.text // ""' 2>/dev/null | tail -1)
+
+    if [[ -z "$agent_text" ]]; then
+        # Fallback: try any item.completed with text
+        agent_text=$(echo "$raw_jsonl" | jq -r 'select(.type == "item.completed") | .item.text // ""' 2>/dev/null | tail -1)
+    fi
+
+    if [[ -z "$agent_text" ]]; then
+        log_error "Codex returned no agent message"
+        return 1
+    fi
+
+    # Extract usage info for cost reporting
+    local input_tokens output_tokens
+    input_tokens=$(echo "$raw_jsonl" | jq -r 'select(.type == "turn.completed") | .usage.input_tokens // 0' 2>/dev/null | tail -1)
+    output_tokens=$(echo "$raw_jsonl" | jq -r 'select(.type == "turn.completed") | .usage.output_tokens // 0' 2>/dev/null | tail -1)
+
+    # Build a Claude-compatible JSON response so the rest of the pipeline works unchanged
+    jq -n \
+        --arg text "$agent_text" \
+        --arg input "$input_tokens" \
+        --arg output "$output_tokens" \
+        '{
+            result: $text,
+            total_cost_usd: "unknown",
+            session_id: "codex",
+            stop_reason: "end_turn",
+            usage: {
+                input_tokens: ($input | tonumber),
+                output_tokens: ($output | tonumber)
+            }
+        }'
 }
 
 # ---------------------------------------------------------------------------
