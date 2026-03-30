@@ -2225,10 +2225,11 @@ test_provider_model_mapping() {
     assert_eq "claude sonnet" "sonnet" "$(resolve_provider_model claude sonnet)"
     assert_eq "claude opus" "opus" "$(resolve_provider_model claude opus)"
 
-    # Codex uses configured default for KyZN model hints (empty = use default)
+    # Codex: Claude model hints return empty (= use Codex configured default)
     assert_eq "codex sonnet→default" "" "$(resolve_provider_model codex sonnet)"
     assert_eq "codex opus→default" "" "$(resolve_provider_model codex opus)"
-    # Pass-through for explicit OpenAI model names
+    assert_eq "codex haiku→default" "" "$(resolve_provider_model codex haiku)"
+    # Codex: explicit OpenAI model names pass through
     assert_eq "codex gpt-4o→gpt-4o" "gpt-4o" "$(resolve_provider_model codex gpt-4o)"
 }
 

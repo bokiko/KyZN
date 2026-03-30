@@ -406,15 +406,13 @@ cmd_improve() {
                     esac
                     ;;
                 codex)
-                    model_choice=$(prompt_choice "Model to use?" \
-                        "codex-5.3  — balanced speed and quality (recommended)" \
-                        "codex-5.4  — highest quality, slower" \
-                        "codex-5.2  — faster, cheaper")
-                    case "$model_choice" in
-                        1) model="gpt-5.3-codex" ;;
-                        2) model="gpt-5.4-codex" ;;
-                        3) model="gpt-5.2-codex" ;;
-                    esac
+                    # Codex uses the model from ~/.codex/config.toml
+                    # Available models depend on account type (API key vs ChatGPT)
+                    local codex_default
+                    codex_default=$(grep '^model' ~/.codex/config.toml 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//' || echo "default")
+                    log_info "Using Codex model: $codex_default (from ~/.codex/config.toml)"
+                    log_dim "  Change with: codex -c model=\"your-model\""
+                    model=""
                     ;;
                 *)
                     model=$(prompt_input "Model name" "$model")

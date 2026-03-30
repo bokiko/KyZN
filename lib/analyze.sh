@@ -744,15 +744,14 @@ cmd_analyze() {
                 esac
                 ;;
             codex)
-                profile_choice=$(prompt_choice "Model for specialists?" \
-                    "codex-5.4  — highest accuracy (recommended)" \
-                    "codex-5.3  — balanced speed and quality" \
-                    "codex-5.2  — fastest, cheapest")
-                case "$profile_choice" in
-                    1) profile="opus"; analysis_model="gpt-5.4-codex" ;;
-                    2) profile="hybrid"; analysis_model="gpt-5.3-codex" ;;
-                    3) profile="sonnet"; analysis_model="gpt-5.2-codex" ;;
-                esac
+                # Codex uses the model from ~/.codex/config.toml
+                # Available models depend on account type — no picker
+                local codex_default
+                codex_default=$(grep '^model' ~/.codex/config.toml 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//' || echo "default")
+                log_info "Using Codex model: $codex_default (from ~/.codex/config.toml)"
+                log_dim "  Change with: codex -c model=\"your-model\""
+                analysis_model=""
+                profile="opus"
                 ;;
             *)
                 local _custom_model
@@ -782,13 +781,13 @@ cmd_analyze() {
             ;;
     esac
 
-    # For non-Claude providers, override all specialist models with the chosen model
-    if [[ "$KYZN_PROVIDER" != "claude" && -n "$analysis_model" && "$analysis_model" != "opus" && "$analysis_model" != "sonnet" ]]; then
-        _model_security="$analysis_model"
-        _model_correctness="$analysis_model"
-        _model_performance="$analysis_model"
-        _model_architecture="$analysis_model"
-        _model_consensus="$analysis_model"
+    # For non-Claude providers: use empty model (= Codex configured default)
+    if [[ "$KYZN_PROVIDER" != "claude" ]]; then
+        _model_security=""
+        _model_correctness=""
+        _model_performance=""
+        _model_architecture=""
+        _model_consensus=""
     fi
 
     # Set budgets based on profile (hidden from user)
@@ -821,7 +820,13 @@ cmd_analyze() {
         echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
     local profile_label="$profile"
-    [[ "$KYZN_PROVIDER" != "claude" && -n "$analysis_model" ]] && profile_label="$analysis_model"
+    if [[ "$KYZN_PROVIDER" != "claude" ]]; then
+        if [[ -n "$analysis_model" ]]; then
+            profile_label="$analysis_model"
+        else
+            profile_label=$(grep '^model' ~/.codex/config.toml 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//' || echo "configured default")
+        fi
+    fi
     echo -e "  Model:   ${CYAN}$profile_label${RESET}"
     echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET}"
     echo ""
