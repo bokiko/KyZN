@@ -385,38 +385,41 @@ cmd_improve() {
         echo -e "${BOLD}Run settings:${RESET}"
         echo -e "  Provider: ${CYAN}$_provider_name${RESET}"
         echo -e "  Mode:     ${CYAN}$mode${RESET}"
-        if [[ "$KYZN_PROVIDER" == "claude" ]]; then
-            echo -e "  Model:    ${CYAN}$model${RESET}"
-        fi
+        echo -e "  Model:    ${CYAN}$model${RESET}"
         echo -e "  Budget:   ${CYAN}\$$budget${RESET}"
         echo -e "  Focus:    ${CYAN}$focus${RESET}"
         echo ""
 
         # Let user adjust model (skip if --model was passed)
         if ! $model_from_cli; then
-            if [[ "$KYZN_PROVIDER" == "claude" ]]; then
-                local model_choice
-                model_choice=$(prompt_choice "Model to use?" \
-                    "sonnet  — fast, cost-effective (recommended)" \
-                    "opus    — highest quality, slower" \
-                    "haiku   — cheapest, basic improvements")
-
-                case "$model_choice" in
-                    1) model="sonnet" ;;
-                    2) model="opus" ;;
-                    3) model="haiku" ;;
-                esac
-            else
-                local model_choice
-                model_choice=$(prompt_choice "Quality level?" \
-                    "Standard  — balanced speed and quality (recommended)" \
-                    "High      — best results, slower")
-
-                case "$model_choice" in
-                    1) model="sonnet" ;;
-                    2) model="opus" ;;
-                esac
-            fi
+            local model_choice
+            case "$KYZN_PROVIDER" in
+                claude)
+                    model_choice=$(prompt_choice "Model to use?" \
+                        "sonnet  — fast, cost-effective (recommended)" \
+                        "opus    — highest quality, slower" \
+                        "haiku   — cheapest, basic improvements")
+                    case "$model_choice" in
+                        1) model="sonnet" ;;
+                        2) model="opus" ;;
+                        3) model="haiku" ;;
+                    esac
+                    ;;
+                codex)
+                    model_choice=$(prompt_choice "Model to use?" \
+                        "codex-5.3  — balanced speed and quality (recommended)" \
+                        "codex-5.4  — highest quality, slower" \
+                        "codex-5.2  — faster, cheaper")
+                    case "$model_choice" in
+                        1) model="gpt-5.3-codex" ;;
+                        2) model="gpt-5.4-codex" ;;
+                        3) model="gpt-5.2-codex" ;;
+                    esac
+                    ;;
+                *)
+                    model=$(prompt_input "Model name" "$model")
+                    ;;
+            esac
         fi
 
         # Let user adjust budget (skip if --budget was passed)

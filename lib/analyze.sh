@@ -728,29 +728,39 @@ cmd_analyze() {
     }
 
     if [[ -z "$profile" ]] && ! $auto && ! $single && [[ -z "$focus" ]]; then
-        if [[ "$KYZN_PROVIDER" == "claude" ]]; then
-            local profile_choice
-            profile_choice=$(prompt_choice "Model profile?" \
-                "All Opus    — maximum accuracy (recommended)" \
-                "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
-                "All Sonnet  — fastest, cheapest")
-
-            case "$profile_choice" in
-                1) profile="opus" ;;
-                2) profile="hybrid" ;;
-                3) profile="sonnet" ;;
-            esac
-        else
-            local profile_choice
-            profile_choice=$(prompt_choice "Analysis quality?" \
-                "High    — maximum accuracy, slower (recommended)" \
-                "Fast    — faster, cheaper")
-
-            case "$profile_choice" in
-                1) profile="opus" ;;
-                2) profile="sonnet" ;;
-            esac
-        fi
+        local profile_choice
+        case "$KYZN_PROVIDER" in
+            claude)
+                profile_choice=$(prompt_choice "Model profile?" \
+                    "All Opus    — maximum accuracy (recommended)" \
+                    "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
+                    "All Sonnet  — fastest, cheapest")
+                case "$profile_choice" in
+                    1) profile="opus" ;;
+                    2) profile="hybrid" ;;
+                    3) profile="sonnet" ;;
+                esac
+                ;;
+            codex)
+                profile_choice=$(prompt_choice "Model for specialists?" \
+                    "codex-5.4  — highest accuracy (recommended)" \
+                    "codex-5.3  — balanced speed and quality" \
+                    "codex-5.2  — fastest, cheapest")
+                case "$profile_choice" in
+                    1) profile="opus"; analysis_model="gpt-5.4-codex" ;;
+                    2) profile="hybrid"; analysis_model="gpt-5.3-codex" ;;
+                    3) profile="sonnet"; analysis_model="gpt-5.2-codex" ;;
+                esac
+                ;;
+            *)
+                local _custom_model
+                _custom_model=$(prompt_input "Model name for analysis" "")
+                if [[ -n "$_custom_model" ]]; then
+                    analysis_model="$_custom_model"
+                fi
+                profile="opus"
+                ;;
+        esac
     fi
     profile="${profile:-opus}"
 
@@ -769,6 +779,15 @@ cmd_analyze() {
             analysis_model="sonnet"
             ;;
     esac
+
+    # For non-Claude providers, override all specialist models with the chosen model
+    if [[ "$KYZN_PROVIDER" != "claude" && -n "$analysis_model" && "$analysis_model" != "opus" && "$analysis_model" != "sonnet" ]]; then
+        _model_security="$analysis_model"
+        _model_correctness="$analysis_model"
+        _model_performance="$analysis_model"
+        _model_architecture="$analysis_model"
+        _model_consensus="$analysis_model"
+    fi
 
     # Set budgets based on profile (hidden from user)
     if [[ -z "$budget" ]]; then
@@ -800,8 +819,9 @@ cmd_analyze() {
         echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
     local profile_label="$profile"
-    [[ "$KYZN_PROVIDER" != "claude" ]] && profile_label=$(case "$profile" in opus) echo "high";; sonnet) echo "fast";; *) echo "$profile";; esac)
-    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET} ($profile_label quality)"
+    [[ "$KYZN_PROVIDER" != "claude" && -n "$analysis_model" ]] && profile_label="$analysis_model"
+    echo -e "  Model:   ${CYAN}$profile_label${RESET}"
+    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET}"
     echo ""
 
     if ! $auto && ! prompt_yn "Run deep analysis?"; then

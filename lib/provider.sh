@@ -81,16 +81,13 @@ resolve_provider_model() {
             echo "$hint"
             ;;
         codex)
-            # Use the user's configured default model (from ~/.codex/config.toml)
-            # Codex model availability depends on the account type (API key vs ChatGPT)
-            # so we don't force a specific model — pass through or use default
+            # Pass through OpenAI/Codex model names directly.
+            # For Claude model hints (opus/sonnet/haiku), use Codex configured default.
             case "$hint" in
                 opus|sonnet|haiku)
-                    # Let Codex use its configured default model
                     echo ""
                     ;;
                 *)
-                    # Pass through if already an OpenAI model name
                     echo "$hint"
                     ;;
             esac
