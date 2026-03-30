@@ -274,7 +274,31 @@ kyzn/
 
 ## Contributing
 
-Found a bug or have an idea? Open an issue:
+KyZN is early-stage and actively developed. Contributions are welcome — whether it's a bug fix, a new language measurer, or an idea for the pipeline.
+
+### Quick dev setup
+
+```bash
+git clone https://github.com/bokiko/KyZN.git
+cd KyZN
+bash tests/selftest.sh          # 250 quick tests (~3s)
+shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
+```
+
+No build step — it's pure Bash. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions, commit format, and PR guidelines.
+
+### Where to contribute
+
+| Area | What's needed | Start here |
+|------|--------------|------------|
+| **New languages** | Add measurers for Ruby, Java, PHP, etc. | `measurers/` — follow `python.sh` as a template |
+| **Measurers** | Improve scoring accuracy, add new tools | `measurers/*.sh` |
+| **Analysis prompts** | Better specialist prompts, fewer false positives | `templates/` |
+| **Safety** | New edge cases, threat model gaps | `lib/execute.sh`, [SECURITY.md](SECURITY.md) |
+| **Tests** | Cover untested paths, new edge cases | `tests/selftest.sh` |
+| **Docs** | Improve guides, add examples | `README.md`, `docs/` |
+
+### Report a bug or request a feature
 
 - [Bug Report](https://github.com/bokiko/KyZN/issues/new?template=bug_report.yml)
 - [Feature Request](https://github.com/bokiko/KyZN/issues/new?template=feature_request.yml)
