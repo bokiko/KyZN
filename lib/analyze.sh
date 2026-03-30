@@ -392,7 +392,9 @@ Be specific — reference actual file names and patterns you observed. Do not gu
 
     local profiler_stderr
     profiler_stderr=$(mktemp)
+    # Codex needs more startup time than Claude (sandbox init, model loading)
     local profiler_timeout=60
+    [[ "${KYZN_PROVIDER:-claude}" != "claude" ]] && profiler_timeout=180
     local profiler_provider="${KYZN_PROVIDER:-claude}"
 
     log_step "Profiler: scanning repo conventions..."

@@ -396,23 +396,29 @@ _invoke_codex() {
 ${prompt}"
     fi
 
-    # Determine sandbox mode based on contract:
-    # - findings_json/consensus_json (analysis) → read-only
-    # - improve_json (quick/fix execution) → workspace-write
-    # - free_text → workspace-write (used by fix batches; profiler is read-only
-    #   but won't write anyway, so workspace-write is safe for both)
-    local sandbox_mode="read-only"
-    case "$contract" in
-        improve_json|free_text) sandbox_mode="workspace-write" ;;
-    esac
+    # Sandbox configuration:
+    # KYZN_CODEX_SANDBOX overrides automatic detection.
+    # If not set, KyZN uses --full-auto (workspace-write + on-request approval).
+    # If Codex's bwrap sandbox is broken (common on newer kernels), the user can set:
+    #   KYZN_CODEX_SANDBOX=bypass  →  --dangerously-bypass-approvals-and-sandbox
+    # KyZN's own safety layer (branch isolation, secret detection, build gate, score gate)
+    # provides defense-in-depth when the Codex sandbox is unavailable.
+    local codex_sandbox="${KYZN_CODEX_SANDBOX:-}"
 
     # Write prompt to temp file (prompts can be very large, avoid arg limits)
     local prompt_file
     prompt_file=$(mktemp)
     echo "$full_prompt" > "$prompt_file"
 
-    # Build command: codex exec --json --ephemeral -s <sandbox>
-    local -a cmd_args=(codex exec --json --ephemeral -s "$sandbox_mode")
+    # Build command
+    local -a cmd_args=(codex exec --json --ephemeral)
+
+    if [[ "$codex_sandbox" == "bypass" ]]; then
+        cmd_args+=(--dangerously-bypass-approvals-and-sandbox)
+    else
+        # --full-auto: workspace-write sandbox + on-request approval
+        cmd_args+=(--full-auto)
+    fi
 
     [[ -n "$model" ]] && cmd_args+=(-m "$model")
 
@@ -485,6 +491,31 @@ ${prompt}"
                 output_tokens: ($output | tonumber)
             }
         }'
+}
+
+# ---------------------------------------------------------------------------
+# Check if Codex sandbox (bwrap) works on this system
+# ---------------------------------------------------------------------------
+check_codex_sandbox() {
+    if [[ "${KYZN_CODEX_SANDBOX:-}" == "bypass" ]]; then
+        return 1  # User already knows and chose bypass
+    fi
+
+    # Quick test: try a trivial codex exec with sandbox
+    local test_result
+    test_result=$(echo "Say ok" | timeout 30 codex exec --json --ephemeral --full-auto 2>/dev/null || true)
+
+    # Check if bwrap error appears in the agent messages
+    if echo "$test_result" | grep -q "bwrap" 2>/dev/null; then
+        return 1  # Sandbox broken
+    fi
+
+    # Check if we got a successful turn
+    if echo "$test_result" | jq -e 'select(.type == "turn.completed")' &>/dev/null; then
+        return 0  # Sandbox works
+    fi
+
+    return 1  # Unknown state, assume broken
 }
 
 # ---------------------------------------------------------------------------
