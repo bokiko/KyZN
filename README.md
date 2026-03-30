@@ -29,6 +29,7 @@
 - [How It Works](#how-it-works)
 - [Safety Model](#safety-model)
 - [Project Structure](#project-structure)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -268,6 +269,15 @@ kyzn/
 ├── SECURITY.md             # Threat model + published audit
 └── .github/workflows/      # CI (ShellCheck)
 ```
+
+---
+
+## Contributing
+
+Found a bug or have an idea? Open an issue:
+
+- [Bug Report](https://github.com/bokiko/KyZN/issues/new?template=bug_report.yml)
+- [Feature Request](https://github.com/bokiko/KyZN/issues/new?template=feature_request.yml)
 
 ---
 
