@@ -14,8 +14,8 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 250 quick tests
-kyzn selftest --full       # 259 tests including stress tests
+kyzn selftest              # 265 quick tests
+kyzn selftest --full       # 274 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -92,4 +92,4 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 
 ## Test framework
 
-`tests/selftest.sh` is a self-contained 1764-line Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.
+`tests/selftest.sh` is a self-contained 2286-line Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.

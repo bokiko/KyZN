@@ -73,7 +73,7 @@ Our v0.4.0 audit produced **~350KB of findings across 8,400 lines** from 16 agen
 | **Crash recovery** | Missing cleanup on interrupt | Added trap that kills child processes, updates history, cleans temp files |
 | **Measurement accuracy** | Parsers producing inflated counts | Fixed to use structured JSON parsing |
 
-Every finding was verified, fixed, and tested. The full test suite grew from 156 to 259 tests.
+Every finding was verified, fixed, and tested. The full test suite grew from 156 to 274 tests.
 
 ## Published Audit Reports
 
