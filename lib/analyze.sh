@@ -238,7 +238,6 @@ run_specialist() {
     local budget="$4"
     local output_file="$5"
     local model="${6:-opus}"
-    local provider="${7:-${KYZN_PROVIDER:-claude}}"
 
     local -a allowlist_arr=(--allowedTools Read --allowedTools Glob --allowedTools Grep)
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-900}"
@@ -247,19 +246,27 @@ run_specialist() {
     stderr_file=$(mktemp)
 
     local result
-    result=$(invoke_ai \
-        --provider "$provider" \
-        --contract "findings_json" \
-        --prompt "$prompt" \
+    result=$(timeout "$claude_timeout" claude -p "$prompt" \
         --model "$model" \
-        --budget "$budget" \
+        --max-budget-usd "$budget" \
         --max-turns 30 \
-        --timeout "$claude_timeout" \
-        --system-prompt-file "$sys_prompt_file" \
-        --allowlist-arr allowlist_arr \
+        "${allowlist_arr[@]}" \
         --settings "$KYZN_SETTINGS_JSON" \
-        --stderr-file "$stderr_file") || {
-        log_error "[$specialist] failed"
+        --append-system-prompt-file "$sys_prompt_file" \
+        --output-format json \
+        --no-session-persistence \
+        2>"$stderr_file") || {
+        local exit_code=$?
+        if (( exit_code == 124 )); then
+            log_error "[$specialist] timed out"
+        else
+            log_error "[$specialist] failed (exit code: $exit_code)"
+            if [[ -s "$stderr_file" ]]; then
+                head -5 "$stderr_file" | while IFS= read -r line; do
+                    log_dim "  $line"
+                done
+            fi
+        fi
         rm -f "$stderr_file"
         echo '[]' > "$output_file"
         return 1
@@ -268,7 +275,7 @@ run_specialist() {
 
     # Extract findings and save (validate JSON before writing)
     local findings
-    findings=$(extract_findings_from_result "$provider" "$result")
+    findings=$(extract_findings "$result")
     local validated
     validated=$(echo "$findings" | jq -e 'type == "array"' > /dev/null 2>&1 && echo "$findings" | jq '.' 2>/dev/null) || validated=""
     if [[ -n "$validated" ]]; then
@@ -392,27 +399,26 @@ Be specific — reference actual file names and patterns you observed. Do not gu
 
     local profiler_stderr
     profiler_stderr=$(mktemp)
-    # Codex needs more startup time than Claude (sandbox init, model loading)
     local profiler_timeout=60
-    [[ "${KYZN_PROVIDER:-claude}" != "claude" ]] && profiler_timeout=180
-    local profiler_provider="${KYZN_PROVIDER:-claude}"
 
     log_step "Profiler: scanning repo conventions..."
 
-    local -a profiler_allowlist=(--allowedTools Read --allowedTools Glob --allowedTools Grep)
     local profiler_result
-    profiler_result=$(invoke_ai \
-        --provider "$profiler_provider" \
-        --contract "free_text" \
-        --prompt "$profiler_prompt" \
+    profiler_result=$(timeout "$profiler_timeout" claude -p "$profiler_prompt" \
         --model sonnet \
-        --budget "$budget" \
+        --max-budget-usd "$budget" \
         --max-turns 15 \
-        --timeout "$profiler_timeout" \
-        --allowlist-arr profiler_allowlist \
+        --allowedTools Read --allowedTools Glob --allowedTools Grep \
         --settings "$KYZN_SETTINGS_JSON" \
-        --stderr-file "$profiler_stderr") || {
-        log_warn "Profiler failed — continuing without repo conventions"
+        --output-format json \
+        --no-session-persistence \
+        2>"$profiler_stderr") || {
+        local exit_code=$?
+        if (( exit_code == 124 )); then
+            log_warn "Profiler timed out — specialists will run without repo conventions"
+        else
+            log_warn "Profiler failed (exit $exit_code) — continuing without repo conventions"
+        fi
         rm -f "$profiler_stderr"
         return 1
     }
@@ -673,11 +679,9 @@ cmd_analyze() {
     local profile=""
     local export_path=""
     local auto=false
-    local provider_from_cli=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --provider)     [[ $# -ge 2 ]] || { log_error "--provider requires a value"; return 1; }; provider_from_cli="$2"; shift 2 ;;
             --focus)        [[ $# -ge 2 ]] || { log_error "--focus requires a value"; return 1; }; focus="$2"; shift 2 ;;
             --budget)       [[ $# -ge 2 ]] || { log_error "--budget requires a value"; return 1; }; budget="$2"; shift 2
                 [[ "${budget:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log_error "Invalid budget value: $budget"; return 1; } ;;
@@ -694,12 +698,6 @@ cmd_analyze() {
     done
 
     fix_budget="${fix_budget:-5.00}"
-
-    # Resolve provider (CLI flag > config > default) — pinned for this entire command
-    local requested_provider="${provider_from_cli:-$(config_get '.preferences.provider' 'claude')}"
-    local KYZN_PROVIDER
-    KYZN_PROVIDER=$(resolve_provider "$requested_provider") || return 1
-    log_info "Provider: $(provider_display_name "$KYZN_PROVIDER")"
 
     # Detect project
     detect_project_type
@@ -731,43 +729,22 @@ cmd_analyze() {
 
     if [[ -z "$profile" ]] && ! $auto && ! $single && [[ -z "$focus" ]]; then
         local profile_choice
-        case "$KYZN_PROVIDER" in
-            claude)
-                profile_choice=$(prompt_choice "Model profile?" \
-                    "All Opus    — maximum accuracy (recommended)" \
-                    "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
-                    "All Sonnet  — fastest, cheapest")
-                case "$profile_choice" in
-                    1) profile="opus" ;;
-                    2) profile="hybrid" ;;
-                    3) profile="sonnet" ;;
-                esac
-                ;;
-            codex)
-                # Codex uses the model from ~/.codex/config.toml
-                # Available models depend on account type — no picker
-                local codex_default
-                codex_default=$(grep '^model' ~/.codex/config.toml 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//' || echo "default")
-                log_info "Using Codex model: $codex_default (from ~/.codex/config.toml)"
-                log_dim "  Change with: codex -c model=\"your-model\""
-                analysis_model=""
-                profile="opus"
-                ;;
-            *)
-                local _custom_model
-                _custom_model=$(prompt_input "Model name for analysis" "")
-                if [[ -n "$_custom_model" ]]; then
-                    analysis_model="$_custom_model"
-                fi
-                profile="opus"
-                ;;
+        profile_choice=$(prompt_choice "Model profile?" \
+            "All Opus    — maximum accuracy (recommended)" \
+            "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
+            "All Sonnet  — fastest, cheapest")
+
+        case "$profile_choice" in
+            1) profile="opus" ;;
+            2) profile="hybrid" ;;
+            3) profile="sonnet" ;;
         esac
     fi
     profile="${profile:-opus}"
 
     case "$profile" in
         opus)
-            ;; # all highest tier, default
+            ;; # all opus, default
         hybrid)
             _model_performance="sonnet"
             _model_architecture="sonnet"
@@ -780,15 +757,6 @@ cmd_analyze() {
             analysis_model="sonnet"
             ;;
     esac
-
-    # For non-Claude providers: use empty model (= Codex configured default)
-    if [[ "$KYZN_PROVIDER" != "claude" ]]; then
-        _model_security=""
-        _model_correctness=""
-        _model_performance=""
-        _model_architecture=""
-        _model_consensus=""
-    fi
 
     # Set budgets based on profile (hidden from user)
     if [[ -z "$budget" ]]; then
@@ -819,16 +787,7 @@ cmd_analyze() {
     elif [[ -n "$focus" ]]; then
         echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
-    local profile_label="$profile"
-    if [[ "$KYZN_PROVIDER" != "claude" ]]; then
-        if [[ -n "$analysis_model" ]]; then
-            profile_label="$analysis_model"
-        else
-            profile_label=$(grep '^model' ~/.codex/config.toml 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//' || echo "configured default")
-        fi
-    fi
-    echo -e "  Model:   ${CYAN}$profile_label${RESET}"
-    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET}"
+    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET} ($profile profile)"
     echo ""
 
     if ! $auto && ! prompt_yn "Run deep analysis?"; then
@@ -927,9 +886,7 @@ cmd_analyze() {
         # ---------------------------------------------------------------
         # Single-agent mode (--single flag or --focus narrows to one area)
         # ---------------------------------------------------------------
-        local provider_name
-        provider_name=$(provider_display_name "$KYZN_PROVIDER")
-        log_step "$provider_name is reading your codebase... (this may take several minutes)"
+        log_step "Opus is reading your codebase... (this may take several minutes)"
 
         local prompt
         prompt=$(build_specialist_prompt "${focus:-correctness}" "$(project_name)" \
@@ -940,18 +897,27 @@ cmd_analyze() {
         stderr_file=$(mktemp)
 
         local result
-        result=$(invoke_ai \
-            --provider "$KYZN_PROVIDER" \
-            --contract "findings_json" \
-            --prompt "$prompt" \
+        result=$(timeout "$claude_timeout" claude -p "$prompt" \
             --model opus \
-            --budget "$budget" \
+            --max-budget-usd "$budget" \
             --max-turns 40 \
-            --timeout "$claude_timeout" \
-            --system-prompt-file "$sys_prompt_file" \
-            --allowlist-arr allowlist_arr \
+            "${allowlist_arr[@]}" \
             --settings "$settings_json" \
-            --stderr-file "$stderr_file") || {
+            --append-system-prompt-file "$sys_prompt_file" \
+            --output-format json \
+            --no-session-persistence \
+            2>"$stderr_file") || {
+            local exit_code=$?
+            if (( exit_code == 124 )); then
+                log_error "Analysis timed out after ${claude_timeout}s"
+            else
+                log_error "Analysis failed (exit code: $exit_code)"
+                if [[ -s "$stderr_file" ]]; then
+                    head -20 "$stderr_file" | while IFS= read -r line; do
+                        log_dim "  $line"
+                    done
+                fi
+            fi
             rm -f "$stderr_file" "$sys_prompt_file"
             rm -rf "$measure_dir"
             return 1
@@ -962,7 +928,7 @@ cmd_analyze() {
         log_ok "Analysis complete (cost: \$$total_cost)"
 
         local findings
-        findings=$(extract_findings_from_result "$KYZN_PROVIDER" "$result")
+        findings=$(extract_findings "$result")
         echo "$findings" | jq '.' > "$findings_file" 2>/dev/null || echo '[]' > "$findings_file"
     else
         # ---------------------------------------------------------------
@@ -990,7 +956,7 @@ cmd_analyze() {
             spec_prompt=$(build_specialist_prompt "$spec" "$(project_name)" \
                 "$(project_type_name "$KYZN_PROJECT_TYPE")" "${KYZN_HEALTH_SCORE:-0}" "$measurements_json")
 
-            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "$(_agent_model "$spec")" "$KYZN_PROVIDER" &
+            run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "$(_agent_model "$spec")" &
             local pid=$!
             pids+=($pid)
             pid_specs+=("$spec")
@@ -1113,19 +1079,16 @@ cmd_analyze() {
             "cross-referencing related issues..." \
             "building final report..."
 
-        local -a consensus_allowlist=(--allowedTools Read)
         local consensus_result
-        consensus_result=$(invoke_ai \
-            --provider "$KYZN_PROVIDER" \
-            --contract "consensus_json" \
-            --prompt "$consensus_prompt" \
+        consensus_result=$(timeout "$claude_timeout" claude -p "$consensus_prompt" \
             --model "$(_agent_model consensus)" \
-            --budget "$per_agent_budget" \
+            --max-budget-usd "$per_agent_budget" \
             --max-turns 10 \
-            --timeout "$claude_timeout" \
-            --allowlist-arr consensus_allowlist \
+            --output-format json \
+            --no-session-persistence \
             --settings "$KYZN_SETTINGS_JSON" \
-            --stderr-file "$consensus_stderr") || {
+            --allowedTools Read \
+            2>"$consensus_stderr") || {
             stop_progress
             log_warn "Consensus merge failed — using raw concatenated findings"
             # Fallback: just concatenate all findings (sort by severity rank, not string)
@@ -1144,7 +1107,7 @@ cmd_analyze() {
             log_ok "Consensus complete (\$$consensus_cost)"
 
             local consensus_findings
-            consensus_findings=$(extract_findings_from_result "$KYZN_PROVIDER" "$consensus_result")
+            consensus_findings=$(extract_findings "$consensus_result")
 
             # Validate JSON before writing — fallback to raw concatenation on parse error
             if echo "$consensus_findings" | jq -e 'type == "array"' &>/dev/null; then
@@ -1307,7 +1270,7 @@ generate_detailed_report() {
         if (( finding_count > 0 )); then
             echo "## Fix Instructions"
             echo ""
-            echo "Paste this entire report into your AI assistant to fix the findings above."
+            echo "Paste this entire report into Claude Code to fix the findings above."
             echo ""
             echo "### Findings to Fix (ordered by severity)"
             echo ""
@@ -1555,22 +1518,24 @@ run_fix_phase() {
             "verifying changes..." \
             "checking for side effects..."
 
-        local fix_provider="${KYZN_PROVIDER:-claude}"
         local fix_result
-        fix_result=$(invoke_ai \
-            --provider "$fix_provider" \
-            --contract "free_text" \
-            --prompt "$fix_prompt" \
+        fix_result=$(timeout "$claude_timeout" claude -p "$fix_prompt" \
             --model sonnet \
-            --budget "$batch_budget" \
+            --max-budget-usd "$batch_budget" \
             --max-turns 30 \
-            --timeout "$claude_timeout" \
-            --system-prompt-file "$sys_prompt_file" \
-            --allowlist-arr fix_allowlist_arr \
+            "${fix_allowlist_arr[@]}" \
             --settings "$KYZN_SETTINGS_JSON" \
-            --stderr-file "$fix_stderr") || {
+            --append-system-prompt-file "$sys_prompt_file" \
+            --output-format json \
+            --no-session-persistence \
+            2>"$fix_stderr") || {
+            local exit_code=$?
             stop_progress
-            log_error "$tier batch failed — skipping"
+            if (( exit_code == 124 )); then
+                log_error "$tier batch timed out — skipping"
+            else
+                log_error "$tier batch failed — skipping"
+            fi
             rm -f "$fix_stderr"
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
@@ -1645,18 +1610,16 @@ ${tier_findings}
                 "re-testing..."
 
             local retry_result
-            retry_result=$(invoke_ai \
-                --provider "$fix_provider" \
-                --contract "free_text" \
-                --prompt "$retry_prompt" \
+            retry_result=$(timeout "$claude_timeout" claude -p "$retry_prompt" \
                 --model sonnet \
-                --budget "$retry_budget" \
+                --max-budget-usd "$retry_budget" \
                 --max-turns 20 \
-                --timeout "$claude_timeout" \
-                --system-prompt-file "$sys_prompt_file" \
-                --allowlist-arr fix_allowlist_arr \
+                "${fix_allowlist_arr[@]}" \
                 --settings "$KYZN_SETTINGS_JSON" \
-                --stderr-file "$retry_stderr") || true
+                --append-system-prompt-file "$sys_prompt_file" \
+                --output-format json \
+                --no-session-persistence \
+                2>"$retry_stderr") || true
             stop_progress
             rm -f "$retry_stderr"
 

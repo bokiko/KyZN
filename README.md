@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
   <img src="https://img.shields.io/badge/version-1.0.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-293%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-265%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
@@ -36,7 +36,7 @@
 
 ## Why KyZN?
 
-Improving a codebase with AI is powerful — but doing it manually means you're the glue holding the workflow together:
+Improving a codebase with Claude is powerful — but doing it manually means you're the glue holding the workflow together:
 
 1. Run linters, type checkers, and security audits for your language
 2. Read the output, decide what matters
@@ -108,7 +108,7 @@ One command. Zero config. Real bugs fixed, verified, and shipped.
 |------|----------|---------|
 | `git` | Yes | Branch management |
 | `gh` | Yes | PR creation ([GitHub CLI](https://cli.github.com)) |
-| `claude` or `codex` | Yes (one) | AI provider — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://github.com/openai/codex) |
+| `claude` | Yes | AI analysis ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) |
 | `jq` | Yes | JSON processing (auto-installed with checksum verification) |
 | `yq` | Yes | YAML config (auto-installed with checksum verification) |
 
@@ -138,20 +138,6 @@ kyzn fix        # Deep analysis + auto-fix → PR
 ---
 
 ## Usage
-
-### Provider selection
-
-KyZN supports multiple AI providers. Default is Claude Code.
-
-```bash
-kyzn fix --provider claude      # Use Claude Code (default)
-kyzn fix --provider codex       # Use OpenAI Codex CLI
-kyzn fix --provider auto        # Use whichever is available (claude first)
-```
-
-Set a default in `.kyzn/config.yaml` via `kyzn init` or `preferences.provider: codex`. The `--provider` flag always overrides config.
-
-> **Note:** Claude and Codex have different capabilities. Claude supports tool allowlists and budget caps natively. Codex uses its own sandboxing model. Both paths enforce the same safety gates (build verification, score regression, secret detection).
 
 ### `kyzn fix` — The main command
 
@@ -241,15 +227,13 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
 | **Hook protection** | All git operations disable hooks via `core.hooksPath=/dev/null` |
 | **Tool allowlist** | Per-language restrictions tightened to specific subcommands |
-| **File restrictions** | AI providers cannot read `~/.ssh`, `~/.aws`, `~/.codex`, `.env`, key files, Terraform state |
+| **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
 | **Build gate** | PR only if build + tests pass |
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
-| **Provider pinning** | Provider locked per stage — no mid-stage switching, even on retry |
-| **Output contracts** | Strict JSON validation on AI output — malformed responses abort the stage |
 | **Trust isolation** | Autopilot stored in gitignored `local.yaml` (not poisonable via commits) |
 | **Supply chain** | `jq` and `yq` verified with SHA256 checksums on install |
 

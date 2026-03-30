@@ -35,20 +35,7 @@ run_interview() {
         3) mode="full" ;;
     esac
 
-    # Step 3: Provider
-    local provider
-    provider=$(prompt_choice "Which AI provider?" \
-        "Claude Code — recommended (Anthropic Claude)" \
-        "Codex CLI — OpenAI Codex" \
-        "Auto — use whichever is available")
-
-    case "$provider" in
-        1) provider="claude" ;;
-        2) provider="codex" ;;
-        3) provider="auto" ;;
-    esac
-
-    # Step 4: Budget
+    # Step 3: Budget
     local budget
     budget=$(prompt_input "Budget per run (USD)" "2.50")
 
@@ -58,7 +45,7 @@ run_interview() {
         budget="2.50"
     fi
 
-    # Step 5: Build failure behavior
+    # Step 4: Build failure behavior
     local on_fail
     on_fail=$(prompt_choice "If the build breaks after improvements, what should KyZN do?" \
         "Write a report explaining what happened (recommended)" \
@@ -71,7 +58,7 @@ run_interview() {
         3) on_fail="draft-pr" ;;
     esac
 
-    # Step 6: Trust level
+    # Step 5: Trust level
     local trust
     trust=$(prompt_choice "Trust level for auto-merging?" \
         "Guardian — always create PR, always wait for approval (recommended)" \
@@ -94,8 +81,8 @@ run_interview() {
         fi
     fi
 
-    # Step 7: Save config
-    save_interview_config "$mode" "$budget" "$on_fail" "$trust" "$provider" "${priorities[@]}"
+    # Step 6: Save config
+    save_interview_config "$mode" "$budget" "$on_fail" "$trust" "${priorities[@]}"
 
     log_ok "Configuration saved to $KYZN_CONFIG"
 }
@@ -235,8 +222,7 @@ save_interview_config() {
     local budget="$2"
     local on_fail="$3"
     local trust="$4"
-    local provider="$5"
-    shift 5
+    shift 4
     local -a priorities=("$@")
 
     ensure_kyzn_dirs
@@ -275,7 +261,6 @@ project:
   type: $KYZN_PROJECT_TYPE
 
 preferences:
-  provider: $provider
   mode: $mode
   model: sonnet
   budget: $budget

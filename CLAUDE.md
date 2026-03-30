@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is KyZN
 
-KyZN (from "kaizen") is a pure-Bash CLI that autonomously improves code quality. It runs real language tools to produce a health score, invokes an AI provider (Claude Code or Codex CLI) to make improvements, gates changes behind build/test verification and score regression checks, then opens a GitHub PR with before/after comparison. Supports Node.js, Python, Rust, and Go.
+KyZN (from "kaizen") is a pure-Bash CLI that autonomously improves code quality. It runs real language tools to produce a health score, invokes Claude Code to make improvements, gates changes behind build/test verification and score regression checks, then opens a GitHub PR with before/after comparison. Supports Node.js, Python, Rust, and Go.
 
 ## Prerequisites
 
-Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` or `codex` (at least one AI provider), `jq`, `yq`. Language-specific tools are optional (eslint/tsc, ruff/mypy, cargo, go vet, etc.).
+Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Language-specific tools are optional (eslint/tsc, ruff/mypy, cargo, go vet, etc.).
 
 ## Commands
 
 ```bash
 # Run tests
-kyzn selftest              # 284 quick tests
-kyzn selftest --full       # 293 tests including stress tests
+kyzn selftest              # 250 quick tests
+kyzn selftest --full       # 259 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -62,12 +62,11 @@ Profiler agent (Sonnet) reads repo files and caches conventions to `.kyzn/repo-p
 | `lib/core.sh` | Logging, config I/O via yq, `KYZN_SETTINGS_JSON` |
 | `lib/detect.sh` | Project type detection (package.json / Cargo.toml / go.mod / etc.) |
 | `lib/measure.sh` | `run_measurements` → `compute_health_score` → `display_health_dashboard` |
-| `lib/provider.sh` | Provider adapter: `resolve_provider`, `invoke_ai`, `_invoke_claude`, `_invoke_codex`, output contracts |
 | `lib/execute.sh` | `execute_claude`, `cmd_improve`, safety wrappers (`safe_git`, `unstage_secrets`) |
-| `lib/analyze.sh` | Multi-agent pipeline, `cmd_analyze` |
+| `lib/analyze.sh` | Multi-agent Opus pipeline, `cmd_analyze` |
 | `lib/verify.sh` | `verify_build`, `capture_failing_tests` (per language) |
 | `lib/prompt.sh` | Prompt assembly with `{{PLACEHOLDER}}` replacement |
-| `lib/allowlist.sh` | Per-language tool flags (Claude provider) |
+| `lib/allowlist.sh` | Per-language Claude tool flags |
 | `lib/report.sh` | PR body generation, `gh pr create` |
 | `measurers/*.sh` | Execute real tools, output JSON metric arrays (generic, node, python, rust, go) |
 
@@ -78,12 +77,10 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 ## Safety model
 
 - `safe_git` disables git hooks (`core.hooksPath=/dev/null`) to prevent RCE from malicious repos
-- `KYZN_SETTINGS_JSON` blocks file access to sensitive paths (`~/.ssh`, `~/.aws`, `~/.codex`, `~/.openai`, `.env`, `~/.claude`, etc.)
+- `KYZN_SETTINGS_JSON` blocks file access to sensitive paths (`~/.ssh`, `~/.aws`, `.env`, `~/.claude`, etc.)
 - Tool allowlist tightened to specific subcommands (e.g. `Bash(npm test*)` — not open shell)
 - Hard ceilings: max $25 budget, 100 turns, 10000 diff lines
-- CI files (`.github/workflows/`) unstaged after AI runs
-- Provider pinned per stage — no mid-stage switching (including retries)
-- Output contracts enforce strict JSON validation — malformed output aborts the stage (fail-closed)
+- CI files (`.github/workflows/`) unstaged after Claude runs
 - Atomic `mkdir` lock prevents concurrent runs on same repo
 
 ## Conventions

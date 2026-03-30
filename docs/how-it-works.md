@@ -5,13 +5,13 @@
 ```
  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
  │  Detect  │───▶│ Measure  │───▶│ Improve  │───▶│  Verify  │───▶│  Score   │───▶│    PR    │
- │          │    │          │    │   (AI    │    │          │    │  Gate    │    │          │
- │ language │    │ run real │    │ provider)│    │ build +  │    │ abort   │    │ before/  │
- │ features │    │ tools    │    │          │    │ tests    │    │ if drop │    │ after    │
+ │          │    │          │    │ (Sonnet) │    │          │    │  Gate    │    │          │
+ │ language │    │ run real │    │ Claude   │    │ build +  │    │ abort   │    │ before/  │
+ │ features │    │ tools    │    │ Code     │    │ tests    │    │ if drop │    │ after    │
  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
 ```
 
-If verification fails on a previously clean build, KyZN attempts **self-repair** — it sends the error output back to the AI provider for one retry before aborting.
+If verification fails on a previously clean build, KyZN attempts **self-repair** — it sends the error output back to Claude for one retry before aborting.
 
 ## `kyzn analyze` — Multi-agent Opus deep analysis
 
@@ -25,7 +25,7 @@ If verification fails on a previously clean build, KyZN attempts **self-repair**
  │ features │    │ tools    │    ├────────────┤  │    │ rank      │    │ report   │    │ --fix    │
  └──────────┘    └──────────┘    │Architecture│──┘    └───────────┘    │ .md      │    └──────────┘
                                   └────────────┘                       └──────────┘
-                                   4 specialist sessions
+                                   4 Opus sessions
                                    (parallel)
 ```
 
@@ -33,7 +33,7 @@ If verification fails on a previously clean build, KyZN attempts **self-repair**
 
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
 2. **Measure** — runs real tools and computes a health score out of 100
-3. **Improve/Analyze** — AI provider for incremental fixes, 4 parallel specialist sessions for deep code review
+3. **Improve/Analyze** — Sonnet for incremental fixes, 4 parallel Opus specialists for deep code review
 4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones
 5. **Self-repair** — if verification fails, retries once with error context (reflexion loop)
 6. **Score Gate** — re-measures health. If score dropped, aborts and cleans up
@@ -81,11 +81,10 @@ project:
   type: node
 
 preferences:
-  provider: claude      # claude | codex | auto
   mode: deep            # deep | clean | full
   model: sonnet         # sonnet | opus | haiku
   budget: 2.50          # USD per run
-  max_turns: 30         # Max conversation turns
+  max_turns: 30         # Claude conversation turns
   diff_limit: 2000      # max lines changed
   on_build_fail: report # report | discard | draft-pr
   # trust level is in .kyzn/local.yaml (gitignored, not committable)

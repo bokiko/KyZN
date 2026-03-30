@@ -323,42 +323,27 @@ else
     BLOCKERS=$((BLOCKERS + 1))
 fi
 
-# AI provider (at least one required: claude or codex)
-HAS_PROVIDER=false
-
+# claude CLI
 if has_cmd claude; then
     ok "claude $(claude --version 2>/dev/null || echo '(version unknown)')"
-    HAS_PROVIDER=true
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        ok "ANTHROPIC_API_KEY is set"
-    else
+else
+    err "claude CLI — not found"
+    info "Install: npm install -g @anthropic-ai/claude-code"
+    info "  Then set ANTHROPIC_API_KEY in your shell profile"
+    BLOCKERS=$((BLOCKERS + 1))
+fi
+
+# ANTHROPIC_API_KEY
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    ok "ANTHROPIC_API_KEY is set"
+else
+    if has_cmd claude; then
         warn "ANTHROPIC_API_KEY not set (claude CLI may use its own auth)"
         info "If you get auth errors, add to ~/.bashrc or ~/.zshrc:"
         info "  export ANTHROPIC_API_KEY=\"sk-ant-...\""
-    fi
-else
-    warn "claude CLI — not found"
-    info "Install: npm install -g @anthropic-ai/claude-code"
-fi
-
-if has_cmd codex; then
-    ok "codex $(codex --version 2>/dev/null || echo '(version unknown)')"
-    HAS_PROVIDER=true
-    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-        ok "OPENAI_API_KEY is set"
     else
-        warn "OPENAI_API_KEY not set"
-        info "Set in ~/.bashrc: export OPENAI_API_KEY=\"sk-...\""
+        warn "ANTHROPIC_API_KEY not set"
     fi
-else
-    info "codex CLI — not installed (optional: https://github.com/openai/codex)"
-fi
-
-if ! $HAS_PROVIDER; then
-    err "No AI provider found — install at least one: claude or codex"
-    info "  Claude: npm install -g @anthropic-ai/claude-code"
-    info "  Codex:  https://github.com/openai/codex"
-    BLOCKERS=$((BLOCKERS + 1))
 fi
 
 echo ""
