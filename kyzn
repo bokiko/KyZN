@@ -382,15 +382,14 @@ cmd_doctor() {
         fi
 
         # Check if Codex sandbox works (bwrap can fail on newer kernels)
-        if $has_any_provider && [[ "${KYZN_CODEX_SANDBOX:-}" != "bypass" ]]; then
+        if $has_any_provider; then
             local _sandbox_test
             _sandbox_test=$(echo "Say ok" | timeout 15 codex exec --json --ephemeral --full-auto 2>/dev/null || true)
             if echo "$_sandbox_test" | grep -q "bwrap" 2>/dev/null; then
-                log_warn "  Codex sandbox (bwrap) is broken on this kernel"
-                log_dim "    Codex can't execute commands in sandboxed mode."
-                log_dim "    Fix: export KYZN_CODEX_SANDBOX=bypass"
+                log_warn "  Codex sandbox (bwrap) unavailable on this kernel"
+                log_dim "    KyZN will auto-fallback to unsandboxed mode."
                 log_dim "    KyZN's own safety layer (branch isolation, secret detection,"
-                log_dim "    build gate, score gate) provides protection without bwrap."
+                log_dim "    build gate, score gate) still applies."
             else
                 log_ok "  Codex sandbox: working"
             fi

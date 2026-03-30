@@ -396,50 +396,65 @@ _invoke_codex() {
 ${prompt}"
     fi
 
-    # Sandbox configuration:
-    # KYZN_CODEX_SANDBOX overrides automatic detection.
-    # If not set, KyZN uses --full-auto (workspace-write + on-request approval).
-    # If Codex's bwrap sandbox is broken (common on newer kernels), the user can set:
-    #   KYZN_CODEX_SANDBOX=bypass  →  --dangerously-bypass-approvals-and-sandbox
-    # KyZN's own safety layer (branch isolation, secret detection, build gate, score gate)
-    # provides defense-in-depth when the Codex sandbox is unavailable.
-    local codex_sandbox="${KYZN_CODEX_SANDBOX:-}"
+    # Auto-detect sandbox mode:
+    # 1. Try --full-auto first (bwrap sandbox)
+    # 2. If bwrap is broken (common on Linux 6.17+), auto-fallback to no sandbox
+    # KyZN's own safety layer (branch isolation, secret detection, build gate,
+    # score gate) provides defense-in-depth when the Codex sandbox is unavailable.
 
     # Write prompt to temp file (prompts can be very large, avoid arg limits)
     local prompt_file
     prompt_file=$(mktemp)
     echo "$full_prompt" > "$prompt_file"
 
-    # Build command
-    local -a cmd_args=(codex exec --json --ephemeral)
+    [[ -n "$model" ]] && local _model_flag=(-m "$model") || local _model_flag=()
 
-    if [[ "$codex_sandbox" == "bypass" ]]; then
-        cmd_args+=(--dangerously-bypass-approvals-and-sandbox)
-    else
-        # --full-auto: workspace-write sandbox + on-request approval
-        cmd_args+=(--full-auto)
-    fi
-
-    [[ -n "$model" ]] && cmd_args+=(-m "$model")
-
-    # Feed prompt via stdin
+    # First attempt: --full-auto (sandboxed)
     local raw_jsonl
-    raw_jsonl=$(timeout "$ai_timeout" "${cmd_args[@]}" < "$prompt_file" 2>"$stderr_file" | head -c "$max_output") || {
+    raw_jsonl=$(timeout "$ai_timeout" codex exec --json --ephemeral --full-auto "${_model_flag[@]}" \
+        < "$prompt_file" 2>"$stderr_file" | head -c "$max_output") || {
         local exit_code=$?
-        rm -f "$prompt_file"
+        # Don't retry on timeout — that's a real timeout, not a sandbox issue
         if (( exit_code == 124 )); then
+            rm -f "$prompt_file"
             log_error "Codex timed out after ${ai_timeout}s"
-        else
-            log_error "Codex invocation failed (exit code: $exit_code)"
-            if [[ -s "$stderr_file" ]]; then
-                log_dim "Last stderr lines:"
-                tail -10 "$stderr_file" | while IFS= read -r line; do
-                    log_dim "  $line"
-                done
+            return 1
+        fi
+    }
+
+    # Check if bwrap sandbox failed — auto-retry without sandbox
+    if echo "$raw_jsonl" | grep -q "bwrap" 2>/dev/null; then
+        log_warn "Codex sandbox (bwrap) unavailable — running without sandbox"
+        raw_jsonl=$(timeout "$ai_timeout" codex exec --json --ephemeral \
+            --dangerously-bypass-approvals-and-sandbox "${_model_flag[@]}" \
+            < "$prompt_file" 2>"$stderr_file" | head -c "$max_output") || {
+            local exit_code=$?
+            rm -f "$prompt_file"
+            if (( exit_code == 124 )); then
+                log_error "Codex timed out after ${ai_timeout}s"
+            else
+                log_error "Codex invocation failed (exit code: $exit_code)"
+                if [[ -s "$stderr_file" ]]; then
+                    log_dim "Last stderr lines:"
+                    tail -10 "$stderr_file" | while IFS= read -r line; do
+                        log_dim "  $line"
+                    done
+                fi
             fi
+            return 1
+        }
+    elif [[ -z "$raw_jsonl" ]]; then
+        # Empty output + non-timeout exit = invocation failure
+        rm -f "$prompt_file"
+        log_error "Codex invocation failed"
+        if [[ -s "$stderr_file" ]]; then
+            log_dim "Last stderr lines:"
+            tail -10 "$stderr_file" | while IFS= read -r line; do
+                log_dim "  $line"
+            done
         fi
         return 1
-    }
+    fi
     rm -f "$prompt_file"
 
     # Check output size — if truncated by head -c, fail closed
@@ -491,31 +506,6 @@ ${prompt}"
                 output_tokens: ($output | tonumber)
             }
         }'
-}
-
-# ---------------------------------------------------------------------------
-# Check if Codex sandbox (bwrap) works on this system
-# ---------------------------------------------------------------------------
-check_codex_sandbox() {
-    if [[ "${KYZN_CODEX_SANDBOX:-}" == "bypass" ]]; then
-        return 1  # User already knows and chose bypass
-    fi
-
-    # Quick test: try a trivial codex exec with sandbox
-    local test_result
-    test_result=$(echo "Say ok" | timeout 30 codex exec --json --ephemeral --full-auto 2>/dev/null || true)
-
-    # Check if bwrap error appears in the agent messages
-    if echo "$test_result" | grep -q "bwrap" 2>/dev/null; then
-        return 1  # Sandbox broken
-    fi
-
-    # Check if we got a successful turn
-    if echo "$test_result" | jq -e 'select(.type == "turn.completed")' &>/dev/null; then
-        return 0  # Sandbox works
-    fi
-
-    return 1  # Unknown state, assume broken
 }
 
 # ---------------------------------------------------------------------------
