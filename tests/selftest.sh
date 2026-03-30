@@ -2109,10 +2109,52 @@ test_check_symlink_escapes() {
 }
 
 # ---------------------------------------------------------------------------
+# count_diff_size counts real lines for new untracked files
+# ---------------------------------------------------------------------------
+test_count_diff_size_new_files() {
+    log_header "68. count_diff_size: new files counted by real line count"
+
+    create_sandbox "generic"
+    local sandbox_dir="$SANDBOX"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/execute.sh" 2>/dev/null || true
+
+    # Return to sandbox after sourcing (execute.sh may change cwd)
+    cd "$sandbox_dir"
+
+    # Create a new untracked file with 150 lines
+    local i
+    for i in $(seq 1 150); do echo "line $i"; done > big_new_file.py
+
+    # Create another with 50 lines
+    for i in $(seq 1 50); do echo "line $i"; done > small_new_file.py
+
+    local diff_added=0 diff_deleted=0 diff_binary=0
+    count_diff_size diff_added diff_deleted diff_binary
+
+    # Should report ~200 added lines (150 + 50), not 2
+    if (( diff_added >= 190 )); then
+        pass "new files counted by real lines ($diff_added added)"
+    else
+        fail "new file line count" "expected ~200 added lines, got $diff_added"
+    fi
+
+    # Single large file should exceed a low limit
+    if (( diff_added > 10 )); then
+        pass "diff gate would catch large new files"
+    else
+        fail "diff gate bypass" "large new files not counted properly ($diff_added lines)"
+    fi
+
+    cleanup_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Progress animation lifecycle
 # ---------------------------------------------------------------------------
 test_progress_animation() {
-    log_header "67. progress animation: start/stop lifecycle and no orphan on double-start"
+    log_header "69. progress animation: start/stop lifecycle and no orphan on double-start"
 
     # Skip in CI or when /dev/tty unavailable — animation needs a tty
     if [[ ! -e /dev/tty ]]; then
@@ -2244,6 +2286,7 @@ main() {
     test_safe_checkout_back_disables_hooks
     test_profile_path_traversal
     test_check_symlink_escapes
+    test_count_diff_size_new_files
     test_progress_animation
 
     # Stress tests

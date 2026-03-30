@@ -17,7 +17,7 @@ cd KyZN
 # Quick tests (265 cases, ~3s)
 bash tests/selftest.sh
 
-# Full suite with stress tests (274 cases, ~7s)
+# Full suite with stress tests (276 cases, ~7s)
 bash tests/selftest.sh --full
 ```
 

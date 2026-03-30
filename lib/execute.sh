@@ -68,12 +68,20 @@ count_diff_size() {
         grep -vE "$_KYZN_GENERATED_DIRS" | \
         grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
 
-    # Also count new untracked files (excluding KyZN artifacts and generated dirs)
-    local new_files_stat
-    new_files_stat=$(git ls-files --others --exclude-standard 2>/dev/null \
+    # Also count new untracked files by real line count (excluding KyZN artifacts and generated dirs)
+    local _nf_list _nf_file _nf_lines
+    local new_files_stat=""
+    _nf_list=$(git ls-files --others --exclude-standard 2>/dev/null \
         | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_KYZN_GENERATED_DIRS" \
-        | awk '{print "1\t0\t" $0}' || true)
+        | grep -vE "$_KYZN_GENERATED_DIRS" || true)
+    local _nf_arr=()
+    [[ -n "$_nf_list" ]] && mapfile -t _nf_arr <<< "$_nf_list"
+    for _nf_file in "${_nf_arr[@]}"; do
+        [[ -z "$_nf_file" || ! -f "$_nf_file" ]] && continue
+        _nf_lines=$(wc -l < "$_nf_file" 2>/dev/null) || _nf_lines=0
+        _nf_lines="${_nf_lines// /}"
+        new_files_stat+="${_nf_lines}"$'\t'"0"$'\t'"${_nf_file}"$'\n'
+    done
 
     local combined="${numstat}"$'\n'"${new_files_stat}"
 
@@ -189,7 +197,24 @@ check_symlink_escapes() {
         -not -path './.git/*' \
         2>/dev/null | while IFS= read -r link; do
         local target
-        target=$(readlink -f "$link" 2>/dev/null) || continue
+        # Portable symlink resolution (readlink -f doesn't exist on stock macOS)
+        target=$(readlink -f "$link" 2>/dev/null) || {
+            # Fallback: manual single-level resolution
+            local _link_dir _link_target
+            _link_dir=$(cd "$(dirname "$link")" 2>/dev/null && pwd -P) || true
+            _link_target=$(readlink "$link" 2>/dev/null) || true
+            if [[ -n "$_link_target" ]]; then
+                if [[ "$_link_target" == /* ]]; then
+                    target="$_link_target"
+                else
+                    target="$_link_dir/$_link_target"
+                fi
+            else
+                # Unresolvable symlink — flag it as escaping (fail-closed)
+                echo "$link -> (unresolvable)"
+                continue
+            fi
+        }
         # Allow symlinks whose resolved target is within the repo root
         if [[ "$target" != "$repo_root"/* && "$target" != "$repo_root" ]]; then
             echo "$link -> $target"
