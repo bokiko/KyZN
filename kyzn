@@ -65,8 +65,11 @@ Commands:
   update          Pull latest version
   version         Show version
 
-Quick options:
+Common options:
+  --provider <p>      claude | codex | auto (default: claude)
   --auto              Use saved config (no prompts, for cron)
+
+Quick options:
   --focus <area>      Target specific area (security, testing, perf, quality, doc)
   --mode <mode>       deep | clean | full
   --model <model>     sonnet | opus | haiku
@@ -76,14 +79,12 @@ Quick options:
   -v, --verbose       Show live Claude progress
 
 Fix options:
-  --auto              Run without prompts
   --fix-budget <USD>  Budget for fix phase (default: $5)
   --min-severity <s>  Minimum severity to fix (CRITICAL|HIGH|MEDIUM|LOW)
   --profile <p>       opus | hybrid | sonnet
   --budget <USD>      Budget for analysis phase
 
 Analyze options:
-  --auto              Run without prompts
   --fix               Auto-fix findings after analysis (same as 'kyzn fix')
   --fix-budget <USD>  Budget for fix phase
   --single            Use single reviewer instead of 4 specialists
@@ -176,6 +177,7 @@ main() {
             source "$KYZN_ROOT/lib/interview.sh"
             source "$KYZN_ROOT/lib/measure.sh"
             source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/provider.sh"
             source "$KYZN_ROOT/lib/execute.sh"
             source "$KYZN_ROOT/lib/verify.sh"
             source "$KYZN_ROOT/lib/allowlist.sh"
@@ -187,6 +189,7 @@ main() {
             source "$KYZN_ROOT/lib/detect.sh"
             source "$KYZN_ROOT/lib/measure.sh"
             source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/provider.sh"
             source "$KYZN_ROOT/lib/execute.sh"
             source "$KYZN_ROOT/lib/verify.sh"
             source "$KYZN_ROOT/lib/allowlist.sh"
@@ -199,6 +202,7 @@ main() {
             source "$KYZN_ROOT/lib/detect.sh"
             source "$KYZN_ROOT/lib/measure.sh"
             source "$KYZN_ROOT/lib/prompt.sh"
+            source "$KYZN_ROOT/lib/provider.sh"
             source "$KYZN_ROOT/lib/execute.sh"
             source "$KYZN_ROOT/lib/verify.sh"
             source "$KYZN_ROOT/lib/allowlist.sh"
@@ -299,15 +303,14 @@ cmd_doctor() {
     log_header "KyZN doctor — checking prerequisites"
     local ok=true
 
-    # Required tools
-    local -a required=("git" "gh" "claude" "jq" "yq")
+    # Required tools (core)
+    local -a required=("git" "gh" "jq" "yq")
     for tool in "${required[@]}"; do
         if command -v "$tool" &>/dev/null; then
             local ver
             case "$tool" in
                 git)    ver=$(git --version | awk '{print $3}') ;;
                 gh)     ver=$(gh --version | head -1 | awk '{print $3}') ;;
-                claude) ver=$(claude --version 2>/dev/null || echo "unknown") ;;
                 jq)     ver=$(jq --version 2>/dev/null || echo "unknown") ;;
                 yq)     ver=$(yq --version 2>/dev/null | awk '{print $NF}') ;;
             esac
@@ -319,8 +322,6 @@ cmd_doctor() {
                     log_dim "  Install: sudo apt install git  (or brew install git)" ;;
                 gh)
                     log_dim "  Install: https://cli.github.com" ;;
-                claude)
-                    log_dim "  Install: npm install -g @anthropic-ai/claude-code" ;;
                 jq)
                     log_dim "  Install: sudo apt install jq  (or brew install jq)" ;;
                 yq)
@@ -330,26 +331,73 @@ cmd_doctor() {
         fi
     done
 
-    # Claude auth (API key OR OAuth login)
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        # Validate the key actually works (quick test)
-        local _key_test
-        _key_test=$(claude -p "hi" --output-format json --no-session-persistence --max-turns 1 2>/dev/null) || true
-        if echo "$_key_test" | grep -q '"is_error":true' 2>/dev/null; then
-            log_fail "Claude auth: API key is SET but INVALID"
-            log_dim "  Your ANTHROPIC_API_KEY is expired or wrong."
-            log_dim "  Fix: unset ANTHROPIC_API_KEY  (to use OAuth login instead)"
-            log_dim "  Or replace the key in ~/.bashrc with a valid one."
-            ok=false
+    # AI providers — at least one required
+    echo ""
+    log_info "AI providers:"
+    local has_any_provider=false
+
+    # Claude CLI
+    if command -v claude &>/dev/null; then
+        local claude_ver
+        claude_ver=$(claude --version 2>/dev/null || echo "unknown")
+        log_ok "claude ($claude_ver)"
+
+        # Claude auth (API key OR OAuth login)
+        if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+            local _key_test
+            _key_test=$(claude -p "hi" --output-format json --no-session-persistence --max-turns 1 2>/dev/null) || true
+            if echo "$_key_test" | grep -q '"is_error":true' 2>/dev/null; then
+                log_fail "  Claude auth: API key is SET but INVALID"
+                log_dim "    Fix: unset ANTHROPIC_API_KEY  (to use OAuth login instead)"
+            else
+                log_ok "  Claude auth: API key (verified)"
+                has_any_provider=true
+            fi
+        elif claude auth status &>/dev/null 2>&1 || [[ -d "${HOME}/.claude" ]]; then
+            log_ok "  Claude auth: logged in"
+            has_any_provider=true
         else
-            log_ok "Claude auth: API key (verified)"
+            log_warn "  Claude not authenticated"
+            log_dim "    Run 'claude' and log in, or set ANTHROPIC_API_KEY"
         fi
-    elif claude auth status &>/dev/null 2>&1 || [[ -d "${HOME}/.claude" ]]; then
-        log_ok "Claude auth: logged in (no API key needed)"
     else
-        log_warn "Claude not authenticated. Either:"
-        log_dim "  • Run 'claude' and log in via browser (recommended)"
-        log_dim "  • Or set ANTHROPIC_API_KEY environment variable"
+        log_dim "claude — not installed (npm install -g @anthropic-ai/claude-code)"
+    fi
+
+    # Codex CLI
+    if command -v codex &>/dev/null; then
+        local codex_ver
+        codex_ver=$(codex --version 2>/dev/null || echo "unknown")
+        log_ok "codex ($codex_ver)"
+
+        if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            log_ok "  Codex auth: API key set"
+            has_any_provider=true
+        elif codex auth status &>/dev/null 2>&1; then
+            log_ok "  Codex auth: logged in"
+            has_any_provider=true
+        else
+            log_warn "  Codex not authenticated"
+            log_dim "    Set OPENAI_API_KEY or run codex auth"
+        fi
+    else
+        log_dim "codex — not installed (https://github.com/openai/codex)"
+    fi
+
+    if ! $has_any_provider; then
+        log_fail "No authenticated AI provider found. Install and authenticate claude or codex."
+        ok=false
+    fi
+
+    # Show provider resolution for auto mode
+    local configured_provider
+    configured_provider=$(config_get '.preferences.provider' 'claude' 2>/dev/null || echo "claude")
+    if [[ "$configured_provider" == "auto" ]] && $has_any_provider; then
+        # Resolve deterministically
+        local resolved="(none)"
+        if command -v claude &>/dev/null; then resolved="claude"
+        elif command -v codex &>/dev/null; then resolved="codex"; fi
+        log_info "Auto provider would resolve to: $resolved"
     fi
 
     # GitHub auth

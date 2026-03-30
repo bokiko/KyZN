@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
   <img src="https://img.shields.io/badge/version-1.0.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-265%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-293%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
@@ -108,7 +108,7 @@ One command. Zero config. Real bugs fixed, verified, and shipped.
 |------|----------|---------|
 | `git` | Yes | Branch management |
 | `gh` | Yes | PR creation ([GitHub CLI](https://cli.github.com)) |
-| `claude` | Yes | AI analysis ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) |
+| `claude` or `codex` | Yes (one) | AI provider — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://github.com/openai/codex) |
 | `jq` | Yes | JSON processing (auto-installed with checksum verification) |
 | `yq` | Yes | YAML config (auto-installed with checksum verification) |
 
@@ -138,6 +138,20 @@ kyzn fix        # Deep analysis + auto-fix → PR
 ---
 
 ## Usage
+
+### Provider selection
+
+KyZN supports multiple AI providers. Default is Claude Code.
+
+```bash
+kyzn fix --provider claude      # Use Claude Code (default)
+kyzn fix --provider codex       # Use OpenAI Codex CLI
+kyzn fix --provider auto        # Use whichever is available (claude first)
+```
+
+Set a default in `.kyzn/config.yaml` via `kyzn init` or `preferences.provider: codex`. The `--provider` flag always overrides config.
+
+> **Note:** Claude and Codex have different capabilities. Claude supports tool allowlists and budget caps natively. Codex uses its own sandboxing model. Both paths enforce the same safety gates (build verification, score regression, secret detection).
 
 ### `kyzn fix` — The main command
 

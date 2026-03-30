@@ -208,7 +208,7 @@ check_symlink_escapes() {
 }
 
 # ---------------------------------------------------------------------------
-# Execute Claude Code with safety layers
+# Execute AI provider with safety layers (routes through provider adapter)
 # ---------------------------------------------------------------------------
 execute_claude() {
     local prompt="$1"
@@ -218,6 +218,7 @@ execute_claude() {
     local project_type="${5:-$KYZN_PROJECT_TYPE}"
     local model="${6:-sonnet}"
     local verbose="${7:-false}"
+    local provider="${8:-${KYZN_PROVIDER:-claude}}"
 
     # Build allowlist
     local -a allowlist_arr=()
@@ -226,88 +227,44 @@ execute_claude() {
     # Pre-flight: reject symlinks that escape the repo root (prevents secret exfiltration)
     check_symlink_escapes || return 1
 
-    log_step "Invoking Claude Code (model: $model, budget: \$$budget, max turns: $max_turns)..."
-
-    local stderr_file
-    stderr_file=$(mktemp)
+    local provider_name
+    provider_name=$(provider_display_name "$provider")
+    log_step "Invoking $provider_name (model: $model, budget: \$$budget, max turns: $max_turns)..."
 
     # Timeout (default 10 minutes)
     local claude_timeout="${KYZN_CLAUDE_TIMEOUT:-600}"
 
-    # Core invocation (allowlist is an array — properly quoted expansion)
+    local stderr_file
+    stderr_file=$(mktemp)
+
+    local -a invoke_args=(
+        --provider "$provider"
+        --contract "improve_json"
+        --prompt "$prompt"
+        --model "$model"
+        --budget "$budget"
+        --max-turns "$max_turns"
+        --timeout "$claude_timeout"
+        --system-prompt-file "$system_prompt_file"
+        --allowlist-arr allowlist_arr
+        --settings "$KYZN_SETTINGS_JSON"
+        --stderr-file "$stderr_file"
+    )
+    [[ "$verbose" == "true" ]] && invoke_args+=(--verbose)
+
     local result
-    if $verbose; then
-        # Stream condensed progress lines to terminal in real-time
-        result=$(timeout "$claude_timeout" claude -p "$prompt" \
-            --model "$model" \
-            --max-budget-usd "$budget" \
-            --max-turns "$max_turns" \
-            "${allowlist_arr[@]}" \
-            --settings "$KYZN_SETTINGS_JSON" \
-            --append-system-prompt-file "$system_prompt_file" \
-            --output-format json \
-            --no-session-persistence \
-            2> >(tee "$stderr_file" | while IFS= read -r line; do
-                [[ -z "$line" ]] && continue
-                local short
-                short=$(truncate_str "$line" 100)
-                echo -e "  ${DIM}${short}${RESET}" >&2
-            done)) || {
-            local exit_code=$?
-            if (( exit_code == 124 )); then
-                log_error "Claude Code timed out after ${claude_timeout}s"
-            else
-                log_error "Claude Code invocation failed"
-                if [[ -s "$stderr_file" ]]; then
-                    log_dim "Last stderr lines:"
-                    tail -10 "$stderr_file" | while IFS= read -r line; do
-                        log_dim "  $line"
-                    done
-                fi
-            fi
-            rm -f "$stderr_file"; return 1
-        }
-    else
-        result=$(timeout "$claude_timeout" claude -p "$prompt" \
-            --model "$model" \
-            --max-budget-usd "$budget" \
-            --max-turns "$max_turns" \
-            "${allowlist_arr[@]}" \
-            --settings "$KYZN_SETTINGS_JSON" \
-            --append-system-prompt-file "$system_prompt_file" \
-            --output-format json \
-            --no-session-persistence \
-            2>"$stderr_file") || {
-            local exit_code=$?
-            if (( exit_code == 124 )); then
-                log_error "Claude Code timed out after ${claude_timeout}s"
-            else
-                log_error "Claude Code invocation failed"
-                if [[ -s "$stderr_file" ]]; then
-                    log_dim "Last stderr lines:"
-                    tail -10 "$stderr_file" | while IFS= read -r line; do
-                        log_dim "  $line"
-                    done
-                fi
-            fi
-            rm -f "$stderr_file"; return 1
-        }
-    fi
+    result=$(invoke_ai "${invoke_args[@]}") || {
+        rm -f "$stderr_file"; return 1
+    }
 
     rm -f "$stderr_file"
-
-    # Defensive JSON extraction
-    if ! echo "$result" | jq . &>/dev/null; then
-        log_error "Claude returned invalid JSON"
-        return 1
-    fi
 
     local cost session_id stop_reason
     cost=$(echo "$result" | jq -r '.total_cost_usd // "unknown"')
     session_id=$(echo "$result" | jq -r '.session_id // "none"')
     stop_reason=$(echo "$result" | jq -r '.stop_reason // "unknown"')
 
-    log_ok "Claude finished (cost: \$$cost, reason: $stop_reason)"
+    log_ok "$provider_name finished (cost: \$$cost, reason: $stop_reason)"
 
     # Store result for later use
     KYZN_CLAUDE_RESULT="$result"
@@ -354,10 +311,12 @@ cmd_improve() {
     local verbose=false
     local model_from_cli=false
     local budget_from_cli=false
+    local provider_from_cli=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --auto)     auto=true; shift ;;
+            --provider) [[ $# -ge 2 ]] || { log_error "--provider requires a value"; return 1; }; provider_from_cli="$2"; shift 2 ;;
             --focus)    [[ $# -ge 2 ]] || { log_error "--focus requires a value"; return 1; }; focus="$2"; shift 2 ;;
             --mode)     [[ $# -ge 2 ]] || { log_error "--mode requires a value"; return 1; }; mode="$2"; shift 2 ;;
             --budget)   [[ $# -ge 2 ]] || { log_error "--budget requires a value"; return 1; }; budget="$2"; budget_from_cli=true; shift 2 ;;
@@ -368,6 +327,12 @@ cmd_improve() {
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
     done
+
+    # Resolve provider (CLI flag > config > default)
+    local requested_provider="${provider_from_cli:-$(config_get '.preferences.provider' 'claude')}"
+    local KYZN_PROVIDER
+    KYZN_PROVIDER=$(resolve_provider "$requested_provider") || return 1
+    log_info "Provider: $(provider_display_name "$KYZN_PROVIDER")"
 
     # Detect project
     detect_project_type
@@ -536,8 +501,8 @@ cmd_improve() {
         fi
     fi
 
-    # Step 4: Execute Claude
-    execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
+    # Step 4: Execute AI
+    execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" "$KYZN_PROVIDER" || {
         log_error "Claude execution failed"
         declare -A _hist_fail=([health_before]="$_baseline_health" [focus]="$focus")
         write_history "$run_id" "improve" "failed" _hist_fail
@@ -607,7 +572,7 @@ ${verify_errors}
 - Do NOT install new packages or add dependencies."
 
             # Execute Claude again with error context
-            if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then
+            if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" "$KYZN_PROVIDER"; then
                 # Re-verify after retry
                 if verify_build; then
                     log_ok "Self-repair succeeded -- build and tests pass after retry!"

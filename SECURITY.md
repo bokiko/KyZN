@@ -11,9 +11,11 @@ For issues involving API key or token handling, please reach out privately to [@
 KyZN runs AI agents with real tool access inside your codebase. We take this seriously:
 
 - **Branch isolation** — all changes on `kyzn/` branches, never touches `main`
-- **Tool allowlist** — per-language restrictions tightened to specific subcommands
-- **File access restrictions** — Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, or shell configs
-- **Budget cap** — configurable per-run spending limit
+- **Tool allowlist** — per-language restrictions tightened to specific subcommands (Claude provider)
+- **File access restrictions** — AI providers cannot read `~/.ssh`, `~/.aws`, `~/.codex`, `~/.openai`, `.env`, key files, or shell configs
+- **Budget cap** — configurable per-run spending limit (Claude provider enforces natively; Codex uses timeout + output size cap)
+- **Provider isolation** — provider is pinned per stage and never switched mid-stage, including retries
+- **Output contracts** — strict JSON validation on provider output; malformed responses abort the stage (fail-closed)
 - **Build/test gate** — PR only created if build and tests pass
 - **Score gate** — aborts if health score drops after changes
 - **Diff guard** — aborts if changes exceed threshold
