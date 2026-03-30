@@ -22,7 +22,7 @@
 
 ## Contents
 
-- [Overview](#overview)
+- [Why KyZN?](#why-kyzn)
 - [Quick Demo](#quick-demo)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
@@ -33,15 +33,41 @@
 
 ---
 
-## Overview
+## Why KyZN?
 
-**KyZN** (from _kaizen_ — continuous improvement) is a pure-Bash CLI that autonomously improves code quality. It runs real language tools to produce a health score, dispatches 4 Opus specialist agents in parallel to find issues, deduplicates via consensus, fixes in severity batches with build/test verification, and opens a GitHub PR — all in one command.
+Improving a codebase with Claude is powerful — but doing it manually means you're the glue holding the workflow together:
 
-Supports **Node.js**, **Python**, **Rust**, and **Go** out of the box. Works on any project type for generic analysis.
+1. Run linters, type checkers, and security audits for your language
+2. Read the output, decide what matters
+3. Paste findings into Claude with enough context
+4. Hope Claude doesn't burn tokens on cosmetic renames and import shuffling
+5. Review the diff for regressions and leaked secrets
+6. Run tests yourself
+7. Check the health score didn't drop
+8. Create a PR with a summary of what changed
+
+**KyZN replaces all of that with one command.** It runs real tools, scores your repo, dispatches 4 specialist agents to find issues across security, correctness, performance, and architecture — then fixes them in severity batches with build verification after each one. If something breaks, it auto-retries. If the health score drops, it aborts. When it's done, you get a PR with before/after scores.
 
 ```
 kyzn fix   →  profile repo  →  4 Opus specialists  →  consensus  →  Sonnet fixes  →  verify  →  PR
 ```
+
+Supports **Node.js**, **Python**, **Rust**, and **Go** out of the box. Works on any project type for generic analysis.
+
+### How KyZN uses tokens efficiently
+
+KyZN is designed to get more value per token than an interactive Claude session:
+
+| Mechanism | What it does |
+|-----------|-------------|
+| **Structured JSON input** | Linter output is parsed into scored JSON — Claude gets signal, not 200 lines of raw tool output |
+| **Mode constraints** | `deep` mode blocks cosmetic changes (renames, reformats, import reordering) so tokens go to real fixes |
+| **Read-only analysis** | Specialist agents only get Read/Glob/Grep — zero tokens spent on exploratory edits during analysis |
+| **Cached profiler** | Repo conventions are profiled once per commit SHA and reused across runs |
+| **Consensus dedup** | 4 specialists may flag the same issue — consensus removes duplicates before the fix phase starts |
+| **Hard budget caps** | Every Claude invocation has `--max-budget-usd` and `--max-turns` enforced (default quick run: $2.50, 30 turns) |
+| **Stateless sessions** | `--no-session-persistence` on every call — no cross-run context bloat accumulating |
+| **Structured fix plans** | Each finding includes target file, function, and pattern — the fix agent doesn't spend tokens figuring out *where* to edit |
 
 ---
 
