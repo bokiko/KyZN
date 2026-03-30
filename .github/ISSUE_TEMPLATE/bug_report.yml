@@ -1,0 +1,81 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill out the sections below so we can reproduce and fix it.
+
+  - type: input
+    id: command
+    attributes:
+      label: Command run
+      description: The exact kyzn command you ran
+      placeholder: "kyzn fix --auto"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. Include error messages or unexpected output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug
+      placeholder: |
+        1. Run `kyzn init` in a Node.js project
+        2. Run `kyzn fix`
+        3. See error at step X
+    validations:
+      required: false
+
+  - type: dropdown
+    id: project-type
+    attributes:
+      label: Project type
+      options:
+        - Node.js
+        - Python
+        - Rust
+        - Go
+        - Generic / Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `kyzn doctor` or manual info
+      placeholder: |
+        OS: Ubuntu 24.04
+        Bash: 5.2.21
+        Claude CLI: 1.x.x
+        gh: 2.x.x
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant log output (check `.kyzn/runs/` for run logs)
+      render: text
+    validations:
+      required: false
