@@ -728,23 +728,35 @@ cmd_analyze() {
     }
 
     if [[ -z "$profile" ]] && ! $auto && ! $single && [[ -z "$focus" ]]; then
-        local profile_choice
-        profile_choice=$(prompt_choice "Model profile?" \
-            "All Opus    — maximum accuracy (recommended)" \
-            "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
-            "All Sonnet  — fastest, cheapest")
+        if [[ "$KYZN_PROVIDER" == "claude" ]]; then
+            local profile_choice
+            profile_choice=$(prompt_choice "Model profile?" \
+                "All Opus    — maximum accuracy (recommended)" \
+                "Hybrid      — Opus for security+correctness, Sonnet for perf+arch" \
+                "All Sonnet  — fastest, cheapest")
 
-        case "$profile_choice" in
-            1) profile="opus" ;;
-            2) profile="hybrid" ;;
-            3) profile="sonnet" ;;
-        esac
+            case "$profile_choice" in
+                1) profile="opus" ;;
+                2) profile="hybrid" ;;
+                3) profile="sonnet" ;;
+            esac
+        else
+            local profile_choice
+            profile_choice=$(prompt_choice "Analysis quality?" \
+                "High    — maximum accuracy, slower (recommended)" \
+                "Fast    — faster, cheaper")
+
+            case "$profile_choice" in
+                1) profile="opus" ;;
+                2) profile="sonnet" ;;
+            esac
+        fi
     fi
     profile="${profile:-opus}"
 
     case "$profile" in
         opus)
-            ;; # all opus, default
+            ;; # all highest tier, default
         hybrid)
             _model_performance="sonnet"
             _model_architecture="sonnet"
@@ -787,7 +799,9 @@ cmd_analyze() {
     elif [[ -n "$focus" ]]; then
         echo -e "  Focus:   ${CYAN}$focus${RESET} (single reviewer)"
     fi
-    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET} ($profile profile)"
+    local profile_label="$profile"
+    [[ "$KYZN_PROVIDER" != "claude" ]] && profile_label=$(case "$profile" in opus) echo "high";; sonnet) echo "fast";; *) echo "$profile";; esac)
+    echo -e "  Estimated cost: ${YELLOW}~\$$budget${RESET} ($profile_label quality)"
     echo ""
 
     if ! $auto && ! prompt_yn "Run deep analysis?"; then
