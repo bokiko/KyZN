@@ -110,7 +110,7 @@ The order creation route handler contains 80 lines of pricing calculation, inven
 
 ## Fix Instructions
 
-Paste this entire report into Claude Code to fix the findings above.
+Paste this entire report into your AI assistant (Claude Code, Codex, etc.) to fix the findings above.
 
 ### Findings to Fix (ordered by severity)
 

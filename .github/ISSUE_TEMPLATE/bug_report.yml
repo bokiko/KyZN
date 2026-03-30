@@ -65,7 +65,7 @@ body:
       placeholder: |
         OS: Ubuntu 24.04
         Bash: 5.2.21
-        Claude CLI: 1.x.x
+        Provider: claude / codex (version)
         gh: 2.x.x
       render: text
     validations:

@@ -27,7 +27,7 @@ KyZN runs AI agents with real tool access inside your codebase. We take this ser
 **Autopilot mode auto-merges AI-generated PRs without human review.** When trust is set to `autopilot` (via `kyzn init`), any PR that passes the build gate, test gate, score regression gate, and diff size gate will be merged automatically via `gh pr merge --auto --squash`.
 
 **What this means:**
-- Claude-generated code changes are merged into your default branch with no human in the loop
+- AI-generated code changes are merged into your default branch with no human in the loop
 - The only gates are automated checks (build, tests, health score, diff size)
 - If your project has no CI pipeline, GitHub's auto-merge triggers immediately on PR creation
 

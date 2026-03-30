@@ -1266,7 +1266,7 @@ generate_detailed_report() {
         if (( finding_count > 0 )); then
             echo "## Fix Instructions"
             echo ""
-            echo "Paste this entire report into Claude Code to fix the findings above."
+            echo "Paste this entire report into your AI assistant to fix the findings above."
             echo ""
             echo "### Findings to Fix (ordered by severity)"
             echo ""
