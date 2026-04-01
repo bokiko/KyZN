@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-1.1.1-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.2-2ecc71?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/tests-276%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">

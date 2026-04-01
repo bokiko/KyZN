@@ -2,6 +2,28 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.1.2] — 2026-04-01
+
+### Fixed
+- **pip-audit JSON parsing** — `jq 'length'` was counting object keys instead of vulnerabilities, causing wrong security scores for all Python projects
+- **Symlink check fallback** — macOS fallback now resolves multi-level symlink chains (was single-level only)
+- **grep -E vs grep -F** — `cmd_diff` used regex grep despite comment saying fixed-string; changed to match intent
+- **mkdir permissions** — `chmod 700` added after `mkdir -p` to fix permissions on pre-existing `~/.kyzn` directories
+- **YAML heredoc safety** — `save_interview_config` now quotes interpolated values, matching `strenv()` pattern used elsewhere
+- **Unquoted array append** — `pids+=($pid)` → `pids+=("$pid")` in specialist dispatch
+
+### Security
+- **Quick-path prompt fencing** — added data fencing instruction to `improvement-prompt.md` (was only on analyze path)
+- **Shell history blocked** — added `~/.bash_history`, `~/.zsh_history`, `~/.python_history` to `disallowedFileGlobs`
+- **Cached profile gitignored** — `repo-profile.md` added to auto-generated `.kyzn/.gitignore`
+
+### Documentation
+- Fixed `kyzn improve` → `kyzn quick` in `docs/how-it-works.md`
+- Added missing `model` key to `.kyzn.example.yaml`
+- Added 4 post-v0.5.0 security features to `SECURITY.md`
+- Fixed wrong log directory path in bug report template (`.kyzn/runs/` → `.kyzn/history/`)
+- Added `status` and `dashboard` commands to README
+
 ## [1.1.1] — 2026-04-01
 
 ### Security
