@@ -2,6 +2,20 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.1.1] — 2026-04-01
+
+### Security
+- **CI supply chain hardening** — pinned yq to v4.52.4 with SHA256 checksum verification in CI workflow (was downloading `latest` via `sudo wget` with no integrity check)
+- **Tool allowlist tightening** — removed trailing globs from commands that don't need arguments (`npm ci`, `npm audit`, `pip list`, `cargo audit`, `go mod`). Documented glob metacharacter risk for patterns that retain `*`
+- **Prompt injection mitigation** — sanitized project names (alphanumeric + hyphens/underscores only, 128 char max) and added data fencing markers around raw JSON blocks injected into Claude prompts
+
+### Fixed
+- **TOCTOU lock race** — extracted `acquire_kyzn_lock()` / `release_kyzn_lock()` into `lib/core.sh`, replacing duplicated lock logic in `execute.sh` and `analyze.sh`. The new implementation removes the `rm -rf` → `sleep 0.1` → `mkdir` race window
+- **SC2155 ShellCheck warnings** — split 4 `local var=$(cmd)` declarations to avoid masking return values (`analyze.sh`, `core.sh`, `execute.sh`)
+
+### Changed
+- **Generic project build gate** — `verify_build` now checks for a Makefile and runs `make check` / `make test` instead of silently skipping all verification for generic projects
+
 ## [1.0.0] — 2026-03-24
 
 ### Added

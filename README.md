@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-1.0.0-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.1-2ecc71?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/tests-276%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
@@ -226,7 +226,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 |-------|-----------|
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
 | **Hook protection** | All git operations disable hooks via `core.hooksPath=/dev/null` |
-| **Tool allowlist** | Per-language restrictions tightened to specific subcommands |
+| **Tool allowlist** | Per-language restrictions tightened to specific subcommands (glob-safe where possible) |
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
@@ -235,7 +235,9 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
 | **Trust isolation** | Autopilot stored in gitignored `local.yaml` (not poisonable via commits) |
-| **Supply chain** | `jq` and `yq` verified with SHA256 checksums on install |
+| **Supply chain** | `jq` and `yq` verified with SHA256 checksums on install and in CI |
+| **Prompt hardening** | Project names sanitized, raw data fenced to prevent prompt injection |
+| **Concurrency lock** | Atomic `mkdir`-based lock with stale PID detection prevents concurrent runs |
 
 > **Important:** KyZN executes your project's build and test commands. Do not run on repos you don't trust. See [SECURITY.md](SECURITY.md) for the full threat model.
 
@@ -281,7 +283,7 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 265 quick tests (~3s)
+bash tests/selftest.sh          # 267 quick tests (~3s)
 shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
 ```
 
