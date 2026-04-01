@@ -181,7 +181,8 @@ kyzn approve <run-id>           # Sign off
 kyzn reject <run-id> -r "why"   # Reject with feedback
 kyzn schedule daily             # Cron at 3am daily
 kyzn schedule off               # Remove schedule
-kyzn selftest                   # Run 276 tests
+kyzn selftest                   # Run 267 quick tests
+kyzn selftest --full            # Run 276 tests (incl. stress)
 ```
 
 ---

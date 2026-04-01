@@ -16,6 +16,28 @@ All notable changes to KyZN are documented here.
 ### Changed
 - **Generic project build gate** — `verify_build` now checks for a Makefile and runs `make check` / `make test` instead of silently skipping all verification for generic projects
 
+## [1.1.0] — 2026-03-31
+
+### Added
+- Multi-provider support added then reverted — KyZN remains Claude-only after Codex CLI proved unreliable
+
+### Fixed
+- Auto-detect broken `bwrap` sandbox and fallback silently
+- Graceful handling of malformed specialist JSON output
+- `config_get` regex regression + `skip()` unbound variable
+- Robust branch recovery when Claude switches to `main` during fix phase
+- Guard missing CLI args + fail-closed checksum verification
+- macOS BSD `sed` compatibility (replaced grouping with `tail`)
+- Suppress false update warning when local is ahead of remote
+- Exclude generated dirs from staging even without `.gitignore`
+
+### Security
+- 9 security hardening fixes from Cursor + Codex audits
+
+### Testing
+- Added tests to CI workflow
+- **276 tests passing** (full suite)
+
 ## [1.0.0] — 2026-03-24
 
 ### Added
