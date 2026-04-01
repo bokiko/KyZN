@@ -7,6 +7,7 @@ project:
 
 preferences:
   mode: deep          # deep (real improvements) | clean (cleanup) | full (everything)
+  model: sonnet       # sonnet | opus | haiku
   budget: 2.50        # USD per run
   max_turns: 30       # max Claude turns per run
   diff_limit: 2000    # max lines changed before aborting

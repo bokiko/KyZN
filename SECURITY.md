@@ -19,6 +19,10 @@ KyZN runs AI agents with real tool access inside your codebase. We take this ser
 - **Diff guard** — aborts if changes exceed threshold
 - **Secret detection** — regex-based heuristic matching on staged files (`.env`, `.pem`, `.key`, etc.)
 - **Trust isolation** — autopilot trust level stored in gitignored `local.yaml`, not committable config
+- **Supply chain** — `jq` and `yq` verified with SHA256 checksums on install and in CI
+- **Prompt hardening** — project names sanitized, raw measurement/findings data fenced to prevent prompt injection
+- **Concurrency lock** — atomic `mkdir`-based lock with stale PID detection prevents concurrent runs
+- **Hook protection** — all git operations disable hooks via `core.hooksPath=/dev/null`
 
 ## Autopilot Mode
 
