@@ -266,7 +266,7 @@ cmd_diff() {
 
     # Try to find the branch (use fixed-string grep to prevent regex injection)
     local branch
-    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -E "${run_id}\$" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
+    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -F "${run_id}" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
 
     if [[ -n "$branch" ]]; then
         git diff "main...$branch" 2>/dev/null || git diff "master...$branch" 2>/dev/null

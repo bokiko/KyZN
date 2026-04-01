@@ -258,15 +258,15 @@ save_interview_config() {
 
 project:
   name: ""
-  type: $KYZN_PROJECT_TYPE
+  type: "$KYZN_PROJECT_TYPE"
 
 preferences:
-  mode: $mode
-  model: sonnet
-  budget: $budget
+  mode: "$mode"
+  model: "sonnet"
+  budget: "$budget"
   max_turns: 30
   diff_limit: 2000
-  on_build_fail: $on_fail
+  on_build_fail: "$on_fail"
 
 focus:
   priorities: $pri_yaml
@@ -279,7 +279,7 @@ EOF
     cat > "$KYZN_LOCAL_CONFIG" <<EOF
 # KyZN local config — NOT committed (gitignored)
 # Trust level controls auto-merge behavior
-trust: $trust
+trust: "$trust"
 EOF
 
     # Create .gitignore for kyzn

@@ -199,21 +199,29 @@ check_symlink_escapes() {
         local target
         # Portable symlink resolution (readlink -f doesn't exist on stock macOS)
         target=$(readlink -f "$link" 2>/dev/null) || {
-            # Fallback: manual single-level resolution
-            local _link_dir _link_target
-            _link_dir=$(cd "$(dirname "$link")" 2>/dev/null && pwd -P) || true
-            _link_target=$(readlink "$link" 2>/dev/null) || true
-            if [[ -n "$_link_target" ]]; then
-                if [[ "$_link_target" == /* ]]; then
-                    target="$_link_target"
-                else
-                    target="$_link_dir/$_link_target"
+            # Fallback: manual multi-level resolution (macOS without coreutils)
+            local _resolved="$link"
+            local _depth=0
+            while [[ -L "$_resolved" ]] && (( _depth++ < 20 )); do
+                local _link_dir
+                _link_dir=$(cd "$(dirname "$_resolved")" 2>/dev/null && pwd -P) || true
+                local _link_target
+                _link_target=$(readlink "$_resolved" 2>/dev/null) || true
+                if [[ -z "$_link_target" ]]; then
+                    echo "$link -> (unresolvable)"
+                    continue 2
                 fi
-            else
-                # Unresolvable symlink — flag it as escaping (fail-closed)
-                echo "$link -> (unresolvable)"
+                if [[ "$_link_target" == /* ]]; then
+                    _resolved="$_link_target"
+                else
+                    _resolved="$_link_dir/$_link_target"
+                fi
+            done
+            if (( _depth >= 20 )); then
+                echo "$link -> (symlink loop)"
                 continue
             fi
+            target=$(cd "$(dirname "$_resolved")" 2>/dev/null && pwd -P)/$(basename "$_resolved")
         }
         # Allow symlinks whose resolved target is within the repo root
         if [[ "$target" != "$repo_root"/* && "$target" != "$repo_root" ]]; then

@@ -962,7 +962,7 @@ cmd_analyze() {
 
             run_specialist "$spec" "$spec_prompt" "$sys_prompt_file" "$per_agent_budget" "$tmp_dir/${spec}.json" "$(_agent_model "$spec")" &
             local pid=$!
-            pids+=($pid)
+            pids+=("$pid")
             pid_specs+=("$spec")
         done
 

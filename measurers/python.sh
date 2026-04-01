@@ -112,7 +112,7 @@ if command -v pip-audit &>/dev/null; then
     audit_output=$(pip-audit --format json 2>/dev/null) || true
 
     if [[ -n "$audit_output" ]] && echo "$audit_output" | jq . &>/dev/null; then
-        vuln_count=$(echo "$audit_output" | jq 'length')
+        vuln_count=$(echo "$audit_output" | jq '[.dependencies[]?.vulns[]?] | length')
 
         sec_score=100
         (( sec_score -= vuln_count * 15 )) || true

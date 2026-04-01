@@ -43,13 +43,14 @@ KYZN_PROFILE_CACHE="$KYZN_DIR/repo-profile.md"
 
 # Sensitive file access restrictions (single constant — used by execute.sh + analyze.sh)
 # Note: ~ is expanded to $HOME at runtime to ensure Claude Code resolves home directory paths
-KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["**/.git/**","~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**","**/*.tfstate","**/*.tfstate.backup","**/.credentials","/etc/shadow","/etc/passwd","/proc/**","/sys/**"]}}'
+KYZN_SETTINGS_JSON='{"permissions":{"disallowedFileGlobs":["**/.git/**","~/.ssh/**","~/.aws/**","~/.config/gh/**","~/.gnupg/**","**/.env","**/.env.*","**/*.pem","**/*.key","~/.bashrc","~/.bash_profile","~/.zshrc","~/.profile","~/.gitconfig","~/.git-credentials","~/.config/**","~/.claude/**","~/.npmrc","~/.pypirc","~/.docker/**","~/.kube/**","~/.netrc","~/.local/share/**","**/*.tfstate","**/*.tfstate.backup","**/.credentials","/etc/shadow","/etc/passwd","/proc/**","/sys/**","~/.bash_history","~/.zsh_history","~/.python_history","**/.bash_history"]}}'
 KYZN_SETTINGS_JSON="${KYZN_SETTINGS_JSON//\~/$HOME}"
 
 # Ensure .kyzn directories exist (restrictive permissions for global dirs)
 ensure_kyzn_dirs() {
     mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
     mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
+    chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" 2>/dev/null || true
 
     # Always ensure .kyzn/.gitignore exists (protects target repos even without kyzn init)
     local gi="$KYZN_DIR/.gitignore"
@@ -61,6 +62,7 @@ reports/
 local.yaml
 kyzn-report.md
 .improve.lock/
+repo-profile.md
 GITIGNORE
     fi
 }
@@ -91,7 +93,7 @@ acquire_kyzn_lock() {
         return 1
     fi
 
-    # Stale lock — reclaim atomically: remove then mkdir in one shot
+    # Stale lock — reclaim: remove then mkdir (not fully atomic, but mkdir failure is handled)
     log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
     rm -rf "$KYZN_LOCKDIR"
     if ! mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
@@ -318,7 +320,8 @@ if ! command -v timeout &>/dev/null; then
             wait "$watcher" 2>/dev/null
             return $ret
         else
-            # Watcher already exited = timeout fired
+            # Watcher already exited — likely timeout fired (edge case: process finished
+            # just as sleep expired, making watcher exit before we check — rare false positive)
             wait "$watcher" 2>/dev/null
             return 124
         fi
