@@ -99,7 +99,16 @@ verify_build() {
             verify_go || build_ok=false
             ;;
         generic)
-            log_info "Generic project — skipping language-specific verification"
+            # Best-effort: check for common build systems
+            if [[ -f "Makefile" ]]; then
+                log_step "Running make check (Makefile detected)..."
+                make check 2>/dev/null || make test 2>/dev/null || {
+                    log_warn "make check/test failed — treating as verification failure"
+                    build_ok=false
+                }
+            else
+                log_warn "Generic project — no build system detected, skipping verification"
+            fi
             ;;
     esac
 

@@ -19,8 +19,13 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q jq
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          # Pin yq version + checksum (matches install.sh)
+          YQ_VERSION="v4.52.4"
+          YQ_CHECKSUM="0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c"
+          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_CHECKSUM}  /tmp/yq" | sha256sum -c --strict || { echo "yq checksum mismatch — aborting"; exit 1; }
+          sudo install -m 755 /tmp/yq /usr/local/bin/yq
+          rm -f /tmp/yq
       - name: Run quick tests
         run: bash tests/selftest.sh
       - name: Run full tests

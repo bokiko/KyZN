@@ -347,27 +347,9 @@ execute_claude() {
 cmd_improve() {
     require_git_repo
 
-    # Prevent concurrent runs on the same repo (mkdir is atomic and cross-platform)
-    ensure_kyzn_dirs
-    local lockdir="$KYZN_DIR/.improve.lock"
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        # Check for stale lock (PID file inside)
-        local stale_pid
-        stale_pid=$(cat "$lockdir/pid" 2>/dev/null || echo "")
-        if [[ -z "$stale_pid" ]] || ! kill -0 "$stale_pid" 2>/dev/null; then
-            # Stale lock — previous run crashed or was interrupted
-            log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
-            rm -rf "$lockdir"
-            # Brief delay before retry to narrow the TOCTOU window
-            sleep 0.1
-            mkdir "$lockdir" 2>/dev/null || { log_error "Another KyZN improve is already running on this repo."; return 1; }
-        else
-            log_error "Another KyZN improve is already running on this repo (PID: $stale_pid)."
-            log_dim "  If this is wrong, remove the lock: rm -rf $lockdir"
-            return 1
-        fi
-    fi
-    echo $$ > "$lockdir/pid"
+    # Prevent concurrent runs on the same repo
+    acquire_kyzn_lock "improve" || return 1
+    local lockdir="$KYZN_LOCKDIR"
 
     # Parse args
     local auto=false
@@ -495,7 +477,7 @@ cmd_improve() {
         [[ -d "${after_dir:-}" ]] && rm -rf "$after_dir" 2>/dev/null
         [[ -n "${sys_prompt_file:-}" && "$sys_prompt_file" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
         # Release lock
-        rm -rf "${lockdir:-}" 2>/dev/null
+        release_kyzn_lock
         trap - EXIT INT TERM
     }
     trap _kyzn_cleanup EXIT INT TERM
@@ -524,7 +506,8 @@ cmd_improve() {
     KYZN_ORIGINAL_BRANCH="$original_branch"
     local run_suffix="${run_id##*-}"
     local safe_focus="${focus//[^a-zA-Z0-9_-]/-}"
-    local branch_name="kyzn/$(date +%Y%m%d)-${safe_focus}-${run_suffix}"
+    local branch_name
+    branch_name="kyzn/$(date +%Y%m%d)-${safe_focus}-${run_suffix}"
     log_step "Creating branch: $branch_name"
     safe_git checkout -b "$branch_name" || {
         log_error "Failed to create branch $branch_name"

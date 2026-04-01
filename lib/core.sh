@@ -65,6 +65,47 @@ GITIGNORE
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Lock management — atomic mkdir-based lock with stale PID detection
+# Usage: acquire_kyzn_lock "label"   (label = "improve" or "fix")
+#        release_kyzn_lock
+# Returns 0 on success, 1 if another process holds the lock.
+# Sets KYZN_LOCKDIR for the caller to use in cleanup traps.
+# ---------------------------------------------------------------------------
+acquire_kyzn_lock() {
+    local label="${1:-improve}"
+    ensure_kyzn_dirs
+    KYZN_LOCKDIR="$KYZN_DIR/.improve.lock"
+
+    if mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
+        echo $$ > "$KYZN_LOCKDIR/pid"
+        return 0
+    fi
+
+    # Lock exists — check for stale PID
+    local stale_pid
+    stale_pid=$(cat "$KYZN_LOCKDIR/pid" 2>/dev/null || echo "")
+    if [[ -n "$stale_pid" ]] && kill -0 "$stale_pid" 2>/dev/null; then
+        log_error "Another KyZN $label is already running on this repo (PID: $stale_pid)."
+        log_dim "  If this is wrong, remove the lock: rm -rf $KYZN_LOCKDIR"
+        return 1
+    fi
+
+    # Stale lock — reclaim atomically: remove then mkdir in one shot
+    log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
+    rm -rf "$KYZN_LOCKDIR"
+    if ! mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
+        log_error "Another KyZN $label grabbed the lock during recovery."
+        return 1
+    fi
+    echo $$ > "$KYZN_LOCKDIR/pid"
+    return 0
+}
+
+release_kyzn_lock() {
+    rm -rf "${KYZN_LOCKDIR:-}" 2>/dev/null
+}
+
 # Validate run ID format (prevent path traversal and injection)
 validate_run_id() {
     local run_id="$1"
@@ -186,9 +227,14 @@ project_root() {
 }
 
 # Get project name from directory — cached after first call
+# Sanitized: strip chars that could be used for prompt injection
 project_name() {
     if [[ -z "${KYZN_PROJECT_NAME:-}" ]]; then
-        KYZN_PROJECT_NAME=$(basename "$(project_root)")
+        local raw
+        raw=$(basename "$(project_root)")
+        # Keep only alphanumeric, hyphens, underscores, dots (max 128 chars)
+        KYZN_PROJECT_NAME=$(echo "$raw" | tr -cd 'A-Za-z0-9._-' | head -c 128)
+        [[ -z "$KYZN_PROJECT_NAME" ]] && KYZN_PROJECT_NAME="unnamed-project"
     fi
     echo "$KYZN_PROJECT_NAME"
 }
@@ -357,7 +403,8 @@ start_progress() {
             local elapsed=$(( $(date +%s) - start_time ))
             local mins=$(( elapsed / 60 ))
             local secs=$(( elapsed % 60 ))
-            local time_str="${mins}m$(printf '%02d' $secs)s"
+            local time_str
+            time_str="${mins}m$(printf '%02d' $secs)s"
 
             # Spinning braille
             local spin="${spinner_frames[$((idx % ${#spinner_frames[@]}))]}"
