@@ -358,11 +358,9 @@ execute_claude() {
 cmd_improve() {
     require_git_repo
 
-    # Prevent concurrent runs on the same repo
-    acquire_kyzn_lock "improve" || return 1
-
     # Parse args
     local auto=false
+    local allow_dirty=false
     local focus=""
     local mode=""
     local budget=""
@@ -381,10 +379,16 @@ cmd_improve() {
             --turns)    [[ $# -ge 2 ]] || { log_error "--turns requires a value"; return 1; }; max_turns="$2"; shift 2 ;;
             --model)    [[ $# -ge 2 ]] || { log_error "--model requires a value"; return 1; }; model="$2"; model_from_cli=true; shift 2 ;;
             --allow-ci) export KYZN_ALLOW_CI=true; shift ;;
+            --allow-dirty) allow_dirty=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
     done
+
+    require_clean_worktree "$allow_dirty" || return 1
+
+    # Prevent concurrent runs on the same repo
+    acquire_kyzn_lock "improve" || return 1
 
     # Detect project
     detect_project_type

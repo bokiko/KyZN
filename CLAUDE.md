@@ -14,8 +14,8 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 270 quick tests
-kyzn selftest --full       # 279 tests including stress tests
+kyzn selftest              # 276 quick tests
+kyzn selftest --full       # 285 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -23,6 +23,7 @@ shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
 
 # Usage
 kyzn doctor                # Check prerequisites
+kyzn doctor --install      # Opt in to project dependency install for verification
 kyzn init                  # Interactive setup → .kyzn/config.yaml
 kyzn measure               # Health score only
 kyzn fix                   # Deep analysis + auto-fix → PR (recommended)

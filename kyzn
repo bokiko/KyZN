@@ -73,6 +73,7 @@ Quick options:
   --budget <USD>      Budget per run (e.g. 5.00)
   --turns <N>         Max Claude turns per run
   --allow-ci          Allow CI/pipeline file creation
+  --allow-dirty       Allow running with uncommitted local changes
   -v, --verbose       Show live Claude progress
 
 Fix options:
@@ -81,6 +82,7 @@ Fix options:
   --min-severity <s>  Minimum severity to fix (CRITICAL|HIGH|MEDIUM|LOW)
   --profile <p>       opus | hybrid | sonnet
   --budget <USD>      Budget for analysis phase
+  --allow-dirty       Allow running with uncommitted local changes
 
 Analyze options:
   --auto              Run without prompts
@@ -89,6 +91,10 @@ Analyze options:
   --single            Use single reviewer instead of 4 specialists
   --focus <area>      Narrow analysis to one area
   --profile <p>       opus | hybrid | sonnet
+  --allow-dirty       Only applies with --fix
+
+Doctor options:
+  --install           Install project verification dependencies (Node/Python)
 
 History options:
   --global            Show history from all projects
@@ -296,6 +302,14 @@ main() {
 # Doctor — prerequisite checker
 # ---------------------------------------------------------------------------
 cmd_doctor() {
+    local install_deps=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --install) install_deps=true; shift ;;
+            *) log_error "Unknown option: $1"; return 1 ;;
+        esac
+    done
+
     log_header "KyZN doctor — checking prerequisites"
     local ok=true
 
@@ -382,6 +396,22 @@ cmd_doctor() {
             log_dim "$_opt_tool ($_opt_desc) — not installed"
         fi
     done
+
+    if $install_deps; then
+        echo ""
+        log_info "Installing project verification dependencies (--install)"
+        if git rev-parse --is-inside-work-tree &>/dev/null; then
+            # shellcheck source=lib/detect.sh
+            source "$KYZN_ROOT/lib/detect.sh"
+            # shellcheck source=lib/verify.sh
+            source "$KYZN_ROOT/lib/verify.sh"
+            detect_project_type
+            install_project_dependencies
+        else
+            log_error "--install requires running inside a git repository"
+            ok=false
+        fi
+    fi
 
     echo ""
     if $ok; then

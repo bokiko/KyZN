@@ -2,6 +2,16 @@
 
 All notable changes to KyZN are documented here.
 
+## Unreleased
+
+### Security
+- **Clean-worktree gate** — mutating runs now refuse uncommitted local changes by default, with an explicit `--allow-dirty` escape hatch.
+- **Safe verification defaults** — Node/Python dependency installation is opt-in via `kyzn doctor --install`, `verification.install_deps: true`, or `KYZN_VERIFY_INSTALL_DEPS=true`.
+
+### Testing
+- Added regression coverage proving dependency installs are skipped by default and dirty worktrees are blocked.
+- **285 tests passing** (full suite).
+
 ## [1.1.3] — 2026-04-24
 
 ### Fixed

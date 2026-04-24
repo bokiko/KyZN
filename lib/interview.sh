@@ -271,6 +271,11 @@ preferences:
   diff_limit: 2000
   on_build_fail: "$on_fail"
 
+verification:
+  # Safe default: KyZN verifies with already-installed dependencies only.
+  # Set true to allow npm/pip/uv installs during verification.
+  install_deps: false
+
 focus:
   priorities: $pri_yaml
 EOF

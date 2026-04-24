@@ -89,6 +89,9 @@ preferences:
   on_build_fail: report # report | discard | draft-pr
   # trust level is in .kyzn/local.yaml (gitignored, not committable)
 
+verification:
+  install_deps: false   # opt in to npm/pip/uv installs during verification
+
 focus:
   priorities: [auto]    # auto | security | testing | quality | performance | documentation
 

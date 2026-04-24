@@ -1976,12 +1976,124 @@ test_verify_node_no_test_files() {
     rm -rf "$SANDBOX"
 }
 
+test_verify_skips_dependency_install_by_default() {
+    log_header "63. verify_build skips dependency installation by default"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
+    git commit --allow-empty -m "init" -q
+
+    echo '{"name":"test-project"}' > package.json
+    echo '{"lockfileVersion":3}' > package-lock.json
+    mkdir -p fake-bin
+    cat > fake-bin/npm <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> npm.log
+exit 0
+SH
+    chmod +x fake-bin/npm
+    PATH="$SANDBOX/fake-bin:$PATH"
+    detect_project_type
+
+    unset KYZN_VERIFY_INSTALL_DEPS
+    verify_build &>/dev/null || true
+    if [[ ! -f npm.log ]]; then
+        pass "node install skipped by default"
+    else
+        fail "node install skipped" "npm was called: $(cat npm.log)"
+    fi
+
+    KYZN_VERIFY_INSTALL_DEPS=true verify_build &>/dev/null || true
+    if [[ -f npm.log ]] && grep -q 'ci --silent' npm.log; then
+        pass "node install opt-in uses npm ci"
+    else
+        fail "node install opt-in" "npm ci was not called"
+    fi
+
+    cd "$KYZN_ROOT"
+    rm -rf "$SANDBOX"
+}
+
+test_verify_python_skips_dependency_install_by_default() {
+    log_header "64. verify_python skips dependency installation by default"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
+    git commit --allow-empty -m "init" -q
+
+    cat > pyproject.toml <<'TOML'
+[project]
+name = "test-project"
+version = "0.1.0"
+TOML
+    mkdir -p fake-bin
+    cat > fake-bin/uv <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> uv.log
+exit 0
+SH
+    chmod +x fake-bin/uv
+    PATH="$SANDBOX/fake-bin:$PATH"
+    detect_project_type
+
+    unset KYZN_VERIFY_INSTALL_DEPS
+    verify_build &>/dev/null || true
+    if [[ ! -f uv.log ]]; then
+        pass "python install skipped by default"
+    else
+        fail "python install skipped" "uv was called: $(cat uv.log)"
+    fi
+
+    KYZN_VERIFY_INSTALL_DEPS=true verify_build &>/dev/null || true
+    if [[ -f uv.log ]] && grep -q 'sync --quiet' uv.log; then
+        pass "python install opt-in uses uv sync"
+    else
+        fail "python install opt-in" "uv sync was not called"
+    fi
+
+    cd "$KYZN_ROOT"
+    rm -rf "$SANDBOX"
+}
+
+test_require_clean_worktree() {
+    log_header "65. require_clean_worktree blocks dirty repos"
+
+    create_sandbox generic
+
+    echo "local edit" >> scripts/run.sh
+    if ! require_clean_worktree false 2>/dev/null; then
+        pass "dirty worktree rejected"
+    else
+        fail "dirty worktree rejected" "dirty repo was accepted"
+    fi
+
+    if require_clean_worktree true 2>/dev/null; then
+        pass "allow-dirty override accepted"
+    else
+        fail "allow-dirty override" "override was rejected"
+    fi
+
+    cleanup_sandbox
+}
+
 # ---------------------------------------------------------------------------
 # Security hardening tests (from Cursor + Codex audits)
 # ---------------------------------------------------------------------------
 
 test_awk_budget_injection() {
-    log_header "63. awk budget calculation rejects injection payloads"
+    log_header "66. awk budget calculation rejects injection payloads"
 
     # awk -v safely passes the string — system() is NOT executed
     rm -f /tmp/kyzn-pwned
@@ -2290,6 +2402,9 @@ main() {
     test_budget_carving
     test_specialist_prompt_has_fix_plan
     test_verify_node_no_test_files
+    test_verify_skips_dependency_install_by_default
+    test_verify_python_skips_dependency_install_by_default
+    test_require_clean_worktree
     test_awk_budget_injection
     test_xargs_filename_with_spaces
     test_safe_checkout_back_disables_hooks

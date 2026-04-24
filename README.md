@@ -11,13 +11,13 @@
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
   <img src="https://img.shields.io/badge/version-1.1.3-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-279%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-285%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;279+tests+%7C+CI-hardened;Tested+on+7+repos+across+4+languages" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;285+tests+%7C+CI-hardened;Tested+on+7+repos+across+4+languages" alt="Typing SVG"></a>
 </p>
 
 ## Contents
@@ -147,6 +147,7 @@ kyzn fix --auto                 # Non-interactive (cron-safe)
 kyzn fix --profile hybrid       # Opus for security+correctness, Sonnet for perf+arch
 kyzn fix --min-severity HIGH    # Only fix HIGH+ findings
 kyzn fix --fix-budget 10.00     # Budget for fix phase
+kyzn fix --allow-dirty          # Expert mode: run with local uncommitted changes
 ```
 
 Profiler scans conventions, 4 Opus specialists find issues in parallel, consensus deduplicates, Sonnet fixes in severity batches (CRITICAL → HIGH → MEDIUM → LOW) with build/test verification after each batch. If a fix breaks the build, reflexion retry gives Sonnet a second chance with the error output. Opens a PR when done.
@@ -168,6 +169,7 @@ kyzn quick --auto               # Non-interactive
 kyzn quick --mode deep          # Real improvements only
 kyzn quick --mode clean         # Dead code + naming cleanup
 kyzn quick --mode full          # Everything
+kyzn quick --allow-dirty        # Expert mode: allow uncommitted local changes
 ```
 
 ### Other commands
@@ -175,6 +177,7 @@ kyzn quick --mode full          # Everything
 ```bash
 kyzn measure                    # Health score only
 kyzn doctor                     # Check prerequisites
+kyzn doctor --install           # Opt in to project dependency install for verification
 kyzn history                    # Show all runs
 kyzn diff <run-id>              # Show what changed
 kyzn approve <run-id>           # Sign off
@@ -183,8 +186,8 @@ kyzn schedule daily             # Cron at 3am daily
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
-kyzn selftest                   # Run 270 quick tests
-kyzn selftest --full            # Run 279 tests (incl. stress)
+kyzn selftest                   # Run 276 quick tests
+kyzn selftest --full            # Run 285 tests (incl. stress)
 ```
 
 ---
@@ -228,6 +231,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | Layer | Protection |
 |-------|-----------|
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
+| **Clean-worktree gate** | Mutating runs refuse uncommitted changes unless `--allow-dirty` is explicit |
 | **Hook protection** | All git operations disable hooks via `core.hooksPath=/dev/null` |
 | **Tool allowlist** | Per-language restrictions tightened to specific subcommands (glob-safe where possible) |
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
@@ -242,7 +246,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **Prompt hardening** | Project names sanitized, raw data fenced to prevent prompt injection |
 | **Concurrency lock** | Atomic `mkdir`-based lock with stale PID detection prevents concurrent runs |
 
-> **Important:** KyZN executes your project's build and test commands. Do not run on repos you don't trust. See [SECURITY.md](SECURITY.md) for the full threat model.
+> **Important:** KyZN executes your project's build and test commands. It does **not** install Node/Python dependencies during verification by default. To opt in, run `kyzn doctor --install`, set `verification.install_deps: true` in `.kyzn/config.yaml`, or export `KYZN_VERIFY_INSTALL_DEPS=true`. Do not run on repos you don't trust. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ---
 
@@ -270,7 +274,7 @@ kyzn/
 │   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh
 ├── templates/              # System prompts + analysis templates
 ├── profiles/               # Focus-specific prompts
-├── tests/selftest.sh       # 279 tests (quick + stress)
+├── tests/selftest.sh       # 285 tests (quick + stress)
 ├── SECURITY.md             # Threat model + published audit
 └── .github/workflows/      # CI (ShellCheck)
 ```
@@ -286,7 +290,7 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 270 quick tests (~3s)
+bash tests/selftest.sh          # 276 quick tests (~4s)
 shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
 ```
 
