@@ -14,8 +14,8 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 276 quick tests
-kyzn selftest --full       # 285 tests including stress tests
+kyzn selftest              # 277 quick tests
+kyzn selftest --full       # 286 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)

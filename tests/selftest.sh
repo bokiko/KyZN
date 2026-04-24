@@ -2067,6 +2067,59 @@ SH
     rm -rf "$SANDBOX"
 }
 
+test_install_python_deps_requirements_txt() {
+    log_header "64b. install_python_dependencies uses pip when requirements.txt + no uv"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
+    git commit --allow-empty -m "init" -q
+
+    echo "requests==2.32.0" > requirements.txt
+    mkdir -p fake-bin
+    # Fake python3 that mocks "-m venv <dir>" by creating a pip stub that logs args.
+    cat > fake-bin/python3 <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "-m" && "$2" == "venv" ]]; then
+    mkdir -p "$3/bin"
+    cat > "$3/bin/pip" <<'PIP'
+#!/usr/bin/env bash
+echo "$*" >> pip.log
+exit 0
+PIP
+    chmod +x "$3/bin/pip"
+    exit 0
+fi
+exit 0
+SH
+    chmod +x fake-bin/python3
+    # Isolate PATH — deliberately exclude /usr/local/bin where uv lives, so the
+    # requirements.txt branch is forced (`command -v uv` must fail).
+    local saved_path="$PATH"
+    PATH="$SANDBOX/fake-bin:/usr/bin:/bin"
+    detect_project_type
+
+    install_python_dependencies &>/dev/null || true
+
+    PATH="$saved_path"
+
+    if [[ -d .venv && -f pip.log ]] && grep -q 'install -q -r requirements.txt' pip.log; then
+        pass "requirements.txt path invokes pip install"
+    else
+        local got="missing"
+        [[ -f pip.log ]] && got=$(cat pip.log)
+        fail "requirements.txt path" "expected .venv created and pip called; got pip.log=$got"
+    fi
+
+    cd "$KYZN_ROOT"
+    rm -rf "$SANDBOX"
+}
+
 test_require_clean_worktree() {
     log_header "65. require_clean_worktree blocks dirty repos"
 
@@ -2404,6 +2457,7 @@ main() {
     test_verify_node_no_test_files
     test_verify_skips_dependency_install_by_default
     test_verify_python_skips_dependency_install_by_default
+    test_install_python_deps_requirements_txt
     test_require_clean_worktree
     test_awk_budget_injection
     test_xargs_filename_with_spaces

@@ -157,6 +157,7 @@ require_clean_worktree() {
         done
         return 1
     fi
+    return 0
 }
 
 # Check if config exists
