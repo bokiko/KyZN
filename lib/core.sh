@@ -50,7 +50,8 @@ KYZN_SETTINGS_JSON="${KYZN_SETTINGS_JSON//\~/$HOME}"
 # Ensure .kyzn directories exist (restrictive permissions for global dirs)
 ensure_kyzn_dirs() {
     mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
-    mkdir -p "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
+    # shellcheck disable=SC2174 # Restrictive mode is desired on first creation; chmod below fixes pre-existing dirs.
+    mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
     chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" 2>/dev/null || true
 
     # Always ensure .kyzn/.gitignore exists (protects target repos even without kyzn init)

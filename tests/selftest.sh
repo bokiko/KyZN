@@ -694,7 +694,8 @@ test_build_failure_report_strategy() {
     # Create branch (simulate kyzn mid-run)
     git checkout -b kyzn/test-report-branch 2>/dev/null
 
-    KYZN_CLAUDE_COST="1.23"
+    # shellcheck disable=SC2034 # handle_build_failure reads this global to include cost in the report.
+    local KYZN_CLAUDE_COST="1.23"
     handle_build_failure "report" "test-run-report" "kyzn/test-report-branch" "deep" "security"
 
     assert_file_exists "failure report created" "$KYZN_REPORTS_DIR/test-run-report-failed.md"
