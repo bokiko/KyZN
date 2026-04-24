@@ -146,6 +146,7 @@ interview_security_depth() {
 # Sub-interview: testing depth
 # ---------------------------------------------------------------------------
 interview_testing_depth() {
+    # shellcheck disable=SC2178 # Nameref points at caller-owned array.
     local -n _ref_pri=$1
 
     local depth
@@ -167,6 +168,7 @@ interview_testing_depth() {
 # Sub-interview: performance depth
 # ---------------------------------------------------------------------------
 interview_performance_depth() {
+    # shellcheck disable=SC2178 # Nameref points at caller-owned array.
     local -n _ref_pri=$1
 
     local depth
@@ -188,6 +190,7 @@ interview_performance_depth() {
 # Sub-interview: multiple areas
 # ---------------------------------------------------------------------------
 interview_multiple_areas() {
+    # shellcheck disable=SC2178 # Nameref points at caller-owned array.
     local -n _ref_pri=$1
 
     echo -e "\n${BOLD}Select all that apply (space-separated numbers):${RESET}" >&2

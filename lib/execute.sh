@@ -343,9 +343,12 @@ execute_claude() {
     log_ok "Claude finished (cost: \$$cost, reason: $stop_reason)"
 
     # Store result for later use
+    # shellcheck disable=SC2034 # Exported via globals for callers/tests after execute_claude returns.
     KYZN_CLAUDE_RESULT="$result"
     KYZN_CLAUDE_COST="$cost"
+    # shellcheck disable=SC2034 # Exported via globals for callers/tests after execute_claude returns.
     KYZN_CLAUDE_SESSION="$session_id"
+    # shellcheck disable=SC2034 # Exported via globals for callers/tests after execute_claude returns.
     KYZN_CLAUDE_STOP_REASON="$stop_reason"
 }
 
@@ -357,7 +360,6 @@ cmd_improve() {
 
     # Prevent concurrent runs on the same repo
     acquire_kyzn_lock "improve" || return 1
-    local lockdir="$KYZN_LOCKDIR"
 
     # Parse args
     local auto=false
