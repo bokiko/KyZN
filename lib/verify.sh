@@ -47,6 +47,60 @@ capture_failing_tests() {
 # ---------------------------------------------------------------------------
 KYZN_PYTEST_EXTRA_ARGS=""
 
+verify_install_deps_enabled() {
+    if [[ "${KYZN_VERIFY_INSTALL_DEPS:-false}" == "true" ]]; then
+        return 0
+    fi
+
+    if [[ "$(config_get '.verification.install_deps' 'false')" == "true" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+install_node_dependencies() {
+    [[ -f "package.json" && ! -d "node_modules" ]] || return 0
+
+    log_step "Installing Node dependencies..."
+    if [[ -f "package-lock.json" ]]; then
+        npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
+    elif [[ -f "yarn.lock" ]]; then
+        yarn install --frozen-lockfile --silent 2>&1 | tail -3
+    elif [[ -f "pnpm-lock.yaml" ]]; then
+        pnpm install --frozen-lockfile --silent 2>&1 | tail -3
+    elif [[ -f "bun.lockb" ]]; then
+        bun install --frozen-lockfile 2>&1 | tail -3
+    else
+        npm install --silent 2>&1 | tail -3
+    fi
+
+    [[ -d "node_modules" ]] && log_ok "Dependencies installed" || log_warn "Dependency install may have failed"
+}
+
+install_python_dependencies() {
+    [[ ! -d ".venv" && ! -d "venv" ]] || return 0
+
+    if [[ -f "pyproject.toml" ]] && command -v uv &>/dev/null; then
+        log_step "Installing Python dependencies (uv sync)..."
+        uv sync --quiet 2>&1 | tail -3
+        [[ -d ".venv" ]] && log_ok "Dependencies installed" || log_warn "uv sync may have failed"
+    elif [[ -f "requirements.txt" ]]; then
+        log_step "Installing Python dependencies (pip)..."
+        python3 -m venv .venv 2>/dev/null
+        .venv/bin/pip install -q -r requirements.txt 2>&1 | tail -3
+        log_ok "Dependencies installed"
+    fi
+}
+
+install_project_dependencies() {
+    case "${KYZN_PROJECT_TYPE:-generic}" in
+        node)   install_node_dependencies ;;
+        python) install_python_dependencies ;;
+        *)      log_info "No dependency installer for ${KYZN_PROJECT_TYPE:-generic} projects." ;;
+    esac
+}
+
 gate_new_test_files() {
     local _var_flags="${1:-}"
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
@@ -125,25 +179,13 @@ verify_build() {
 verify_node() {
     local ok=true
 
-    # Auto-install dependencies if node_modules is missing
     if [[ -f "package.json" && ! -d "node_modules" ]]; then
-        log_step "Installing dependencies (node_modules not found)..."
-        if [[ -f "package-lock.json" ]]; then
-            npm ci --silent 2>&1 | tail -3 || npm install --silent 2>&1 | tail -3
-        elif [[ -f "yarn.lock" ]]; then
-            yarn install --frozen-lockfile --silent 2>&1 | tail -3
-        elif [[ -f "pnpm-lock.yaml" ]]; then
-            pnpm install --frozen-lockfile --silent 2>&1 | tail -3
-        elif [[ -f "bun.lockb" ]]; then
-            bun install --frozen-lockfile 2>&1 | tail -3
+        if verify_install_deps_enabled; then
+            log_step "Installing dependencies (node_modules not found, install_deps enabled)..."
+            install_node_dependencies
         else
-            npm install --silent 2>&1 | tail -3
-        fi
-
-        if [[ -d "node_modules" ]]; then
-            log_ok "Dependencies installed"
-        else
-            log_warn "Dependency install may have failed — continuing anyway"
+            log_warn "node_modules not found — skipping dependency install by default"
+            log_dim "  Set verification.install_deps: true or KYZN_VERIFY_INSTALL_DEPS=true to opt in."
         fi
     fi
 
@@ -201,17 +243,12 @@ verify_node() {
 verify_python() {
     local ok=true
 
-    # Auto-install dependencies if no venv and project has deps
     if [[ ! -d ".venv" && ! -d "venv" ]]; then
-        if [[ -f "pyproject.toml" ]] && command -v uv &>/dev/null; then
-            log_step "Installing dependencies (uv sync)..."
-            uv sync --quiet 2>&1 | tail -3
-            [[ -d ".venv" ]] && log_ok "Dependencies installed" || log_warn "uv sync may have failed"
-        elif [[ -f "requirements.txt" ]]; then
-            log_step "Installing dependencies (pip)..."
-            python3 -m venv .venv 2>/dev/null
-            .venv/bin/pip install -q -r requirements.txt 2>&1 | tail -3
-            log_ok "Dependencies installed"
+        if verify_install_deps_enabled; then
+            install_python_dependencies
+        elif [[ -f "pyproject.toml" || -f "requirements.txt" ]]; then
+            log_warn "Python dependencies not installed — skipping dependency install by default"
+            log_dim "  Set verification.install_deps: true or KYZN_VERIFY_INSTALL_DEPS=true to opt in."
         fi
     fi
 

@@ -137,6 +137,29 @@ require_git_repo() {
     fi
 }
 
+# Require a clean working tree before commands that create branches, stage,
+# commit, or reset. This protects user edits from being mixed with AI changes.
+require_clean_worktree() {
+    local allow_dirty="${1:-false}"
+    if $allow_dirty; then
+        log_warn "--allow-dirty enabled: existing local changes may be mixed with KyZN changes."
+        return 0
+    fi
+
+    local dirty
+    dirty=$(git status --porcelain 2>/dev/null) || dirty=""
+    if [[ -n "$dirty" ]]; then
+        log_error "Working tree has uncommitted changes. Commit or stash them before running KyZN."
+        log_dim "  Use --allow-dirty only if you intentionally want KyZN to run with local changes present."
+        log_dim "  Changed files:"
+        echo "$dirty" | head -20 | while IFS= read -r line; do
+            log_dim "    $line"
+        done
+        return 1
+    fi
+    return 0
+}
+
 # Check if config exists
 has_config() {
     [[ -f "$KYZN_CONFIG" ]]

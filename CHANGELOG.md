@@ -2,6 +2,21 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.2.0] — 2026-04-24
+
+### Security (behavior change — see migration note below)
+- **Clean-worktree gate** — mutating runs (`quick`, `improve`, `fix`, `analyze --fix`) now refuse uncommitted local changes by default, with an explicit `--allow-dirty` escape hatch. Prevents user WIP from being mixed into KyZN commits.
+- **Safe verification defaults** — Node/Python dependency installation is no longer automatic during verification. Opt in via `kyzn doctor --install`, `verification.install_deps: true` in `.kyzn/config.yaml`, or `KYZN_VERIFY_INSTALL_DEPS=true`. Closes the postinstall-script supply-chain vector on untrusted repos.
+- **`kyzn doctor --install`** — new flag that explicitly installs project verification dependencies (Node/Python). Note: this is the only codepath where `doctor` mutates the filesystem.
+
+### Migration
+- **Cron users**: add `KYZN_VERIFY_INSTALL_DEPS=true` to your scheduled `kyzn quick --auto` / `kyzn fix --auto` environment if your repo relies on auto-install to populate `node_modules` / `.venv`. Otherwise verify will report the build as broken.
+- **Dirty-tree users**: commit or stash local changes before running, or pass `--allow-dirty`.
+
+### Testing
+- Added regression coverage proving dependency installs are skipped by default (Node + Python), dirty worktrees are blocked, `--allow-dirty` overrides correctly, and `install_python_dependencies` handles the `requirements.txt + pip` path.
+- **286 tests passing** (full suite).
+
 ## [1.1.3] — 2026-04-24
 
 ### Fixed

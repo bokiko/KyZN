@@ -682,6 +682,7 @@ cmd_analyze() {
     local profile=""
     local export_path=""
     local auto=false
+    local allow_dirty=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -696,9 +697,14 @@ cmd_analyze() {
             --profile)      [[ $# -ge 2 ]] || { log_error "--profile requires a value"; return 1; }; profile="$2"; shift 2 ;;
             --export)       [[ $# -ge 2 ]] || { log_error "--export requires a value"; return 1; }; export_path="$2"; shift 2 ;;
             --auto)         auto=true; shift ;;
+            --allow-dirty)  allow_dirty=true; shift ;;
             *)              log_error "Unknown option: $1"; return 1 ;;
         esac
     done
+
+    if $fix; then
+        require_clean_worktree "$allow_dirty" || return 1
+    fi
 
     fix_budget="${fix_budget:-5.00}"
 
