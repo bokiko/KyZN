@@ -2,6 +2,18 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.1.3] — 2026-04-24
+
+### Fixed
+- **CI git identity** — GitHub Actions now configures a local git identity before running selftests, fixing sandbox commits on fresh runners.
+- **ShellCheck CI failures** — removed dead locals and documented intentional cross-module globals/namerefs with narrow ShellCheck suppressions.
+- **Global directory permissions warning** — split `mkdir -p` from `chmod 700` so permissions are enforced without SC2174 warnings.
+
+### Testing
+- Selftest sandboxes now configure repo-local git identity, matching CI behavior.
+- Added assertions for history project metadata and new-file diff accounting.
+- **279 tests passing** (full suite).
+
 ## [1.1.2] — 2026-04-01
 
 ### Fixed

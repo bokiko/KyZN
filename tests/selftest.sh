@@ -84,6 +84,8 @@ create_sandbox() {
     SANDBOX=$(mktemp -d)
     cd "$SANDBOX"
     git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
     git commit --allow-empty -m "init" -q
 
     case "$type" in
@@ -692,6 +694,7 @@ test_build_failure_report_strategy() {
     # Create branch (simulate kyzn mid-run)
     git checkout -b kyzn/test-report-branch 2>/dev/null
 
+    # shellcheck disable=SC2034 # handle_build_failure reads this global to include cost in the report.
     local KYZN_CLAUDE_COST="1.23"
     handle_build_failure "report" "test-run-report" "kyzn/test-report-branch" "deep" "security"
 
@@ -908,7 +911,9 @@ test_disallowed_file_globs() {
     local src
     src=$(cat "$KYZN_ROOT/lib/core.sh")
     assert_contains "core.sh has disallowedFileGlobs in settings" "$src" "disallowedFileGlobs"
+    # shellcheck disable=SC2088 # This test intentionally checks literal source text.
     assert_contains "blocks ~/.ssh" "$src" "~/.ssh/**"
+    # shellcheck disable=SC2088 # This test intentionally checks literal source text.
     assert_contains "blocks ~/.aws" "$src" "~/.aws/**"
     assert_contains "blocks .env files" "$src" "**/.env"
     assert_contains "blocks .pem files" "$src" "**/*.pem"
@@ -1316,6 +1321,7 @@ test_write_history() {
     assert_eq "run_id field" "test-run-001" "$id"
     assert_eq "type field" "improve" "$type"
     assert_eq "status field" "running" "$status"
+    [[ -n "$project" ]] && pass "project field" || fail "project field" "empty"
     assert_eq "health_before field" "42" "$hb"
     assert_eq "focus field" "testing" "$focus"
 
@@ -1567,6 +1573,7 @@ test_enforce_config_ceilings() {
     assert_eq "diff under ceiling unchanged" "500" "$diff2"
 
     # Test that malicious input doesn't execute code (awk injection attempt)
+    # shellcheck disable=SC2034 # Variables are passed by name to enforce_config_ceilings.
     local budget3='0); system("id") #' turns3=10 diff3=100
     # Should not crash or execute anything — awk -v safely passes the value
     local exit_code=0
@@ -2139,6 +2146,8 @@ test_count_diff_size_new_files() {
     else
         fail "new file line count" "expected ~200 added lines, got $diff_added"
     fi
+    assert_eq "new file deleted lines" "0" "$diff_deleted"
+    assert_eq "new file binary count" "0" "$diff_binary"
 
     # Single large file should exceed a low limit
     if (( diff_added > 10 )); then

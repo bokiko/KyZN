@@ -15,6 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@kyzn.local"
+          git config --global user.name "KyZN CI"
       - name: Install dependencies
         run: |
           sudo apt-get update -q

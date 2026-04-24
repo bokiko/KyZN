@@ -470,7 +470,6 @@ Be specific — reference actual file names and patterns you observed. Do not gu
 # ---------------------------------------------------------------------------
 display_findings() {
     local findings_file="$1"
-    local report_path="${2:-kyzn-report.md}"
     # Optional pre-computed severity counts (args 3-6) — computed from file if absent
     local critical="${3:-}"
     local high="${4:-}"
@@ -717,7 +716,6 @@ cmd_analyze() {
     display_health_dashboard "$measurements_file"
 
     # Model profile selection (unless --auto or --profile passed)
-    local analysis_model="opus"
     local _model_security="opus" _model_correctness="opus" _model_performance="opus" _model_architecture="opus" _model_consensus="opus"
 
     # Helper to get model for a specialist
@@ -758,7 +756,6 @@ cmd_analyze() {
             _model_security="sonnet"; _model_correctness="sonnet"
             _model_performance="sonnet"; _model_architecture="sonnet"
             _model_consensus="sonnet"
-            analysis_model="sonnet"
             ;;
     esac
 
@@ -1157,8 +1154,6 @@ cmd_analyze() {
     # Generate detailed markdown report (before display, so we can reference the path)
     ensure_kyzn_dirs
     local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
-    local report_basename
-    report_basename=$(basename "$report_file")
     # Compute severity counts once (shared by generate_detailed_report + display_findings)
     local _sev_counts _sev_c _sev_h _sev_m _sev_l
     _sev_counts=$(jq -r '[
@@ -1324,7 +1319,6 @@ run_fix_phase() {
 
     # Concurrency lock (prevents two concurrent analyze-fix runs from corrupting working tree)
     acquire_kyzn_lock "fix" || return 1
-    local lockdir="$KYZN_LOCKDIR"
 
     # Cleanup on exit — also calls analyze-phase cleanup to ensure pids/tmpfiles
     # from the preceding analyze phase are cleaned up if interrupted here.
@@ -1394,6 +1388,7 @@ run_fix_phase() {
     # Step 2: Create branch (capture base for diff budget tracking)
     local original_branch
     original_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    # shellcheck disable=SC2034 # Used by safe_checkout_back in execute.sh during fix cleanup.
     KYZN_ORIGINAL_BRANCH="$original_branch"
     local branch_base
     branch_base=$(git rev-parse HEAD)
@@ -1552,6 +1547,7 @@ run_fix_phase() {
         fi
 
         # Gate new test files before verification (exclude broken imports)
+        # shellcheck disable=SC2034 # Read by verify.sh after gate_new_test_files mutates it.
         KYZN_PYTEST_EXTRA_ARGS=""
         gate_new_test_files 2>/dev/null || true
 

@@ -39,6 +39,7 @@ KYZN_HISTORY_DIR="$KYZN_DIR/history"
 KYZN_REPORTS_DIR="$KYZN_DIR/reports"
 KYZN_GLOBAL_DIR="${HOME}/.kyzn"
 KYZN_GLOBAL_HISTORY="${KYZN_GLOBAL_DIR}/history"
+# shellcheck disable=SC2034 # Shared constant consumed by modules loaded after core.sh.
 KYZN_PROFILE_CACHE="$KYZN_DIR/repo-profile.md"
 
 # Sensitive file access restrictions (single constant — used by execute.sh + analyze.sh)
@@ -49,6 +50,7 @@ KYZN_SETTINGS_JSON="${KYZN_SETTINGS_JSON//\~/$HOME}"
 # Ensure .kyzn directories exist (restrictive permissions for global dirs)
 ensure_kyzn_dirs() {
     mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
+    # shellcheck disable=SC2174 # Restrictive mode is desired on first creation; chmod below fixes pre-existing dirs.
     mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
     chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" 2>/dev/null || true
 
