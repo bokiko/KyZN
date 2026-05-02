@@ -12,7 +12,7 @@ _KYZN_GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules
 # ---------------------------------------------------------------------------
 unstage_secrets() {
     local staged_secrets
-    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json' || true)
+    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|(^|/)\.env(\.[^/]+)?$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json' || true)
     if [[ -n "$staged_secrets" ]]; then
         echo "$staged_secrets" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"

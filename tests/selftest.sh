@@ -1181,6 +1181,30 @@ test_extract_findings() {
     findings=$(extract_findings "$fake_result")
     len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=-1
     assert_eq "extract_findings invalid/empty returns []" "0" "$len"
+
+    # Case 5: large array embedded in prose must NOT be silently truncated.
+    # Builds 100 findings (~9 lines each pretty-printed = ~900 lines) wrapped
+    # in prose so the sed-range extraction path is exercised. The historical
+    # `head -500` cap clipped the closing `]` and produced [] silently.
+    local big_array
+    big_array=$(jq -n '[range(0;100) | {
+        id: ("BUG-\(.+1)"),
+        severity: "MEDIUM",
+        category: "bug",
+        title: ("test bug \(.+1)"),
+        file: ("src/file\(.+1).js"),
+        line: (.+10),
+        fix: "fix description here",
+        fix_plan: "target_file: src/file.js | target_function: handler"
+    }]')
+    local prose_wrapped
+    prose_wrapped="Here are my findings:
+${big_array}
+That is all."
+    fake_result=$(jq -n --arg t "$prose_wrapped" '{result: $t}')
+    findings=$(extract_findings "$fake_result")
+    len=$(echo "$findings" | jq 'length' 2>/dev/null) || len=0
+    assert_eq "extract_findings preserves 100-finding array in prose (no truncation)" "100" "$len"
 }
 
 test_generate_fix_prompt() {
@@ -1626,6 +1650,62 @@ test_unstage_secrets() {
         pass "safe file remains staged"
     else
         fail "safe file" "safe-file.txt was incorrectly unstaged"
+    fi
+
+    cleanup_sandbox
+}
+
+test_unstage_secrets_nested_dotenv() {
+    log_header "70. unstage_secrets handles nested .env.* paths (Next.js / monorepo)"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Plant dotenv files in the patterns Next.js / Vercel / monorepos use:
+    # top-level with extension, and nested under app dirs.
+    mkdir -p web apps/api
+    echo "DATABASE_URL=secret" > .env.production
+    echo "API_KEY=secret"      > .env.local
+    echo "WEB_SECRET=val"      > web/.env.production
+    echo "API_SECRET=val"      > apps/api/.env.local
+    echo "data"                > web/safe-config.json
+
+    git add .env.production .env.local web/.env.production apps/api/.env.local web/safe-config.json 2>/dev/null
+
+    unstage_secrets 2>/dev/null
+
+    local staged
+    staged=$(git diff --cached --name-only 2>/dev/null)
+
+    if echo "$staged" | grep -qx '\.env\.production'; then
+        fail "unstage .env.production (top-level)" "still staged"
+    else
+        pass "unstage .env.production (top-level)"
+    fi
+
+    if echo "$staged" | grep -qx '\.env\.local'; then
+        fail "unstage .env.local (top-level)" "still staged"
+    else
+        pass "unstage .env.local (top-level)"
+    fi
+
+    if echo "$staged" | grep -qx 'web/\.env\.production'; then
+        fail "unstage nested .env.production" "web/.env.production still staged"
+    else
+        pass "unstage web/.env.production (nested)"
+    fi
+
+    if echo "$staged" | grep -qx 'apps/api/\.env\.local'; then
+        fail "unstage deeply nested .env.local" "apps/api/.env.local still staged"
+    else
+        pass "unstage apps/api/.env.local (deeply nested)"
+    fi
+
+    if echo "$staged" | grep -qx 'web/safe-config\.json'; then
+        pass "safe nested file remains staged"
+    else
+        fail "safe nested file" "web/safe-config.json was incorrectly unstaged"
     fi
 
     cleanup_sandbox
@@ -2441,6 +2521,7 @@ main() {
     test_dashboard_hyphenated_project
     test_enforce_config_ceilings
     test_unstage_secrets
+    test_unstage_secrets_nested_dotenv
     test_path_traversal_reject_diff
     test_validate_run_id
     test_reflexion_retry_loop

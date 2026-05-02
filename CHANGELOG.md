@@ -2,6 +2,39 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.2.1] — 2026-05-03
+
+### Fixed (silent-failure bugs)
+
+Two bugs that produced wrong behavior with no user-visible warning. Both surfaced
+during a full code audit and ship as a patch release because the failure modes
+silently undermined safety/accuracy claims.
+
+- **`unstage_secrets` missed nested `.env.*` files** (`lib/execute.sh:15`) — the
+  pre-fix regex caught top-level `.env`, `.env.local`, `.env.production` (via the
+  `^\.env` anchor) but did NOT catch nested variants like `web/.env.production`
+  or `apps/api/.env.local`. This is the dotenv pattern every Next.js / Vercel
+  monorepo uses. A staged `web/.env.production` would survive `unstage_secrets`
+  and could end up in a KyZN-generated PR. Added `(^|/)\.env(\.[^/]+)?$` to the
+  alternation so nested `.env.*` files are caught at any depth.
+
+- **`extract_findings` truncated large finding arrays at 500 lines**
+  (`lib/analyze.sh:317`) — the `head -500` cap silently clipped the closing `]`
+  on consensus output containing many findings (e.g. 30+ findings each with
+  multi-line description/fix/fix_plan strings). The clipped output failed `jq`
+  parsing and the function returned `[]` with no warning, so KyZN reported
+  "no findings" on a repo where the model had actually found dozens of issues.
+  Cap removed; Claude API responses are already bounded by `--max-turns` and
+  `--max-budget-usd`.
+
+### Testing
+
+- New `test_unstage_secrets_nested_dotenv` asserts top-level + nested `.env.*`
+  patterns (Next.js / monorepo coverage) plus a safe-file negative case.
+- Extended `test_extract_findings` with a 100-finding fixture (~900 lines) to
+  prove the truncation regression cannot return.
+- **292 tests passing** (full suite, was 286).
+
 ## [1.2.0] — 2026-04-24
 
 ### Security (behavior change — see migration note below)

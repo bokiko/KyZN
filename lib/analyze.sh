@@ -314,7 +314,10 @@ extract_findings() {
     if echo "$text_content" | jq -e 'type == "array"' &>/dev/null; then
         findings="$text_content"
     else
-        findings=$(echo "$text_content" | sed -n '/^\[/,/^\]/p' | head -500)
+        # No line cap: Claude API responses are bounded by max-turns/budget,
+        # and the previous `head -500` silently clipped large valid arrays
+        # (closing `]` cut → jq parse fail → fallback to `[]`).
+        findings=$(echo "$text_content" | sed -n '/^\[/,/^\]/p')
         if ! echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
             findings=$(echo "$text_content" | sed -n '/```json/,/```/p' | sed '1d;$d')
             if ! echo "$findings" | jq -e 'type == "array"' &>/dev/null; then
