@@ -116,6 +116,8 @@ Examples:
   kyzn quick --mode deep          # Real improvements only
   kyzn measure                    # Measure only, no changes
   kyzn history --global           # All projects
+
+Website:  https://www.kyzn.dev
 EOF
 }
 
@@ -418,6 +420,7 @@ cmd_doctor() {
         log_ok "All required tools found. KyZN is ready."
         echo ""
         echo -e "  ${DIM}Next:${RESET} Run ${CYAN}kyzn init${RESET} to set up a project, or ${CYAN}kyzn measure${RESET} to check health."
+        echo -e "  ${DIM}Docs:${RESET} ${CYAN}https://www.kyzn.dev${RESET}"
     else
         log_fail "Missing required tools. Install them and re-run kyzn doctor."
         echo -e "  ${DIM}Tip: The installer auto-installs jq and yq:${RESET}"
