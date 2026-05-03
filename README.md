@@ -10,14 +10,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-1.2.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-286%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/version-1.2.1-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-292%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;286+tests+%7C+CI-hardened;Tested+on+7+repos+across+4+languages" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;292+tests+%7C+CI-hardened;Tested+on+7+repos+across+4+languages" alt="Typing SVG"></a>
 </p>
 
 ## Contents
@@ -186,8 +186,8 @@ kyzn schedule daily             # Cron at 3am daily
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
-kyzn selftest                   # Run 277 quick tests
-kyzn selftest --full            # Run 286 tests (incl. stress)
+kyzn selftest                   # Run 283 quick tests
+kyzn selftest --full            # Run 292 tests (incl. stress)
 ```
 
 ---
@@ -274,7 +274,7 @@ kyzn/
 │   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh
 ├── templates/              # System prompts + analysis templates
 ├── profiles/               # Focus-specific prompts
-├── tests/selftest.sh       # 286 tests (quick + stress)
+├── tests/selftest.sh       # 292 tests (quick + stress)
 ├── SECURITY.md             # Threat model + published audit
 └── .github/workflows/      # CI (ShellCheck)
 ```
@@ -290,7 +290,7 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 277 quick tests (~4s)
+bash tests/selftest.sh          # 283 quick tests (~4s)
 shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
 ```
 
