@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.kyzn.dev"><img src="https://img.shields.io/badge/Website-kyzn.dev-2ecc71?style=for-the-badge&logo=icloud&logoColor=white" alt="Website"></a>
   <a href="https://github.com/bokiko/KyZN"><img src="https://img.shields.io/badge/GitHub-KyZN-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
   <a href="https://x.com/bokiko"><img src="https://img.shields.io/badge/X-@bokiko-000000?style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
 </p>
