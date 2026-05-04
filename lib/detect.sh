@@ -6,6 +6,7 @@
 detect_project_type() {
     KYZN_PROJECT_TYPE=""
     KYZN_PROJECT_TYPES=()
+    KYZN_JAVA_BUILD=""
 
     local root
     root="$(project_root)"
@@ -29,6 +30,29 @@ detect_project_type() {
     if [[ -f "$root/go.mod" ]]; then
         KYZN_PROJECT_TYPES+=("go")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="go"
+    fi
+
+    if [[ -f "$root/global.json" ]] || \
+       compgen -G "$root/*.csproj" >/dev/null 2>&1 || \
+       compgen -G "$root/*.sln" >/dev/null 2>&1 || \
+       compgen -G "$root/*/*.csproj" >/dev/null 2>&1; then
+        KYZN_PROJECT_TYPES+=("csharp")
+        [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="csharp"
+    fi
+
+    # Java / JVM — gradle wins if both Maven and Gradle present (real-world precedence)
+    if [[ -f "$root/build.gradle" || -f "$root/build.gradle.kts" || \
+          -f "$root/settings.gradle" || -f "$root/settings.gradle.kts" ]]; then
+        KYZN_PROJECT_TYPES+=("java")
+        [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="java"
+        KYZN_JAVA_BUILD="gradle"
+    fi
+    if [[ -f "$root/pom.xml" ]]; then
+        if [[ ! " ${KYZN_PROJECT_TYPES[*]} " == *" java "* ]]; then
+            KYZN_PROJECT_TYPES+=("java")
+        fi
+        [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="java"
+        [[ -z "$KYZN_JAVA_BUILD" ]] && KYZN_JAVA_BUILD="maven"
     fi
 
     # Fallback
@@ -130,6 +154,28 @@ detect_installed_packages() {
                     | grep -v '^require' | grep -v '^)' | awk '{print $1}' | sort || true
             fi
             ;;
+        csharp)
+            if compgen -G "*.csproj" >/dev/null 2>&1 || compgen -G "*/*.csproj" >/dev/null 2>&1; then
+                # shellcheck disable=SC2046
+                grep -hoE 'Include="[^"]+"' $(compgen -G "*.csproj" || true) $(compgen -G "*/*.csproj" || true) 2>/dev/null \
+                    | sed -E 's/Include="([^"]+)"/\1/' | sort -u
+            fi
+            ;;
+        java)
+            if [[ "${KYZN_JAVA_BUILD:-}" == "maven" && -f "pom.xml" ]]; then
+                awk '/<dependencies>/,/<\/dependencies>/' pom.xml 2>/dev/null \
+                    | grep -oE '<artifactId>[^<]+</artifactId>' \
+                    | sed -E 's|</?artifactId>||g' | sort -u
+            elif [[ "${KYZN_JAVA_BUILD:-}" == "gradle" ]]; then
+                local _gf
+                for _gf in build.gradle build.gradle.kts; do
+                    [[ -f "$_gf" ]] || continue
+                    grep -hE '^\s*(implementation|api|compileOnly|runtimeOnly|testImplementation)\s*[("'\'']' "$_gf" 2>/dev/null \
+                        | grep -oE '["'\''][^"'\'']+:[^"'\'':]+(:[^"'\''])?["'\'']' \
+                        | tr -d '"'\'
+                done | sort -u
+            fi
+            ;;
     esac
 }
 
@@ -140,6 +186,8 @@ project_type_name() {
         python)  echo "Python" ;;
         rust)    echo "Rust" ;;
         go)      echo "Go" ;;
+        csharp)  echo "C# / .NET" ;;
+        java)    echo "Java / JVM" ;;
         generic) echo "Generic" ;;
         *)       echo "$1" ;;
     esac
