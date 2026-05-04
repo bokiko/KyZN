@@ -64,6 +64,29 @@ build_allowlist() {
                 --allowedTools 'Bash(go mod download)'
             )
             ;;
+        csharp)
+            _al_arr+=(
+                --allowedTools 'Bash(dotnet build*)'
+                --allowedTools 'Bash(dotnet test*)'
+                --allowedTools 'Bash(dotnet format*)'
+                --allowedTools 'Bash(dotnet restore)'
+                --allowedTools 'Bash(dotnet list package*)'
+            )
+            ;;
+        java)
+            _al_arr+=(
+                --allowedTools 'Bash(mvn test*)'
+                --allowedTools 'Bash(mvn verify*)'
+                --allowedTools 'Bash(mvn compile*)'
+                --allowedTools 'Bash(mvn package*)'
+                --allowedTools 'Bash(mvn dependency:tree)'
+                --allowedTools 'Bash(./gradlew test*)'
+                --allowedTools 'Bash(./gradlew build*)'
+                --allowedTools 'Bash(./gradlew check*)'
+                --allowedTools 'Bash(gradle test*)'
+                --allowedTools 'Bash(gradle build*)'
+            )
+            ;;
         generic)
             # Minimal read-only bash access for generic projects
             _al_arr+=(

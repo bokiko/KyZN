@@ -116,6 +116,31 @@ TOML
             echo 'go 1.21' >> go.mod
             echo 'package main' > main.go
             ;;
+        csharp)
+            cat > test-project.csproj <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+</Project>
+XML
+            echo 'class Program { static void Main() { } }' > Program.cs
+            ;;
+        java)
+            cat > pom.xml <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+</project>
+XML
+            mkdir -p src/main/java
+            echo 'public class Hello { public static void main(String[] a) { } }' > src/main/java/Hello.java
+            ;;
         generic)
             mkdir -p scripts tests
             echo '#!/bin/bash' > scripts/run.sh
@@ -230,6 +255,19 @@ test_detect() {
     create_sandbox rust
     detect_project_type
     assert_eq "detect rust" "rust" "$KYZN_PROJECT_TYPE"
+    cleanup_sandbox
+
+    # C# detection
+    create_sandbox csharp
+    detect_project_type
+    assert_eq "detect csharp" "csharp" "$KYZN_PROJECT_TYPE"
+    cleanup_sandbox
+
+    # Java detection (Maven sandbox)
+    create_sandbox java
+    detect_project_type
+    assert_eq "detect java" "java" "$KYZN_PROJECT_TYPE"
+    assert_eq "detect java build flavor" "maven" "${KYZN_JAVA_BUILD:-}"
     cleanup_sandbox
 
     # Generic fallback
@@ -866,6 +904,12 @@ test_allowlist_rust_go() {
     local go_list="${go_arr[*]}"
     assert_contains "go has go" "$go_list" "go"
     assert_contains "go has Read" "$go_list" "Read"
+
+    local -a cs_arr=()
+    build_allowlist cs_arr "csharp"
+    local cs_list="${cs_arr[*]}"
+    assert_contains "csharp has dotnet" "$cs_list" "dotnet"
+    assert_contains "csharp has Read" "$cs_list" "Read"
 }
 
 test_get_system_prompt() {
@@ -999,6 +1043,25 @@ test_tightened_allowlist() {
     assert_not_contains "go no broad go wildcard" "$go_list" 'Bash(go *)'
     assert_contains "go has go test" "$go_list" "go test"
     assert_contains "go has go build" "$go_list" "go build"
+
+    # C#: should NOT have broad 'dotnet *'
+    local -a cs_arr=()
+    build_allowlist cs_arr "csharp"
+    local cs_list="${cs_arr[*]}"
+    assert_not_contains "csharp no broad dotnet wildcard" "$cs_list" 'Bash(dotnet *)'
+    assert_contains "csharp has dotnet build" "$cs_list" "dotnet build"
+    assert_contains "csharp has dotnet test" "$cs_list" "dotnet test"
+
+    # Java: should NOT have broad 'mvn *' / 'gradle *' / './gradlew *'
+    local -a java_arr=()
+    build_allowlist java_arr "java"
+    local java_list="${java_arr[*]}"
+    assert_not_contains "java no broad mvn wildcard"      "$java_list" 'Bash(mvn *)'
+    assert_not_contains "java no broad gradle wildcard"   "$java_list" 'Bash(gradle *)'
+    assert_not_contains "java no broad gradlew wildcard"  "$java_list" 'Bash(./gradlew *)'
+    assert_contains     "java has mvn test"               "$java_list" "mvn test"
+    assert_contains     "java has gradlew test"           "$java_list" "./gradlew test"
+    assert_contains     "java has gradle build"           "$java_list" "gradle build"
 
     # Security: npm install and pip install should NOT be in allowlists (arbitrary code execution via install scripts)
     assert_not_contains "node no npm install" "$node_list" 'Bash(npm install'
@@ -1528,7 +1591,7 @@ test_stress_all_project_types() {
     source "$KYZN_ROOT/lib/detect.sh"
     source "$KYZN_ROOT/lib/measure.sh"
 
-    for ptype in node python go rust generic; do
+    for ptype in node python go rust csharp java generic; do
         create_sandbox "$ptype"
         detect_project_type
 

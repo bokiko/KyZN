@@ -380,7 +380,7 @@ cmd_doctor() {
     log_info "Optional tools (per project type):"
 
     local _opt_tool _opt_desc
-    for _opt_tool in npm npx eslint tsc ruff mypy pytest cargo go govulncheck; do
+    for _opt_tool in npm npx eslint tsc ruff mypy pytest cargo go govulncheck dotnet mvn gradle; do
         case "$_opt_tool" in
             npm|npx)     _opt_desc="Node.js" ;;
             eslint)      _opt_desc="Node.js linting" ;;
@@ -391,6 +391,9 @@ cmd_doctor() {
             cargo)       _opt_desc="Rust" ;;
             go)          _opt_desc="Go" ;;
             govulncheck) _opt_desc="Go security" ;;
+            dotnet)      _opt_desc=".NET / C#" ;;
+            mvn)         _opt_desc="Java / JVM (Maven)" ;;
+            gradle)      _opt_desc="Java / JVM (Gradle)" ;;
         esac
         if command -v "$_opt_tool" &>/dev/null; then
             log_ok "$_opt_tool ($_opt_desc)"

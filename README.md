@@ -54,7 +54,7 @@ Improving a codebase with Claude is powerful — but doing it manually means you
 kyzn fix   →  profile repo  →  4 Opus specialists  →  consensus  →  Sonnet fixes  →  verify  →  PR
 ```
 
-Supports **Node.js**, **Python**, **Rust**, and **Go** out of the box. Works on any project type for generic analysis.
+Supports **Node.js**, **Python**, **Rust**, **Go**, **C# / .NET**, and **Java / JVM** out of the box. Works on any project type for generic analysis.
 
 ### How KyZN uses tokens efficiently
 
@@ -221,7 +221,7 @@ kyzn fix
 
 **Health score** (out of 100): security 25%, testing 25%, quality 25%, performance 15%, documentation 10%. Configurable.
 
-**Languages:** Node.js (eslint, tsc, vitest/jest), Python (ruff, mypy, pytest), Rust (clippy, cargo test), Go (go vet, go test). Generic works on anything.
+**Languages:** Node.js (eslint, tsc, vitest/jest), Python (ruff, mypy, pytest), Rust (clippy, cargo test), Go (go vet, go test), C# / .NET (dotnet build, dotnet test, dotnet format), Java / JVM (mvn test, gradle test, dependency-check). Generic works on anything.
 
 ---
 

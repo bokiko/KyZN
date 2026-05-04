@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is KyZN
 
-KyZN (from "kaizen") is a pure-Bash CLI that autonomously improves code quality. It runs real language tools to produce a health score, invokes Claude Code to make improvements, gates changes behind build/test verification and score regression checks, then opens a GitHub PR with before/after comparison. Supports Node.js, Python, Rust, and Go.
+KyZN (from "kaizen") is a pure-Bash CLI that autonomously improves code quality. It runs real language tools to produce a health score, invokes Claude Code to make improvements, gates changes behind build/test verification and score regression checks, then opens a GitHub PR with before/after comparison. Supports Node.js, Python, Rust, Go, C# / .NET, and Java / JVM.
 
 ## Prerequisites
 
