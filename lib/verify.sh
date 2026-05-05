@@ -35,6 +35,26 @@ capture_failing_tests() {
                 failures=$(go test ./... 2>&1 | grep '^--- FAIL:' | sort) || true
             fi
             ;;
+        csharp)
+            if command -v dotnet &>/dev/null; then
+                failures=$(dotnet test --nologo --verbosity quiet 2>&1 \
+                    | grep -E '^\s*(Failed|X) ' | sort -u) || true
+            fi
+            ;;
+        java)
+            if [[ "${KYZN_JAVA_BUILD:-}" == "maven" ]] && command -v mvn &>/dev/null; then
+                failures=$(mvn -q test 2>&1 \
+                    | grep -E '^\[ERROR\] (Failures:|Errors:|Tests run:.*FAILURE)' \
+                    | sort -u) || true
+            elif [[ "${KYZN_JAVA_BUILD:-}" == "gradle" ]]; then
+                local _gw="gradle"
+                [[ -x "./gradlew" ]] && _gw="./gradlew"
+                if [[ "$_gw" == "./gradlew" ]] || command -v gradle &>/dev/null; then
+                    failures=$($_gw test 2>&1 \
+                        | grep -E '(FAILED$|^.*> .*FAILED$)' | sort -u) || true
+                fi
+            fi
+            ;;
     esac
 
     echo "$failures"
@@ -151,6 +171,12 @@ verify_build() {
             ;;
         go)
             verify_go || build_ok=false
+            ;;
+        csharp)
+            verify_csharp || build_ok=false
+            ;;
+        java)
+            verify_java || build_ok=false
             ;;
         generic)
             # Best-effort: check for common build systems
@@ -345,6 +371,82 @@ verify_go() {
             log_warn "go vet found issues (non-blocking)"
         else
             log_ok "go vet passed"
+        fi
+    fi
+
+    $ok
+}
+
+# ---------------------------------------------------------------------------
+# C# / .NET verification
+# ---------------------------------------------------------------------------
+verify_csharp() {
+    local ok=true
+
+    if command -v dotnet &>/dev/null; then
+        log_step "Running dotnet build..."
+        if ! dotnet build --nologo -v quiet 2>&1 | tail -20; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
+
+        log_step "Running dotnet test..."
+        if ! dotnet test --nologo --verbosity quiet 2>&1 | tail -20; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+    fi
+
+    $ok
+}
+
+# ---------------------------------------------------------------------------
+# Java / JVM verification (Maven or Gradle, dispatched on KYZN_JAVA_BUILD)
+# ---------------------------------------------------------------------------
+verify_java() {
+    local ok=true
+    local build="${KYZN_JAVA_BUILD:-}"
+
+    if [[ "$build" == "maven" ]] && command -v mvn &>/dev/null; then
+        log_step "Running mvn compile..."
+        if ! mvn -q compile 2>&1 | tail -20; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
+
+        log_step "Running mvn test..."
+        if ! mvn -q test 2>&1 | tail -20; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
+        fi
+    elif [[ "$build" == "gradle" ]]; then
+        local gw="gradle"
+        [[ -x "./gradlew" ]] && gw="./gradlew"
+
+        if [[ "$gw" == "./gradlew" ]] || command -v gradle &>/dev/null; then
+            log_step "Running $gw build -x test..."
+            if ! $gw build -x test 2>&1 | tail -20; then
+                log_error "Build failed"
+                ok=false
+            else
+                log_ok "Build passed"
+            fi
+
+            log_step "Running $gw test..."
+            if ! $gw test 2>&1 | tail -20; then
+                log_error "Tests failed"
+                ok=false
+            else
+                log_ok "Tests passed"
+            fi
         fi
     fi
 

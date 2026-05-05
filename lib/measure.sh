@@ -48,6 +48,18 @@ run_measurements() {
                 run_measurer "$KYZN_ROOT/measurers/go.sh" "$results_file"
             fi
             ;;
+        csharp)
+            if [[ -f "$KYZN_ROOT/measurers/csharp.sh" ]]; then
+                log_step "Running C# measurements..."
+                run_measurer "$KYZN_ROOT/measurers/csharp.sh" "$results_file"
+            fi
+            ;;
+        java)
+            if [[ -f "$KYZN_ROOT/measurers/java.sh" ]]; then
+                log_step "Running Java measurements..."
+                run_measurer "$KYZN_ROOT/measurers/java.sh" "$results_file"
+            fi
+            ;;
     esac
 
     # Compute health score
