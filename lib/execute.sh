@@ -546,7 +546,19 @@ cmd_improve() {
     # Step 3.5: Pre-existing test failure detection
     local baseline_verify_ok=true
     local baseline_failures=""
-    if ! verify_build 2>/dev/null; then
+    local baseline_rc=0
+    verify_build 2>/dev/null || baseline_rc=$?
+    if verify_not_executed "$baseline_rc"; then
+        # No verification means no gate. Refusing to open a PR beats shipping
+        # changes behind a green light that was never earned.
+        log_error "Cannot verify this project: $KYZN_VERIFY_UNAVAILABLE_REASON"
+        log_error "Refusing to open a PR for changes KyZN cannot verify."
+        log_dim "  Install the missing tool(s) and re-run, or use 'kyzn measure' for a read-only score."
+        declare -A _hist_unverified=([health_before]="$_baseline_health" [focus]="$focus")
+        write_history "$run_id" "improve" "failed" _hist_unverified
+        abort_unverified_run "$branch_name" false
+        return 1
+    elif (( baseline_rc != 0 )); then
         baseline_verify_ok=false
         baseline_failures=$(capture_failing_tests 2>/dev/null) || true
         log_warn "Pre-existing build/test failures detected (will not block improvements)"
@@ -598,6 +610,17 @@ cmd_improve() {
     local verify_rc=0
     verify_build > "$verify_out" 2>&1 || verify_rc=$?
     tail -20 "$verify_out"
+    if verify_not_executed "$verify_rc"; then
+        # Tooling went missing between baseline and now (e.g. Claude added a
+        # tsconfig.json to a project with no local TypeScript).
+        log_error "Verification was not executed: $KYZN_VERIFY_UNAVAILABLE_REASON"
+        log_error "Refusing to open a PR for changes KyZN cannot verify."
+        rm -f "$verify_errors_file" "$verify_out"
+        declare -A _hist_unverified_post=([focus]="$focus")
+        write_history "$run_id" "improve" "failed" _hist_unverified_post
+        abort_unverified_run "$branch_name" true
+        return 1
+    fi
     if (( verify_rc == 0 )); then
         log_ok "Build and tests passed!"
         rm -f "$verify_errors_file" "$verify_out"
@@ -630,8 +653,17 @@ ${verify_errors}
 
             # Execute Claude again with error context
             if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then
-                # Re-verify after retry
-                if verify_build; then
+                # Re-verify after retry — branch explicitly on 0 / 1 / 2 rather
+                # than relying on global state surviving later control flow.
+                local retry_rc=0
+                verify_build || retry_rc=$?
+                if verify_not_executed "$retry_rc"; then
+                    log_error "Verification was not executed after self-repair: $KYZN_VERIFY_UNAVAILABLE_REASON"
+                    log_error "Refusing to open a PR for changes KyZN cannot verify."
+                    rm -f "$verify_errors_file"
+                    abort_unverified_run "$branch_name" true
+                    return 1
+                elif (( retry_rc == 0 )); then
                     log_ok "Self-repair succeeded -- build and tests pass after retry!"
                     rm -f "$verify_errors_file"
                 else
@@ -746,6 +778,72 @@ ${verify_errors}
 # ---------------------------------------------------------------------------
 # Handle build failure based on config
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Abort a mutating run because verification could not be executed.
+#
+# Nothing is committed, pushed, or turned into a PR — that is the safety
+# boundary. Anything Claude already changed is deliberately LEFT IN PLACE on
+# the KyZN branch, and the run stays checked out there.
+#
+# Automatic cleanup is NOT attempted: code that deletes a user's files to tidy
+# up after an abort is more dangerous than leaving them in place to inspect.
+# The leftover state needs a deliberate review — the changes are uncommitted, so
+# dropping the branch alone would not discard them — but every option stays open
+# to the user, whereas a wrong deletion is unrecoverable.
+#
+# Usage: abort_unverified_run <branch_name> <worktree_may_be_modified:true|false>
+# ---------------------------------------------------------------------------
+abort_unverified_run() {
+    local branch_name="${1:-}"
+    local modified="${2:-true}"
+    local reason="${KYZN_VERIFY_UNAVAILABLE_REASON:-required verification tooling unavailable}"
+    local orig="${KYZN_ORIGINAL_BRANCH:-}"
+
+    log_error "Verification was not executed: $reason"
+    log_error "Refusing to commit, push, or open a PR for changes KyZN could not verify."
+
+    # Unwinding is attempted ONLY when Claude has not run — and even then it is
+    # an attempt, not a guarantee: build/test commands can themselves touch the
+    # worktree. So the checkout is verified before the branch is deleted, and a
+    # failure preserves the current checkout instead. Detached HEAD is never
+    # guessed at.
+    if [[ "$modified" != "true" && -n "$branch_name" && -n "$orig" && "$orig" != "HEAD" ]]; then
+        if safe_git checkout "$orig" 2>/dev/null &&
+           [[ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" == "$orig" ]]; then
+            if safe_git branch -D "$branch_name" 2>/dev/null; then
+                log_info "Returned to '$orig'; the empty KyZN branch was removed."
+            else
+                log_warn "Returned to '$orig', but could not delete '$branch_name' — remove it manually."
+            fi
+            log_dim "  Install the missing tool(s), then re-run once verification can execute."
+            release_kyzn_lock
+            return 0
+        fi
+        log_warn "Could not return to '$orig' — preserving the current checkout instead."
+    fi
+
+    # Preserve-in-place. Deliberately inspection-only: KyZN cannot tell your
+    # work from Claude's (especially after --allow-dirty), so it offers no
+    # one-line discard and never stages on your behalf.
+    if [[ -n "$branch_name" ]]; then
+        log_warn "Your current checkout is the KyZN branch '$branch_name'."
+        log_warn "Its working tree holds uncommitted changes; KyZN has left them untouched."
+        log_dim "  Review what is there:"
+        log_dim "    git status"
+        log_dim "    git diff"
+        log_dim "    git diff --cached"
+        log_dim "  To keep any of it: review the diff, then stage the specific paths you want."
+        log_dim "  To discard it: clean up manually — KyZN will not delete your files."
+        if [[ "${KYZN_ALLOW_DIRTY:-false}" == "true" ]]; then
+            log_warn "  This run used --allow-dirty, so your own pre-existing edits are mixed in"
+            log_warn "  with Claude's. Do NOT run 'git reset --hard' or 'git checkout -f' blindly."
+        fi
+    fi
+
+    log_dim "  Install the missing tool(s), then re-run once verification can execute."
+    release_kyzn_lock
+}
+
 handle_build_failure() {
     local strategy="$1"
     local run_id="$2"
@@ -785,6 +883,12 @@ EOF
             if [[ -n "$branch_name" ]]; then safe_git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;
         draft-pr)
+            # Backstop: a draft PR still pushes a branch and opens a PR. Never do
+            # that off the back of verification that was never executed.
+            if [[ "${KYZN_VERIFY_STATUS:-}" == "unavailable" ]]; then
+                abort_unverified_run "$branch_name" true
+                return 0
+            fi
             log_info "Creating draft PR with failure report..."
             stage_claude_changes
             safe_git commit -m "KyZN: attempted improvements (build failed) [$run_id]" 2>/dev/null || true

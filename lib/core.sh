@@ -141,6 +141,8 @@ require_git_repo() {
 # commit, or reset. This protects user edits from being mixed with AI changes.
 require_clean_worktree() {
     local allow_dirty="${1:-false}"
+    # shellcheck disable=SC2034 # Read by abort_unverified_run in execute.sh.
+    KYZN_ALLOW_DIRTY="$allow_dirty"
     if $allow_dirty; then
         log_warn "--allow-dirty enabled: existing local changes may be mixed with KyZN changes."
         return 0

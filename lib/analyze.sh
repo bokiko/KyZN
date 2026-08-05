@@ -1381,7 +1381,15 @@ run_fix_phase() {
     log_step "Capturing baseline test state..."
     local baseline_verify_ok=true
     local baseline_failures=""
-    if ! verify_build 2>/dev/null; then
+    local baseline_rc=0
+    verify_build 2>/dev/null || baseline_rc=$?
+    if verify_not_executed "$baseline_rc"; then
+        log_error "Cannot verify this project: $KYZN_VERIFY_UNAVAILABLE_REASON"
+        log_error "Refusing to open a PR for changes KyZN cannot verify."
+        log_dim "  Install the missing tool(s) and re-run, or use 'kyzn analyze' for a report-only pass."
+        release_kyzn_lock
+        return 1
+    elif (( baseline_rc != 0 )); then
         baseline_verify_ok=false
         baseline_failures=$(capture_failing_tests 2>/dev/null) || true
         log_warn "Pre-existing test failures detected (will not block fixes)"
@@ -1564,7 +1572,16 @@ run_fix_phase() {
         local batch_passed=false
         local first_verify_out
         first_verify_out=$(mktemp)
-        if verify_build > "$first_verify_out" 2>&1; then
+        local batch_verify_rc=0
+        verify_build > "$first_verify_out" 2>&1 || batch_verify_rc=$?
+        if verify_not_executed "$batch_verify_rc"; then
+            cat "$first_verify_out"
+            rm -f "$first_verify_out"
+            log_error "Verification was not executed: $KYZN_VERIFY_UNAVAILABLE_REASON"
+            log_error "Refusing to open a PR for changes KyZN cannot verify."
+            abort_unverified_run "$branch_name" true
+            return 1
+        elif (( batch_verify_rc == 0 )); then
             cat "$first_verify_out"
             log_ok "Build/tests pass after $tier batch"
             batch_passed=true
@@ -1629,7 +1646,16 @@ ${tier_findings}
                 total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$retry_cost" 'BEGIN { printf "%.2f", a + b }')
             fi
 
-            if verify_build; then
+            # Branch explicitly on 0 / 1 / 2 — never collapse "not executed" into
+            # "failed" and rely on global status surviving later control flow.
+            local retry_verify_rc=0
+            verify_build || retry_verify_rc=$?
+            if verify_not_executed "$retry_verify_rc"; then
+                log_error "Verification was not executed after self-repair: $KYZN_VERIFY_UNAVAILABLE_REASON"
+                log_error "Refusing to open a PR for changes KyZN cannot verify."
+                abort_unverified_run "$branch_name" true
+                return 1
+            elif (( retry_verify_rc == 0 )); then
                 log_ok "Self-repair succeeded for $tier batch"
                 batch_passed=true
             elif ! $baseline_verify_ok; then
