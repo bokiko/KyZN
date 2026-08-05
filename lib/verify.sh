@@ -2,6 +2,74 @@
 # kyzn/lib/verify.sh — Build/test verification
 
 # ---------------------------------------------------------------------------
+# Verification outcome — three states, not two
+#
+# "The tool isn't installed" is NOT the same as "the build passed". Treating
+# them alike lets KyZN open a PR certifying changes it never actually checked.
+# verify_build therefore returns:
+#   0 — passed        checks ran, everything green
+#   1 — failed        checks ran, something is broken
+#   2 — not executed  a required tool is unavailable (see KYZN_VERIFY_STATUS)
+#
+# Callers that mutate the repo (commit / push / PR) must treat 2 as a hard stop.
+# ---------------------------------------------------------------------------
+KYZN_VERIFY_RC_UNAVAILABLE=2
+KYZN_VERIFY_STATUS="passed"
+KYZN_VERIFY_UNAVAILABLE_REASON=""
+
+# Record that a required check could not be run. Does not mark the build failed —
+# verify_build maps the status to exit code 2 once every check has been attempted.
+verify_unavailable() {
+    local reason="$1"
+    KYZN_VERIFY_STATUS="unavailable"
+    if [[ -n "$KYZN_VERIFY_UNAVAILABLE_REASON" ]]; then
+        KYZN_VERIFY_UNAVAILABLE_REASON+="; $reason"
+    else
+        KYZN_VERIFY_UNAVAILABLE_REASON="$reason"
+    fi
+    log_warn "Verification not executed: $reason"
+}
+
+# True when a verify_build exit code means "was not executed".
+verify_not_executed() {
+    (( ${1:-0} == KYZN_VERIFY_RC_UNAVAILABLE ))
+}
+
+# Resolve a Python tool, preferring the project's own virtualenv so KyZN works
+# without the venv being activated (the opt-in installer creates .venv, which a
+# bare `command -v` would never see). Echoes the command; returns 1 if absent.
+_kyzn_python_tool() {
+    local name="$1" p
+    for p in ".venv/bin/$name" "venv/bin/$name"; do
+        if [[ -x "$p" ]]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    command -v "$name" 2>/dev/null && return 0
+    return 1
+}
+
+# True when the project ships tests that verification is expected to run.
+#
+# Must agree with what KyZN already treats as tests elsewhere, or those layouts
+# score a green verify with no runner: detect.sh counts test/ and pytest.ini,
+# and gate_new_test_files recognises root-level test_*.py / *_test.py.
+# Deliberately shallow — standard directories plus root globs, no recursive scan.
+_kyzn_python_has_tests() {
+    if [[ -d "tests" || -d "test" || -f "conftest.py" || -f "pytest.ini" ]]; then
+        return 0
+    fi
+    if compgen -G "test_*.py" >/dev/null 2>&1; then
+        return 0
+    fi
+    if compgen -G "*_test.py" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Capture failing test names (for pre-existing failure comparison)
 # Returns newline-separated list of FAILED test identifiers
 # ---------------------------------------------------------------------------
@@ -11,10 +79,11 @@ capture_failing_tests() {
 
     case "$project_type" in
         python)
-            if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
+            local _pytest
+            if _pytest=$(_kyzn_python_tool pytest) && _kyzn_python_has_tests; then
                 # Capture both FAILED (assertion errors) and ERROR (collection/import errors)
                 # ERR: prefix on ERROR lines prevents cross-format matching in grep -qF comparisons
-                failures=$(pytest --tb=no -q 2>&1 \
+                failures=$("$_pytest" --tb=no -q 2>&1 \
                     | grep -E '^(FAILED |ERROR )' \
                     | sed -E 's/^ERROR (collecting )?/ERR:/; s/^FAILED //' \
                     | sort -u) || true
@@ -127,7 +196,8 @@ gate_new_test_files() {
     KYZN_PYTEST_EXTRA_ARGS=""  # reset between calls
 
     [[ "$project_type" != "python" ]] && return 0
-    command -v pytest &>/dev/null || return 0
+    local _pytest
+    _pytest=$(_kyzn_python_tool pytest) || return 0
 
     local new_tests ignore_list=""
     new_tests=$(git ls-files --others --exclude-standard 2>/dev/null \
@@ -136,7 +206,7 @@ gate_new_test_files() {
 
     while IFS= read -r tf; do
         [[ -z "$tf" ]] && continue
-        if ! pytest --collect-only "$tf" &>/dev/null; then
+        if ! "$_pytest" --collect-only "$tf" &>/dev/null; then
             log_warn "New test file has import errors: $tf (excluding from test run)"
             ignore_list+=" --ignore=$tf"
         fi
@@ -158,6 +228,10 @@ verify_build() {
 
     local build_ok=true
     # tests_ok reserved for future per-step tracking
+
+    # Reset outcome tracking — verify_build is called repeatedly within a run
+    KYZN_VERIFY_STATUS="passed"
+    KYZN_VERIFY_UNAVAILABLE_REASON=""
 
     case "$project_type" in
         node)
@@ -192,11 +266,25 @@ verify_build() {
             ;;
     esac
 
-    if $build_ok; then
-        return 0
-    else
+    # "Could not check" OUTRANKS "check failed" for the authorization decision.
+    # A failure is the more actionable message, but it must not downgrade the
+    # verdict: if any required check did not execute, the run stays ineligible
+    # for commit/push/PR no matter what else happened. Failure detail is still
+    # reported — it just does not win the decision.
+    if [[ "$KYZN_VERIFY_STATUS" == "unavailable" ]]; then
+        if ! $build_ok; then
+            log_error "Checks that did run also reported failures (see output above)."
+        fi
+        log_error "Verification incomplete — required tooling unavailable: $KYZN_VERIFY_UNAVAILABLE_REASON"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+
+    if ! $build_ok; then
+        KYZN_VERIFY_STATUS="failed"
         return 1
     fi
+
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -204,6 +292,14 @@ verify_build() {
 # ---------------------------------------------------------------------------
 verify_node() {
     local ok=true
+
+    # npm is the only runner this verifier drives. Without it nothing can be
+    # checked — say so explicitly rather than waiting for a configured script to
+    # produce command-not-found (and reporting green when there are no scripts).
+    if [[ -f "package.json" ]] && ! command -v npm &>/dev/null; then
+        verify_unavailable "npm not found — Node build and tests were not run"
+        return 0
+    fi
 
     if [[ -f "package.json" && ! -d "node_modules" ]]; then
         if verify_install_deps_enabled; then
@@ -226,14 +322,21 @@ verify_node() {
         fi
     fi
 
-    # TypeScript check
-    if [[ -f "tsconfig.json" ]] && command -v npx &>/dev/null; then
-        log_step "Running TypeScript check..."
-        if ! npx tsc --noEmit 2>&1 | tail -20; then
-            log_error "TypeScript check failed"
-            ok=false
+    # TypeScript check — project-local compiler ONLY.
+    # Never `npx tsc`: with no local install, npx resolves and downloads `tsc`
+    # from the registry, which is an unrelated package (not the TypeScript
+    # compiler). That is both a supply-chain risk and a fake type check.
+    if [[ -f "tsconfig.json" ]]; then
+        if [[ -x "node_modules/.bin/tsc" ]]; then
+            log_step "Running TypeScript check (node_modules/.bin/tsc)..."
+            if ! node_modules/.bin/tsc --noEmit 2>&1 | tail -20; then
+                log_error "TypeScript check failed"
+                ok=false
+            else
+                log_ok "TypeScript check passed"
+            fi
         else
-            log_ok "TypeScript check passed"
+            verify_unavailable "tsconfig.json present but TypeScript is not installed locally (node_modules/.bin/tsc missing) — type check was not run"
         fi
     fi
 
@@ -278,38 +381,44 @@ verify_python() {
         fi
     fi
 
-    # Ruff check
-    if command -v ruff &>/dev/null; then
-        log_step "Running ruff check..."
-        if ! ruff check . 2>&1 | tail -20; then
+    # Ruff / mypy stay OPTIONAL — they are linters, and their absence is not a
+    # gap in verification. Resolved project-local first so a venv install counts.
+    local ruff_bin mypy_bin pytest_bin
+    if ruff_bin=$(_kyzn_python_tool ruff); then
+        log_step "Running ruff check ($ruff_bin)..."
+        if ! "$ruff_bin" check . 2>&1 | tail -20; then
             log_warn "Ruff found issues (non-blocking)"
         else
             log_ok "Ruff check passed"
         fi
     fi
 
-    # Mypy
-    if command -v mypy &>/dev/null; then
-        log_step "Running mypy..."
-        if ! mypy . 2>&1 | tail -20; then
+    if mypy_bin=$(_kyzn_python_tool mypy); then
+        log_step "Running mypy ($mypy_bin)..."
+        if ! "$mypy_bin" . 2>&1 | tail -20; then
             log_warn "Mypy found issues (non-blocking)"
         else
             log_ok "Mypy check passed"
         fi
     fi
 
-    # pytest (with optional --ignore flags from gate_new_test_files)
-    if command -v pytest &>/dev/null && [[ -d "tests" || -f "conftest.py" ]]; then
-        log_step "Running pytest..."
-        local -a pytest_args=()
-        if [[ -n "${KYZN_PYTEST_EXTRA_ARGS:-}" ]]; then
-            read -ra pytest_args <<< "$KYZN_PYTEST_EXTRA_ARGS"
-        fi
-        if ! pytest "${pytest_args[@]}" 2>&1 | tail -10; then
-            log_error "Tests failed"
-            ok=false
+    # pytest is REQUIRED when the project ships tests. Skipping it silently is
+    # how a project with no usable test runner used to score a green verify.
+    if _kyzn_python_has_tests; then
+        if pytest_bin=$(_kyzn_python_tool pytest); then
+            log_step "Running pytest ($pytest_bin)..."
+            local -a pytest_args=()
+            if [[ -n "${KYZN_PYTEST_EXTRA_ARGS:-}" ]]; then
+                read -ra pytest_args <<< "$KYZN_PYTEST_EXTRA_ARGS"
+            fi
+            if ! "$pytest_bin" "${pytest_args[@]}" 2>&1 | tail -10; then
+                log_error "Tests failed"
+                ok=false
+            else
+                log_ok "Tests passed"
+            fi
         else
-            log_ok "Tests passed"
+            verify_unavailable "project has tests but pytest was not found in .venv/bin, venv/bin, or PATH — tests were not run"
         fi
     fi
 
@@ -322,22 +431,25 @@ verify_python() {
 verify_rust() {
     local ok=true
 
-    if command -v cargo &>/dev/null; then
-        log_step "Running cargo check..."
-        if ! cargo check 2>&1 | tail -20; then
-            log_error "Build failed"
-            ok=false
-        else
-            log_ok "Build passed"
-        fi
+    if ! command -v cargo &>/dev/null; then
+        verify_unavailable "cargo not found — Rust build and tests were not run"
+        return 0
+    fi
 
-        log_step "Running cargo test..."
-        if ! cargo test 2>&1 | tail -10; then
-            log_error "Tests failed"
-            ok=false
-        else
-            log_ok "Tests passed"
-        fi
+    log_step "Running cargo check..."
+    if ! cargo check 2>&1 | tail -20; then
+        log_error "Build failed"
+        ok=false
+    else
+        log_ok "Build passed"
+    fi
+
+    log_step "Running cargo test..."
+    if ! cargo test 2>&1 | tail -10; then
+        log_error "Tests failed"
+        ok=false
+    else
+        log_ok "Tests passed"
     fi
 
     $ok
@@ -349,29 +461,32 @@ verify_rust() {
 verify_go() {
     local ok=true
 
-    if command -v go &>/dev/null; then
-        log_step "Running go build..."
-        if ! go build ./... 2>&1 | tail -20; then
-            log_error "Build failed"
-            ok=false
-        else
-            log_ok "Build passed"
-        fi
+    if ! command -v go &>/dev/null; then
+        verify_unavailable "go not found — Go build and tests were not run"
+        return 0
+    fi
 
-        log_step "Running go test..."
-        if ! go test ./... 2>&1 | tail -10; then
-            log_error "Tests failed"
-            ok=false
-        else
-            log_ok "Tests passed"
-        fi
+    log_step "Running go build..."
+    if ! go build ./... 2>&1 | tail -20; then
+        log_error "Build failed"
+        ok=false
+    else
+        log_ok "Build passed"
+    fi
 
-        log_step "Running go vet..."
-        if ! go vet ./... 2>&1 | tail -20; then
-            log_warn "go vet found issues (non-blocking)"
-        else
-            log_ok "go vet passed"
-        fi
+    log_step "Running go test..."
+    if ! go test ./... 2>&1 | tail -10; then
+        log_error "Tests failed"
+        ok=false
+    else
+        log_ok "Tests passed"
+    fi
+
+    log_step "Running go vet..."
+    if ! go vet ./... 2>&1 | tail -20; then
+        log_warn "go vet found issues (non-blocking)"
+    else
+        log_ok "go vet passed"
     fi
 
     $ok
@@ -383,22 +498,25 @@ verify_go() {
 verify_csharp() {
     local ok=true
 
-    if command -v dotnet &>/dev/null; then
-        log_step "Running dotnet build..."
-        if ! dotnet build --nologo -v quiet 2>&1 | tail -20; then
-            log_error "Build failed"
-            ok=false
-        else
-            log_ok "Build passed"
-        fi
+    if ! command -v dotnet &>/dev/null; then
+        verify_unavailable "dotnet not found — C# build and tests were not run"
+        return 0
+    fi
 
-        log_step "Running dotnet test..."
-        if ! dotnet test --nologo --verbosity quiet 2>&1 | tail -20; then
-            log_error "Tests failed"
-            ok=false
-        else
-            log_ok "Tests passed"
-        fi
+    log_step "Running dotnet build..."
+    if ! dotnet build --nologo -v quiet 2>&1 | tail -20; then
+        log_error "Build failed"
+        ok=false
+    else
+        log_ok "Build passed"
+    fi
+
+    log_step "Running dotnet test..."
+    if ! dotnet test --nologo --verbosity quiet 2>&1 | tail -20; then
+        log_error "Tests failed"
+        ok=false
+    else
+        log_ok "Tests passed"
     fi
 
     $ok
@@ -411,7 +529,22 @@ verify_java() {
     local ok=true
     local build="${KYZN_JAVA_BUILD:-}"
 
-    if [[ "$build" == "maven" ]] && command -v mvn &>/dev/null; then
+    if [[ -z "$build" ]]; then
+        verify_unavailable "no Maven or Gradle build detected — Java build and tests were not run"
+        return 0
+    fi
+
+    if [[ "$build" == "maven" ]] && ! command -v mvn &>/dev/null; then
+        verify_unavailable "mvn not found — Maven build and tests were not run"
+        return 0
+    fi
+
+    if [[ "$build" == "gradle" ]] && [[ ! -x "./gradlew" ]] && ! command -v gradle &>/dev/null; then
+        verify_unavailable "no ./gradlew wrapper and gradle not found — Gradle build and tests were not run"
+        return 0
+    fi
+
+    if [[ "$build" == "maven" ]]; then
         log_step "Running mvn compile..."
         if ! mvn -q compile 2>&1 | tail -20; then
             log_error "Build failed"
@@ -431,22 +564,20 @@ verify_java() {
         local gw="gradle"
         [[ -x "./gradlew" ]] && gw="./gradlew"
 
-        if [[ "$gw" == "./gradlew" ]] || command -v gradle &>/dev/null; then
-            log_step "Running $gw build -x test..."
-            if ! $gw build -x test 2>&1 | tail -20; then
-                log_error "Build failed"
-                ok=false
-            else
-                log_ok "Build passed"
-            fi
+        log_step "Running $gw build -x test..."
+        if ! $gw build -x test 2>&1 | tail -20; then
+            log_error "Build failed"
+            ok=false
+        else
+            log_ok "Build passed"
+        fi
 
-            log_step "Running $gw test..."
-            if ! $gw test 2>&1 | tail -20; then
-                log_error "Tests failed"
-                ok=false
-            else
-                log_ok "Tests passed"
-            fi
+        log_step "Running $gw test..."
+        if ! $gw test 2>&1 | tail -20; then
+            log_error "Tests failed"
+            ok=false
+        else
+            log_ok "Tests passed"
         fi
     fi
 

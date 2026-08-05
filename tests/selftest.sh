@@ -2520,6 +2520,1176 @@ test_progress_animation() {
 }
 
 # ---------------------------------------------------------------------------
+# Fail-closed verification (C#, Java, Rust, Go) + local-only TypeScript
+# ---------------------------------------------------------------------------
+
+# Build a PATH containing ONLY a fixed set of shell utilities (plus any extra
+# names passed as arguments). Lets a test assert "dotnet/mvn/gradle/cargo/go is
+# not installed" deterministically, whatever the host happens to have.
+# Echoes the directory so callers can do: PATH=$(_clean_path "$SANDBOX/clean-bin")
+_clean_path() {
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local u src
+    for u in bash sh env cat head tail grep sed awk sort uniq wc find tr cut \
+             date mktemp rm mkdir chmod ln touch git jq timeout xargs \
+             basename dirname "$@"; do
+        src=$(command -v "$u" 2>/dev/null) || continue
+        ln -sf "$src" "$dir/$u" 2>/dev/null || true
+    done
+    echo "$dir"
+}
+
+test_verify_fails_closed_on_missing_tools() {
+    log_header "70. verify_build reports 'not executed' when required tooling is missing"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH"
+    local ptype rc
+
+    # C#, Rust, Go — one required toolchain each, absent from a sanitized PATH
+    for ptype in csharp rust go; do
+        create_sandbox "$ptype"
+        detect_project_type
+        PATH=$(_clean_path "$SANDBOX/clean-bin")
+        rc=0
+        verify_build &>/dev/null || rc=$?
+        PATH="$saved_path"
+        assert_exit_code "$ptype: missing toolchain → 'not executed' (2)" 2 "$rc"
+        assert_eq "$ptype: status is unavailable" "unavailable" "${KYZN_VERIFY_STATUS:-}"
+        cleanup_sandbox
+    done
+
+    # Java / Maven — pom.xml present, mvn absent
+    create_sandbox java
+    detect_project_type
+    assert_eq "java: maven flavor detected" "maven" "${KYZN_JAVA_BUILD:-}"
+    PATH=$(_clean_path "$SANDBOX/clean-bin")
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "java/maven: missing mvn → 'not executed' (2)" 2 "$rc"
+    cleanup_sandbox
+
+    # Java / Gradle — neither ./gradlew wrapper nor system gradle
+    create_sandbox generic
+    echo 'plugins { id "java" }' > build.gradle
+    git add -A && git commit -q -m "gradle project"
+    detect_project_type
+    assert_eq "java: gradle flavor detected" "gradle" "${KYZN_JAVA_BUILD:-}"
+    PATH=$(_clean_path "$SANDBOX/clean-bin")
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "java/gradle: no wrapper, no gradle → 'not executed' (2)" 2 "$rc"
+    cleanup_sandbox
+
+    # Documented generic behaviour is preserved — no build system is still a pass
+    create_sandbox generic
+    detect_project_type
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    assert_exit_code "generic: no build system still returns 0 (documented)" 0 "$rc"
+    cleanup_sandbox
+
+    # The gate helper itself: only code 2 means "was not executed"
+    if verify_not_executed 2 && ! verify_not_executed 1 && ! verify_not_executed 0; then
+        pass "verify_not_executed distinguishes 2 from pass/fail"
+    else
+        fail "verify_not_executed" "gate helper does not isolate exit code 2"
+    fi
+}
+
+test_verify_csharp_mocked_dotnet() {
+    log_header "71. verify_csharp: mocked dotnet build/test pass and fail"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb rc
+
+    create_sandbox csharp
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/dotnet" <<'SH'
+#!/usr/bin/env bash
+echo "dotnet $*" >> "$FAKE_LOG"
+case "$1" in
+    build) exit "${FAKE_BUILD_RC:-0}" ;;
+    test)  exit "${FAKE_TEST_RC:-0}" ;;
+esac
+exit 0
+SH
+    chmod +x "$cb/dotnet"
+    export FAKE_LOG="$SANDBOX/dotnet.log"
+    PATH="$cb"
+
+    : > "$FAKE_LOG"
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "dotnet build+test green → 0" 0 "$rc"
+    assert_eq "status is passed" "passed" "${KYZN_VERIFY_STATUS:-}"
+    assert_contains "dotnet build was invoked" "$(cat "$FAKE_LOG")" "dotnet build"
+    assert_contains "dotnet test was invoked" "$(cat "$FAKE_LOG")" "dotnet test"
+
+    export FAKE_BUILD_RC=1 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "dotnet build failure → 1" 1 "$rc"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=1
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "dotnet test failure → 1" 1 "$rc"
+
+    PATH="$saved_path"
+    unset FAKE_LOG FAKE_BUILD_RC FAKE_TEST_RC
+    cleanup_sandbox
+}
+
+test_verify_java_mocked_maven_gradle() {
+    log_header "72. verify_java: mocked Maven/Gradle pass, fail, and wrapper selection"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb rc
+
+    # --- Maven ---
+    create_sandbox java
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/mvn" <<'SH'
+#!/usr/bin/env bash
+echo "mvn $*" >> "$FAKE_LOG"
+for a in "$@"; do
+    [[ "$a" == "compile" ]] && exit "${FAKE_BUILD_RC:-0}"
+    [[ "$a" == "test" ]] && exit "${FAKE_TEST_RC:-0}"
+done
+exit 0
+SH
+    chmod +x "$cb/mvn"
+    export FAKE_LOG="$SANDBOX/mvn.log"; : > "$FAKE_LOG"
+    PATH="$cb"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "mvn compile+test green → 0" 0 "$rc"
+    assert_contains "mvn compile invoked" "$(cat "$FAKE_LOG")" "compile"
+    assert_contains "mvn test invoked" "$(cat "$FAKE_LOG")" "test"
+
+    export FAKE_BUILD_RC=1 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "mvn compile failure → 1" 1 "$rc"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=1
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "mvn test failure → 1" 1 "$rc"
+
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- Gradle: ./gradlew wrapper takes precedence over system gradle ---
+    create_sandbox generic
+    echo 'plugins { id "java" }' > build.gradle
+    cat > gradlew <<'SH'
+#!/usr/bin/env bash
+echo "wrapper $*" >> "$FAKE_LOG"
+if [[ "$1" == "test" ]]; then exit "${FAKE_TEST_RC:-0}"; fi
+exit "${FAKE_BUILD_RC:-0}"
+SH
+    chmod +x gradlew
+    git add -A && git commit -q -m "gradle wrapper project"
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/gradle" <<'SH'
+#!/usr/bin/env bash
+echo "system $*" >> "$FAKE_LOG"
+exit 0
+SH
+    chmod +x "$cb/gradle"
+    export FAKE_LOG="$SANDBOX/gradle.log"; : > "$FAKE_LOG"
+    PATH="$cb"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "gradle wrapper green → 0" 0 "$rc"
+    assert_contains "wrapper is used when present" "$(cat "$FAKE_LOG")" "wrapper"
+    assert_not_contains "system gradle unused when wrapper present" "$(cat "$FAKE_LOG")" "system"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=1
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "gradle wrapper test failure → 1" 1 "$rc"
+
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- Gradle: system gradle used when no wrapper exists ---
+    create_sandbox generic
+    echo 'plugins { id "java" }' > build.gradle
+    git add -A && git commit -q -m "gradle project, no wrapper"
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/gradle" <<'SH'
+#!/usr/bin/env bash
+echo "system $*" >> "$FAKE_LOG"
+if [[ "$1" == "test" ]]; then exit "${FAKE_TEST_RC:-0}"; fi
+exit "${FAKE_BUILD_RC:-0}"
+SH
+    chmod +x "$cb/gradle"
+    export FAKE_LOG="$SANDBOX/gradle2.log"; : > "$FAKE_LOG"
+    PATH="$cb"
+
+    export FAKE_BUILD_RC=0 FAKE_TEST_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "system gradle green → 0" 0 "$rc"
+    assert_contains "system gradle used when no wrapper" "$(cat "$FAKE_LOG")" "system"
+
+    PATH="$saved_path"
+    unset FAKE_LOG FAKE_BUILD_RC FAKE_TEST_RC
+    cleanup_sandbox
+}
+
+test_verify_typescript_local_only() {
+    log_header "73. verify_node type-checks with the local tsc only (never npx)"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb rc
+
+    create_sandbox node   # ships tsconfig.json, scripts.build + scripts.test
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/npm" <<'SH'
+#!/usr/bin/env bash
+echo "npm $*" >> "$FAKE_LOG"
+exit 0
+SH
+    cat > "$cb/npx" <<'SH'
+#!/usr/bin/env bash
+echo "npx $*" >> "$FAKE_LOG"
+exit 0
+SH
+    chmod +x "$cb/npm" "$cb/npx"
+    export FAKE_LOG="$SANDBOX/node.log"
+    PATH="$cb"
+
+    # 1. tsconfig.json but TypeScript not installed locally → not executed, no npx
+    : > "$FAKE_LOG"
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "tsconfig without local tsc → 'not executed' (2)" 2 "$rc"
+    assert_not_contains "npx tsc is never invoked" "$(cat "$FAKE_LOG")" "npx"
+
+    # 2. Local tsc present and clean → pass, still no npx
+    mkdir -p node_modules/.bin
+    cat > node_modules/.bin/tsc <<'SH'
+#!/usr/bin/env bash
+echo "local-tsc $*" >> "$FAKE_LOG"
+exit "${FAKE_TSC_RC:-0}"
+SH
+    chmod +x node_modules/.bin/tsc
+    : > "$FAKE_LOG"
+    export FAKE_TSC_RC=0
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "local tsc clean → 0" 0 "$rc"
+    assert_contains "local tsc was invoked" "$(cat "$FAKE_LOG")" "local-tsc --noEmit"
+    assert_not_contains "npx still never invoked" "$(cat "$FAKE_LOG")" "npx"
+
+    # 3. Local tsc reports type errors → real failure, not "unavailable"
+    : > "$FAKE_LOG"
+    export FAKE_TSC_RC=1
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "local tsc type errors → 1" 1 "$rc"
+
+    PATH="$saved_path"
+    unset FAKE_LOG FAKE_TSC_RC
+    cleanup_sandbox
+}
+
+test_csharp_measurer_parsing() {
+    log_header "74. csharp measurer parses clean, warning/error, and vulnerable output"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb out
+
+    create_sandbox csharp
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/dotnet" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+    build) cat "$FAKE_BUILD_OUT"; exit 0 ;;
+    list)  cat "$FAKE_VULN_OUT";  exit 0 ;;
+esac
+exit 0
+SH
+    chmod +x "$cb/dotnet"
+
+    export FAKE_BUILD_OUT="$SANDBOX/build.txt"
+    export FAKE_VULN_OUT="$SANDBOX/vuln.txt"
+
+    # --- Clean build, no vulnerable packages ---
+    echo "Build succeeded." > "$FAKE_BUILD_OUT"
+    echo "The given project has no vulnerable packages given the current sources." > "$FAKE_VULN_OUT"
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/csharp.sh" 2>/dev/null)
+    assert_eq "clean build → quality 100" "100" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-build") | .score')"
+    assert_eq "no vulnerable packages → security 100" "100" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-list-vulnerable") | .score')"
+
+    # --- 1 error + 2 warnings → 100 - 10 - 4 = 86 ---
+    cat > "$FAKE_BUILD_OUT" <<'OUT'
+Program.cs(4,9): warning CS0168: The variable 'x' is declared but never used
+Program.cs(5,9): warning CS0219: The variable 'y' is assigned but never used
+Program.cs(9,1): error CS1002: ; expected
+OUT
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/csharp.sh" 2>/dev/null)
+    assert_eq "1 error + 2 warnings → quality 86" "86" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-build") | .score')"
+    assert_eq "error count parsed" "1" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-build") | .details.errors')"
+    assert_eq "warning count parsed" "2" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-build") | .details.warnings')"
+
+    # --- 2 vulnerable packages → 100 - 40 = 60 ---
+    cat > "$FAKE_VULN_OUT" <<'OUT'
+Project `demo` has the following vulnerable packages
+   [net8.0]:
+   Top-level Package      Requested   Resolved   Severity   Advisory URL
+   > Newtonsoft.Json      9.0.1       9.0.1      High      https://github.com/advisories/GHSA-1
+   > System.Text.Json     4.7.0       4.7.0      Critical  https://github.com/advisories/GHSA-2
+OUT
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/csharp.sh" 2>/dev/null)
+    assert_eq "2 vulnerable packages → security 60" "60" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-list-vulnerable") | .score')"
+    assert_eq "vulnerability count parsed" "2" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="dotnet-list-vulnerable") | .details.vulnerabilities')"
+
+    PATH="$saved_path"
+    unset FAKE_BUILD_OUT FAKE_VULN_OUT
+    cleanup_sandbox
+}
+
+test_java_measurer_parsing() {
+    log_header "75. java measurer parses clean, build-failure, and vulnerable output"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb out
+
+    create_sandbox java   # pom.xml → maven flavor
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/mvn" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+    case "$a" in
+        compile) cat "$FAKE_BUILD_OUT"; exit 0 ;;
+        *dependency-check*) cat "$FAKE_VULN_OUT"; exit 0 ;;
+    esac
+done
+exit 0
+SH
+    chmod +x "$cb/mvn"
+
+    export FAKE_BUILD_OUT="$SANDBOX/build.txt"
+    export FAKE_VULN_OUT="$SANDBOX/vuln.txt"
+
+    # --- Clean compile, no vulnerabilities reported ---
+    echo "BUILD SUCCESS" > "$FAKE_BUILD_OUT"
+    echo "No vulnerabilities found." > "$FAKE_VULN_OUT"
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/java.sh" 2>/dev/null)
+    assert_eq "clean compile → quality 100" "100" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="mvn-compile") | .score')"
+    assert_eq "no security metric emitted when nothing found" "" \
+        "$(echo "$out" | jq -r '.[] | select(.category=="security") | .score')"
+
+    # --- Build failure: 1 error + 2 warnings → 100 - 10 - 4 = 86 ---
+    cat > "$FAKE_BUILD_OUT" <<'OUT'
+[WARNING] /src/main/java/Hello.java: uses unchecked or unsafe operations
+[WARNING] /src/main/java/Hello.java: recompile with -Xlint:unchecked
+[ERROR] /src/main/java/Hello.java:[7,1] ';' expected
+OUT
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/java.sh" 2>/dev/null)
+    assert_eq "1 error + 2 warnings → quality 86" "86" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="mvn-compile") | .score')"
+    assert_eq "java error count parsed" "1" \
+        "$(echo "$out" | jq -r '.[] | select(.tool=="mvn-compile") | .details.errors')"
+
+    # --- OWASP output with 2 CVEs → 100 - 40 = 60 ---
+    echo "BUILD SUCCESS" > "$FAKE_BUILD_OUT"
+    cat > "$FAKE_VULN_OUT" <<'OUT'
+One or more dependencies were identified with known vulnerabilities in demo:
+log4j-core-2.14.1.jar: CVE-2021-44228
+commons-text-1.9.jar: CVE-2022-42889
+OUT
+    out=$(PATH="$cb" bash "$KYZN_ROOT/measurers/java.sh" 2>/dev/null)
+    assert_eq "2 CVEs → security 60" "60" \
+        "$(echo "$out" | jq -r '.[] | select(.category=="security") | .score')"
+
+    PATH="$saved_path"
+    unset FAKE_BUILD_OUT FAKE_VULN_OUT
+    cleanup_sandbox
+}
+
+# Mocked binaries for end-to-end workflow tests. Every outbound side effect
+# (Claude invocation, git push, git merge, gh pr) is LOGGED instead of performed,
+# so a test can assert it never happened rather than trusting source text.
+_workflow_mocks() {
+    local cb="$1"
+    REAL_GIT=$(command -v git)
+    export REAL_GIT
+
+    # _clean_path put symlinks here; unlink first so `cat >` writes a new file
+    # instead of following the symlink into the real binary.
+    rm -f "$cb/git" "$cb/gh" "$cb/claude" "$cb/npm"
+
+    cat > "$cb/git" <<'SH'
+#!/usr/bin/env bash
+# Passthrough wrapper: intercepts push/merge, delegates everything else.
+args=("$@"); sub=""; i=0
+while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+        -c) i=$((i+2)) ;;
+        -*) i=$((i+1)) ;;
+        *)  sub="${args[$i]}"; break ;;
+    esac
+done
+case "$sub" in
+    push|merge) echo "FORBIDDEN git $sub" >> "$WORKFLOW_LOG"; exit 0 ;;
+esac
+exec "$REAL_GIT" "$@"
+SH
+    cat > "$cb/gh" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == "pr" ]] && echo "FORBIDDEN gh pr ${2:-}" >> "$WORKFLOW_LOG"
+exit 0
+SH
+    cat > "$cb/claude" <<'SH'
+#!/usr/bin/env bash
+echo "CLAUDE-INVOKED" >> "$WORKFLOW_LOG"
+_n=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+if [[ -n "${CLAUDE_MUTATE:-}" && -f "$CLAUDE_MUTATE" ]]; then
+    CLAUDE_CALL="$_n" bash "$CLAUDE_MUTATE"
+fi
+echo '{"total_cost_usd":0.01,"result":"mock change"}'
+exit 0
+SH
+    # npm mock: `npm test` fails while the flag file exists, so a scenario can
+    # break the build on Claude's first pass and repair it on the retry.
+    cat > "$cb/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "test" && -n "${BREAK_TESTS_FLAG:-}" && -f "$BREAK_TESTS_FLAG" ]]; then
+    echo "test failure (fixture)"
+    exit 1
+fi
+exit 0
+SH
+    chmod +x "$cb/git" "$cb/gh" "$cb/claude" "$cb/npm"
+}
+
+# Wire the current sandbox for a real cmd_improve / run_fix_phase run:
+# committed KyZN config, mocked PATH, empty forbidden-call log.
+_workflow_setup() {
+    local on_build_fail="${1:-report}"
+    ensure_kyzn_dirs
+    cat > "$KYZN_CONFIG" <<YAML
+project:
+  name: test-project
+  type: ${KYZN_PROJECT_TYPE:-generic}
+preferences:
+  mode: quick
+  model: sonnet
+  budget: 0.50
+  max_turns: 5
+  diff_limit: 10000
+  on_build_fail: $on_build_fail
+focus:
+  priorities: [security]
+YAML
+    # .kyzn/ may be covered by a global gitignore — either way the worktree must
+    # end up clean, so tolerate "nothing to commit".
+    git add -A >/dev/null 2>&1 || true
+    git commit -q -m "kyzn config" >/dev/null 2>&1 || true
+    # Scaffolding lives OUTSIDE the sandbox: mocks and logs must never show up
+    # as worktree changes, or the cleanliness assertions become meaningless.
+    WORKFLOW_TMP=$(mktemp -d)
+    local cb
+    cb=$(_clean_path "$WORKFLOW_TMP/clean-bin" yq)
+    _workflow_mocks "$cb"
+    WORKFLOW_LOG="$WORKFLOW_TMP/workflow.log"
+    export WORKFLOW_LOG
+    : > "$WORKFLOW_LOG"
+    PATH="$cb"
+}
+
+# Scripted "Claude" edit that makes TypeScript verification unavailable:
+# adds a tsconfig.json to a project with no local compiler, plus other changes.
+_write_mutate_script() {
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+echo '{"compilerOptions":{"strict":true}}' > tsconfig.json
+echo 'console.log("claude was here")' >> src/index.js
+mkdir -p src/extra
+echo 'export const x = 1' > src/extra/new.ts
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"
+    export CLAUDE_MUTATE
+}
+
+# Scripted "Claude" for self-repair scenarios: the first pass breaks the tests,
+# the reflexion retry repairs them but adds a tsconfig.json, making TypeScript
+# verification unavailable at exactly the retry re-verify call site.
+_write_selfrepair_mutate_script() {
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${CLAUDE_CALL:-1}" == "1" ]]; then
+    echo 'console.log("claude first pass")' >> src/index.js
+    touch "$BREAK_TESTS_FLAG"
+else
+    rm -f "$BREAK_TESTS_FLAG"
+    echo '{"compilerOptions":{"strict":true}}' > tsconfig.json
+fi
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"
+    BREAK_TESTS_FLAG="$WORKFLOW_TMP/break-tests"
+    export CLAUDE_MUTATE BREAK_TESTS_FLAG
+}
+
+test_workflow_gate_blocks_pr_when_unverifiable() {
+    log_header "76. unavailable verification never reaches Claude, push, or PR"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc orig log
+
+    # --- A. cmd_improve, baseline unavailable (C# project, no dotnet) ---
+    create_sandbox csharp
+    detect_project_type
+    _workflow_setup report
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM          # cmd_improve arms its own cleanup trap
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "improve/baseline: aborts non-zero" 1 "$rc"
+    assert_not_contains "improve/baseline: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "improve/baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/baseline: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "improve/baseline: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "improve/baseline: lock released"
+    else
+        fail "improve/baseline: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- B. cmd_improve, unavailable AFTER Claude ran (adds tsconfig.json) ---
+    create_sandbox node
+    rm -f tsconfig.json           # baseline must pass: no TS check at all
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup report
+    _write_mutate_script
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &> "$WORKFLOW_TMP/improve.out" || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    local out; out=$(cat "$WORKFLOW_TMP/improve.out")
+
+    assert_contains "improve/post: Claude did run (gate is post-change)" "$log" "CLAUDE-INVOKED"
+    assert_exit_code "improve/post: aborts non-zero" 1 "$rc"
+    assert_not_contains "improve/post: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/post: no commit was created" "$(git rev-parse "$orig")" "$(git rev-parse HEAD)"
+    # Contract: work is LEFT for inspection, not auto-cleaned. Nothing is deleted.
+    assert_eq "improve/post: still on the kyzn branch for inspection" \
+        "1" "$(git rev-parse --abbrev-ref HEAD | grep -c '^kyzn/')"
+    if [[ -f tsconfig.json && -f src/extra/new.ts ]]; then
+        pass "improve/post: Claude's new files preserved for inspection"
+    else
+        fail "improve/post: preserved files" "KyZN deleted files it should have left alone"
+    fi
+    assert_contains "improve/post: Claude's edit preserved" "$(cat src/index.js)" "claude was here"
+    # The guidance itself — asserted against real command output.
+    assert_contains "improve/post: names the current checkout" "$out" "current checkout is the KyZN branch"
+    assert_contains "improve/post: says changes are untouched" "$out" "left them untouched"
+    assert_contains "improve/post: offers safe inspection" "$out" "git diff --cached"
+    assert_not_contains "improve/post: offers no destructive one-liner" "$out" "checkout -f"
+    assert_not_contains "improve/post: never tells you to stage everything" "$out" "git add -A"
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+
+    # --- C. draft-pr configuration cannot bypass the gate ---
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup draft-pr
+    _write_mutate_script
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    assert_not_contains "improve/draft-pr: still no push or PR" "$log" "FORBIDDEN"
+
+    # The backstop itself: handle_build_failure must refuse the draft-pr strategy
+    # whenever verification was not executed.
+    KYZN_VERIFY_STATUS="unavailable"
+    git checkout -q -b kyzn/backstop-test
+    echo 'backstop tracked edit' >> src/index.js
+    echo 'backstop untracked' > backstop-new.txt
+    local bk_sha; bk_sha=$(git rev-parse HEAD)
+    : > "$WORKFLOW_LOG"
+    handle_build_failure "draft-pr" "20260805-bkstp1" "kyzn/backstop-test" "quick" "security" &>/dev/null || true
+
+    assert_not_contains "backstop: draft-pr refuses to push or open a PR" \
+        "$(cat "$WORKFLOW_LOG")" "FORBIDDEN"
+    assert_eq "backstop: still checked out on the kyzn branch" \
+        "kyzn/backstop-test" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "backstop: kyzn branch still exists" \
+        "1" "$(git branch --list 'kyzn/backstop-test' | grep -c backstop-test)"
+    assert_eq "backstop: no commit created" "$bk_sha" "$(git rev-parse HEAD)"
+    assert_contains "backstop: tracked change preserved" "$(cat src/index.js)" "backstop tracked edit"
+    if [[ -f backstop-new.txt ]]; then
+        pass "backstop: untracked file preserved"
+    else
+        fail "backstop: untracked file" "backstop-new.txt was deleted"
+    fi
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "backstop: lock released"
+    else
+        fail "backstop: lock released" "lock directory still present"
+    fi
+    KYZN_VERIFY_STATUS="passed"
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+
+    # --- D. analyze --fix, baseline unavailable → fix phase never calls Claude ---
+    create_sandbox csharp
+    detect_project_type
+    _workflow_setup report
+    echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"Program.cs","fix":"f"}]' \
+        > "$WORKFLOW_TMP/findings.json"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260805-fixt01-analysis.md"
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260805-fixt01" "1.00" &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "analyze/baseline: aborts non-zero" 1 "$rc"
+    assert_not_contains "analyze/baseline: fix phase never invoked Claude" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "analyze/baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "analyze/baseline: no kyzn branch created" "" "$(git branch --list 'kyzn/*')"
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "analyze/baseline: lock released"
+    else
+        fail "analyze/baseline: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- E. analyze --fix, unavailable per batch → no push, no PR, clean tree ---
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup report
+    _write_mutate_script
+    echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]' \
+        > "$WORKFLOW_TMP/findings.json"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260805-fixt02-analysis.md"
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local orig_sha; orig_sha=$(git rev-parse "$orig")
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260805-fixt02" "1.00" &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_contains "analyze/batch: Claude did run" "$log" "CLAUDE-INVOKED"
+    assert_exit_code "analyze/batch: aborts non-zero" 1 "$rc"
+    assert_not_contains "analyze/batch: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "analyze/batch: original branch has no new commits" \
+        "$orig_sha" "$(git rev-parse "$orig")"
+    assert_eq "analyze/batch: kyzn branch kept for inspection" \
+        "1" "$(git branch --list 'kyzn/*' | grep -c 'kyzn/')"
+    if [[ -f tsconfig.json ]]; then
+        pass "analyze/batch: Claude's files preserved for inspection"
+    else
+        fail "analyze/batch: preserved files" "KyZN deleted files it should have left alone"
+    fi
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+
+    # --- F. --allow-dirty: the user's own work is never destroyed ---
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup report
+    _write_mutate_script
+
+    # Pre-existing user state that --allow-dirty permits
+    echo 'user edit' >> src/index.js
+    echo 'user scratch' > user-notes.txt
+    local want_untracked
+    want_untracked=$(cat user-notes.txt)
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local before_head; before_head=$(git rev-parse HEAD)
+
+    rc=0
+    cmd_improve --auto --allow-dirty &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_contains "improve/dirty: Claude did run" "$log" "CLAUDE-INVOKED"
+    assert_exit_code "improve/dirty: aborts non-zero" 1 "$rc"
+    assert_not_contains "improve/dirty: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    # The user's own pre-existing work must still be on disk, untouched. KyZN
+    # deletes nothing on abort, so this holds without any restore machinery.
+    assert_contains "improve/dirty: user's tracked edit still present" \
+        "$(cat src/index.js 2>/dev/null)" "user edit"
+    assert_eq "improve/dirty: user's untracked file byte-for-byte" \
+        "$want_untracked" "$(cat user-notes.txt 2>/dev/null)"
+    assert_eq "improve/dirty: no commit created on the original branch" \
+        "$before_head" "$(git rev-parse "$orig")"
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+
+    # --- G. cmd_improve: unavailable at the SELF-REPAIR re-verify call site ---
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup report
+    _write_selfrepair_mutate_script
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local g_sha; g_sha=$(git rev-parse HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_eq "improve/self-repair: Claude ran twice (reflexion retry fired)" \
+        "2" "$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")"
+    assert_exit_code "improve/self-repair: aborts non-zero" 1 "$rc"
+    assert_not_contains "improve/self-repair: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/self-repair: no commit on the original branch" "$g_sha" "$(git rev-parse "$orig")"
+    assert_eq "improve/self-repair: kyzn checkout kept for inspection" \
+        "1" "$(git rev-parse --abbrev-ref HEAD | grep -c '^kyzn/')"
+    if [[ -f tsconfig.json ]]; then
+        pass "improve/self-repair: retry changes preserved"
+    else
+        fail "improve/self-repair: preserved files" "KyZN deleted files it should have left alone"
+    fi
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE BREAK_TESTS_FLAG
+    cleanup_sandbox
+
+    # --- H. run_fix_phase: unavailable at the SELF-REPAIR re-verify call site ---
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig"
+    detect_project_type
+    _workflow_setup report
+    _write_selfrepair_mutate_script
+    echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]' \
+        > "$WORKFLOW_TMP/findings.json"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260805-fixt03-analysis.md"
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local h_sha; h_sha=$(git rev-parse HEAD)
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260805-fixt03" "1.00" &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_eq "analyze/self-repair: Claude ran twice (reflexion retry fired)" \
+        "2" "$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")"
+    assert_exit_code "analyze/self-repair: aborts non-zero" 1 "$rc"
+    assert_not_contains "analyze/self-repair: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "analyze/self-repair: no commit on the original branch" "$h_sha" "$(git rev-parse "$orig")"
+    if [[ -f tsconfig.json ]]; then
+        pass "analyze/self-repair: retry changes preserved"
+    else
+        fail "analyze/self-repair: preserved files" "KyZN deleted files it should have left alone"
+    fi
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE BREAK_TESTS_FLAG
+    cleanup_sandbox
+
+    # --- I. Python: tests present, no pytest → gate holds at workflow level ---
+    create_sandbox python
+    detect_project_type
+    _workflow_setup report
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "python/workflow: aborts non-zero" 1 "$rc"
+    assert_not_contains "python/workflow: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "python/workflow: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "python/workflow: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "python/workflow: lock released"
+    else
+        fail "python/workflow: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- J. Node: npm absent → gate holds at workflow level -------------------
+    create_sandbox node
+    detect_project_type
+    _workflow_setup report
+    rm -f "$WORKFLOW_TMP/clean-bin/npm"     # npm disappears from the mocked PATH
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "node/workflow: aborts non-zero" 1 "$rc"
+    assert_not_contains "node/workflow: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "node/workflow: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "node/workflow: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    PATH="$saved_path"
+    cleanup_sandbox
+
+    # --- L. Python: Claude adds a root test file after a clean baseline -------
+    # Baseline has no tests and no pytest, so nothing is required and it passes.
+    # Claude then adds test_new.py, which makes pytest required and unavailable.
+    create_sandbox python
+    rm -rf tests
+    git add -A && git commit -q -m "no tests"
+    detect_project_type
+    _workflow_setup report
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+echo 'def test_new(): assert True' > test_new.py
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"
+    export CLAUDE_MUTATE
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local l_sha; l_sha=$(git rev-parse HEAD)
+
+    rc=0
+    cmd_improve --auto &> "$WORKFLOW_TMP/py.out" || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    out=$(cat "$WORKFLOW_TMP/py.out")
+
+    assert_contains "python/new-test: Claude did run (baseline was clean)" "$log" "CLAUDE-INVOKED"
+    # Non-vacuous: prove it aborted for THIS reason, not some unrelated failure.
+    assert_contains "python/new-test: aborted because pytest was unavailable" \
+        "$out" "pytest was not found"
+    assert_contains "python/new-test: took the unavailable gate" \
+        "$out" "Verification was not executed"
+    assert_exit_code "python/new-test: aborts non-zero" 1 "$rc"
+    assert_not_contains "python/new-test: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "python/new-test: no commit on the original branch" "$l_sha" "$(git rev-parse "$orig")"
+    if [[ -f test_new.py ]]; then
+        pass "python/new-test: Claude's test file preserved for inspection"
+    else
+        fail "python/new-test: preserved files" "KyZN deleted files it should have left alone"
+    fi
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+
+    # --- K. Precedence at workflow level: unavailable + failing tests ---------
+    # Baseline is genuinely broken AND the type check cannot run. The run must
+    # take the unavailable gate, not the pre-existing-failure path that would
+    # let it proceed to Claude and a PR.
+    create_sandbox node                     # tsconfig.json present, no local tsc
+    detect_project_type
+    _workflow_setup report
+    cat > "$WORKFLOW_TMP/clean-bin/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "test" ]]; then echo "tests failing"; exit 1; fi
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/npm"
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "precedence/workflow: aborts non-zero" 1 "$rc"
+    assert_not_contains "precedence/workflow: failing tests do not unlock Claude" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "precedence/workflow: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "precedence/workflow: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    PATH="$saved_path"
+    cleanup_sandbox
+}
+
+test_abort_never_destroys_user_work() {
+    log_header "77. aborting an unverifiable run destroys nothing"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    create_sandbox generic
+    local orig; orig=$(git rev-parse --abbrev-ref HEAD)
+    local before_head; before_head=$(git rev-parse HEAD)
+
+    # Awkward but perfectly legal filenames — the abort path must not care,
+    # because it never enumerates, copies, or deletes anything.
+    printf 'user edit\n' >> scripts/run.sh
+    printf 'keep me\n'  > 'user notes.txt'
+    printf 'keep me\n'  > -leading-dash.txt
+    printf 'keep me\n'  > "$(printf 'tab\tname.txt')"
+    mkdir -p 'nested dir'
+    printf 'keep me\n'  > 'nested dir/deep file.txt'
+    ln -sf 'user notes.txt' link-to-notes
+
+    KYZN_ORIGINAL_BRANCH="$orig"
+    git checkout -q -b kyzn/abort-test
+    printf 'claude edit\n' >> tests/test.sh
+    printf 'claude new\n'  > claude-new.txt
+
+    # shellcheck disable=SC2034 # Read by abort_unverified_run in execute.sh.
+    KYZN_VERIFY_UNAVAILABLE_REASON="dotnet not found — test fixture"
+    abort_unverified_run "kyzn/abort-test" true &>/dev/null
+
+    assert_eq "abort: stays on the kyzn branch for inspection" \
+        "kyzn/abort-test" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "abort: branch kept, not deleted" \
+        "1" "$(git branch --list 'kyzn/abort-test' | grep -c abort-test)"
+    assert_eq "abort: no commit created" "$before_head" "$(git rev-parse "$orig")"
+
+    local f
+    for f in 'user notes.txt' '-leading-dash.txt' 'nested dir/deep file.txt' \
+             'claude-new.txt' 'tests/test.sh' 'scripts/run.sh'; do
+        if [[ -e "$f" ]]; then
+            pass "abort: preserved '$f'"
+        else
+            fail "abort: preserved '$f'" "file was destroyed"
+        fi
+    done
+    if [[ -e "$(printf 'tab\tname.txt')" ]]; then
+        pass "abort: preserved filename containing a tab"
+    else
+        fail "abort: tab filename" "file was destroyed"
+    fi
+    if [[ -L link-to-notes ]]; then
+        pass "abort: symlink preserved as a symlink"
+    else
+        fail "abort: symlink" "symlink was destroyed or replaced"
+    fi
+    assert_contains "abort: user's tracked edit intact" "$(cat scripts/run.sh)" "user edit"
+    assert_contains "abort: Claude's edit intact for inspection" "$(cat tests/test.sh)" "claude edit"
+
+    # Lock is released even though nothing was cleaned up
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "abort: lock released"
+    else
+        fail "abort: lock released" "lock directory still present"
+    fi
+
+    # A failed unwind must NOT be treated as successful cleanup. Point the
+    # "original branch" at something that cannot be checked out and confirm the
+    # KyZN branch survives and the preserve guidance is shown instead.
+    local out
+    KYZN_ORIGINAL_BRANCH="no-such-branch-xyz"
+    out=$(abort_unverified_run "kyzn/abort-test" false 2>&1)
+    assert_eq "abort/failed-unwind: kyzn branch not deleted" \
+        "1" "$(git branch --list 'kyzn/abort-test' | grep -c abort-test)"
+    assert_contains "abort/failed-unwind: says it could not return" "$out" "Could not return to"
+    assert_contains "abort/failed-unwind: falls back to preserve guidance" \
+        "$out" "current checkout is the KyZN branch"
+
+    # Detached HEAD is preserved, never guessed at.
+    git checkout -q --detach
+    # shellcheck disable=SC2034 # Read by abort_unverified_run in execute.sh.
+    KYZN_ORIGINAL_BRANCH="HEAD"
+    out=$(abort_unverified_run "kyzn/abort-test" false 2>&1)
+    assert_eq "abort/detached: kyzn branch still intact" \
+        "1" "$(git branch --list 'kyzn/abort-test' | grep -c abort-test)"
+    assert_contains "abort/detached: preserves rather than guessing a branch" \
+        "$out" "current checkout is the KyZN branch"
+
+    # --allow-dirty users get an explicit warning against blind resets
+    KYZN_ALLOW_DIRTY=true
+    out=$(abort_unverified_run "kyzn/abort-test" true 2>&1)
+    assert_contains "abort/allow-dirty: warns against blind reset" "$out" "reset --hard"
+    assert_contains "abort/allow-dirty: names --allow-dirty" "$out" "--allow-dirty"
+    # shellcheck disable=SC2034 # Read by abort_unverified_run in execute.sh.
+    KYZN_ALLOW_DIRTY=false
+
+    cleanup_sandbox
+}
+
+test_verification_precedence_and_tool_contracts() {
+    log_header "78. unavailable outranks failure; Node/Python tool contracts"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    local saved_path="$PATH" cb rc
+
+    # --- A/B. Unavailable must outrank a concurrent failure --------------------
+    # tsconfig.json with no local tsc (unavailable) AND a failing npm script.
+    # The decision must stay "not executed", or the run slips into the ordinary
+    # failure path and becomes eligible for the pre-existing-failure branch.
+    local phase
+    for phase in build test; do
+        create_sandbox node          # ships tsconfig.json + build/test scripts
+        detect_project_type
+        cb=$(_clean_path "$SANDBOX/clean-bin")
+        cat > "$cb/npm" <<'SH'
+#!/usr/bin/env bash
+# Fail only the phase under test; the other passes.
+if [[ "${1:-}" == "run" && "${2:-}" == "$FAIL_PHASE" ]]; then exit 1; fi
+if [[ "${1:-}" == "$FAIL_PHASE" ]]; then echo "failing"; exit 1; fi
+exit 0
+SH
+        chmod +x "$cb/npm"
+        export FAIL_PHASE="$phase"
+        PATH="$cb"
+        rc=0
+        verify_build &>/dev/null || rc=$?
+        PATH="$saved_path"
+        assert_exit_code "precedence: missing tsc + failing npm $phase → unavailable (2)" 2 "$rc"
+        assert_eq "precedence: status stays unavailable, not failed" \
+            "unavailable" "${KYZN_VERIFY_STATUS:-}"
+        unset FAIL_PHASE
+        cleanup_sandbox
+    done
+
+    # --- C. Node: npm absent entirely -----------------------------------------
+    create_sandbox node
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "node: npm absent → unavailable (2)" 2 "$rc"
+    cleanup_sandbox
+
+    # --- D. Node: no build/test scripts AND no npm must not pass silently -----
+    create_sandbox node
+    echo '{"name":"test-project"}' > package.json     # no scripts at all
+    rm -f tsconfig.json                               # remove the other trigger
+    git add -A && git commit -q -m "no scripts"
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "node: no scripts + no npm → unavailable (2)" 2 "$rc"
+    cleanup_sandbox
+
+    # --- E. Python: tests present but pytest nowhere --------------------------
+    create_sandbox python          # ships tests/test_basic.py
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "python: tests present, no pytest → unavailable (2)" 2 "$rc"
+    assert_eq "python: status unavailable" "unavailable" "${KYZN_VERIFY_STATUS:-}"
+    cleanup_sandbox
+
+    # --- F. Python: project-local .venv pytest is used without activation -----
+    create_sandbox python
+    detect_project_type
+    mkdir -p .venv/bin
+    cat > .venv/bin/pytest <<'SH'
+#!/usr/bin/env bash
+echo "venv-pytest $*" >> "$FAKE_LOG"
+exit "${FAKE_PYTEST_RC:-0}"
+SH
+    chmod +x .venv/bin/pytest
+    export FAKE_LOG="$SANDBOX/py.log"; : > "$FAKE_LOG"
+    export FAKE_PYTEST_RC=0
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "python: .venv pytest found without activation → 0" 0 "$rc"
+    assert_contains "python: .venv pytest actually invoked" "$(cat "$FAKE_LOG")" "venv-pytest"
+
+    # --- G. Python: local pytest failing is a real failure, not unavailable ---
+    export FAKE_PYTEST_RC=1
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "python: .venv pytest failing → failed (1)" 1 "$rc"
+    unset FAKE_LOG FAKE_PYTEST_RC
+    cleanup_sandbox
+
+    # --- H. Python: no tests at all → nothing required, still passes ----------
+    create_sandbox python
+    rm -rf tests
+    git add -A && git commit -q -m "no tests"
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "python: no tests present → 0 (nothing required)" 0 "$rc"
+    cleanup_sandbox
+
+    # --- I. Every supported Python test layout requires pytest ----------------
+    # KyZN's own detection already counts test/ and pytest.ini as tests, and
+    # gate_new_test_files already recognises root test_*.py / *_test.py. The
+    # verifier must agree, or those layouts score a green with no runner.
+    local layout
+    for layout in 'test/' 'conftest.py' 'pytest.ini' 'test_example.py' 'example_test.py'; do
+        create_sandbox python
+        rm -rf tests                     # remove the one layout already covered
+        case "$layout" in
+            'test/') mkdir -p test && echo 'def test_ok(): assert True' > test/test_a.py ;;
+            *)       echo 'def test_ok(): assert True' > "$layout" ;;
+        esac
+        git add -A && git commit -q -m "layout $layout"
+        detect_project_type
+        cb=$(_clean_path "$SANDBOX/clean-bin")
+        PATH="$cb"
+        rc=0
+        verify_build &>/dev/null || rc=$?
+        PATH="$saved_path"
+        assert_exit_code "python layout '$layout' + no pytest → unavailable (2)" 2 "$rc"
+        cleanup_sandbox
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -2610,6 +3780,15 @@ main() {
     test_check_symlink_escapes
     test_count_diff_size_new_files
     test_progress_animation
+    test_verify_fails_closed_on_missing_tools
+    test_verify_csharp_mocked_dotnet
+    test_verify_java_mocked_maven_gradle
+    test_verify_typescript_local_only
+    test_csharp_measurer_parsing
+    test_java_measurer_parsing
+    test_workflow_gate_blocks_pr_when_unverifiable
+    test_abort_never_destroys_user_work
+    test_verification_precedence_and_tool_contracts
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
