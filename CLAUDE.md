@@ -99,12 +99,12 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 
 | Code | Meaning |
 |------|---------|
-| `0` | passed — checks ran and were green |
-| `1` | failed — checks ran, something is broken |
-| `2` | **not executed** — a required tool was unavailable |
+| `0` | passed/no-op — every applicable required check passed, or no required check applied |
+| `1` | failed — one or more applicable checks ran and failed |
+| `2` | not executed — an applicable required check could not run |
 
-"Not executed" outranks "failed" for authorization: if any required check did not run, the
-run is ineligible for commit/push/PR regardless of what else happened. Callers use
+"Not executed" outranks "failed" for authorization: if an applicable required check could
+not run, the run is ineligible for commit/push/PR regardless of what else happened. Callers use
 `verify_not_executed <rc>`; `KYZN_VERIFY_STATUS` and `KYZN_VERIFY_UNAVAILABLE_REASON` carry
 the detail. An unverifiable run that already modified the worktree is preserved in place —
 nothing is committed, pushed, PR'd, or deleted.

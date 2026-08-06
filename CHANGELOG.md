@@ -24,15 +24,16 @@ as "the build passed". `verify_build` now returns:
 
 | Code | Meaning |
 |------|---------|
-| `0` | passed — checks ran and were green |
-| `1` | failed — checks ran, something is broken |
-| `2` | not executed — a required tool was unavailable |
+| `0` | passed/no-op — every applicable required check passed, or no required check applied |
+| `1` | failed — one or more applicable checks ran and failed |
+| `2` | not executed — an applicable required check could not run |
 
 - **Unavailable required tooling blocks commits, pushes and PRs.** A run that could not
   verify its changes will not open a PR, and the `draft-pr` failure strategy cannot bypass
   the gate.
-- **"Not executed" outranks an ordinary failure for authorization.** If any required check
-  did not run, the run stays ineligible for commit/push/PR no matter what else failed.
+- **"Not executed" outranks an ordinary failure for authorization.** If an applicable
+  required check could not run, the run stays ineligible for commit/push/PR no matter what
+  else failed.
   A failure is still reported as the more actionable message; it just does not downgrade
   the verdict.
 - Rust, Go, C# and Java verifiers no longer treat a missing toolchain as success.

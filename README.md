@@ -238,7 +238,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
-| **Build gate** | PR only if build + tests actually ran **and** passed — verification that could not run blocks shipping just like a failure |
+| **Verification gate** | Unavailable required checks block shipping. Newly introduced build/test failures block; projects with no applicable checks and unchanged pre-existing failures retain their existing behavior. |
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
