@@ -3689,6 +3689,83 @@ SH
     done
 }
 
+test_toolchain_matrix_download_authorization() {
+    log_header "79. toolchain matrix: --require never authorizes downloads"
+
+    local harness="$KYZN_ROOT/tests/toolchain/run-matrix.sh"
+    if [[ ! -f "$harness" ]]; then
+        skip "toolchain matrix harness not present"
+        return
+    fi
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    mkdir -p bin
+
+    # Every package manager the matrix could reach for is mocked to LOG rather
+    # than run. If the harness ever shells out to one without authorization,
+    # the log is non-empty and this test fails.
+    PKG_LOG="$SANDBOX/pkg.log"
+    export PKG_LOG
+    : > "$PKG_LOG"
+    local t
+    for t in npm npx dotnet mvn gradle; do
+        cat > "bin/$t" <<SH
+#!/usr/bin/env bash
+echo "INVOKED $t \$*" >> "\$PKG_LOG"
+exit 0
+SH
+        chmod +x "bin/$t"
+    done
+
+    local saved="$PATH" out rc
+
+    # 1. Normal mode: every suite skipped, nothing invoked, exit 0
+    PATH="$SANDBOX/bin:$PATH"
+    rc=0
+    out=$(bash "$harness" all 2>&1) || rc=$?
+    PATH="$saved"
+    assert_exit_code "matrix/normal: exits 0 when downloads are unauthorized" 0 "$rc"
+    assert_eq "matrix/normal: no package manager invoked" "" "$(cat "$PKG_LOG")"
+    assert_contains "matrix/normal: reports suites as skipped" "$out" "SKIP"
+
+    # 2. --require ALONE: must fail loudly, and still invoke nothing.
+    #    This is the regression: strictness must not imply network access.
+    : > "$PKG_LOG"
+    PATH="$SANDBOX/bin:$PATH"
+    rc=0
+    out=$(bash "$harness" --require all 2>&1) || rc=$?
+    PATH="$saved"
+    if (( rc != 0 )); then
+        pass "matrix/require: fails when downloads are not authorized"
+    else
+        fail "matrix/require: fails" "expected non-zero exit, got $rc"
+    fi
+    assert_eq "matrix/require: STILL no package manager invoked" "" "$(cat "$PKG_LOG")"
+    assert_contains "matrix/require: explains downloads are unauthorized" "$out" "not authorized"
+    assert_not_contains "matrix/require: does not tell the user to pass --require" "$out" "use --require"
+
+    # 3. The CI workflow must authorize downloads explicitly at every call site.
+    local wf="$KYZN_ROOT/.github/workflows/toolchain-matrix.yml"
+    if [[ -f "$wf" ]]; then
+        local calls unauthorized
+        calls=$(grep -c 'run-matrix\.sh --require' "$wf") || calls=0
+        unauthorized=$(grep 'run-matrix\.sh --require' "$wf" | grep -vc -- '--allow-downloads') || unauthorized=0
+        if (( calls > 0 )); then
+            pass "matrix/ci: workflow invokes the harness ($calls call sites)"
+        else
+            fail "matrix/ci: workflow invokes the harness" "no run-matrix.sh invocation found"
+        fi
+        assert_eq "matrix/ci: every invocation passes --allow-downloads" "0" "$unauthorized"
+    else
+        skip "toolchain workflow not present"
+    fi
+
+    unset PKG_LOG
+    cd "$KYZN_ROOT"
+    rm -rf "$SANDBOX"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -3789,6 +3866,7 @@ main() {
     test_workflow_gate_blocks_pr_when_unverifiable
     test_abort_never_destroys_user_work
     test_verification_precedence_and_tool_contracts
+    test_toolchain_matrix_download_authorization
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
