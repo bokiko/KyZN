@@ -3407,7 +3407,7 @@ SH
     assert_contains "python/new-test: Claude did run (baseline was clean)" "$log" "CLAUDE-INVOKED"
     # Non-vacuous: prove it aborted for THIS reason, not some unrelated failure.
     assert_contains "python/new-test: aborted because pytest was unavailable" \
-        "$out" "pytest was not found"
+        "$out" "no usable pytest was found"
     assert_contains "python/new-test: took the unavailable gate" \
         "$out" "Verification was not executed"
     assert_exit_code "python/new-test: aborts non-zero" 1 "$rc"
@@ -3629,6 +3629,7 @@ SH
     cat > .venv/bin/pytest <<'SH'
 #!/usr/bin/env bash
 echo "venv-pytest $*" >> "$FAKE_LOG"
+if [[ "${1:-}" == "--version" ]]; then exit 0; fi
 exit "${FAKE_PYTEST_RC:-0}"
 SH
     chmod +x .venv/bin/pytest
@@ -3766,6 +3767,206 @@ SH
     rm -rf "$SANDBOX"
 }
 
+# Python runner shims used by test 80.
+#   broken       — executable, but its shebang interpreter does not exist (127)
+#   working      — runs, logs, honours FAKE_PYTEST_RC
+#   probe-ok     — answers --version fine, but 127 on a real invocation
+_write_pytest_shim() { # _write_pytest_shim <path> <kind>
+    mkdir -p "$(dirname "$1")"
+    case "$2" in
+        broken)
+            printf '#!/nonexistent/interpreter/python\n' > "$1" ;;
+        working)
+            # A real runner answers --version with 0 even when the suite fails,
+            # so the probe must not be conflated with the test outcome.
+            cat > "$1" <<'SH'
+#!/usr/bin/env bash
+echo "PYTEST $KIND $*" >> "$FAKE_LOG"
+if [[ "${1:-}" == "--version" ]]; then exit 0; fi
+exit "${FAKE_PYTEST_RC:-0}"
+SH
+            ;;
+        version-fail)
+            # Executes fine, but --version reports failure: a candidate that
+            # cannot answer the probe cleanly must not be trusted.
+            cat > "$1" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then exit 1; fi
+exit 0
+SH
+            ;;
+        probe-ok)
+            # Answers the probe, then fails to execute for real.
+            cat > "$1" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then exit 0; fi
+exit "${EXEC_FAIL_RC:-127}"
+SH
+            ;;
+    esac
+    chmod +x "$1"
+}
+
+test_python_unusable_shim_is_unavailable() {
+    log_header "80. unusable Python runners fall through, or report 'not executed'"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+
+    local saved_path="$PATH" cb rc
+
+    # --- 1 + 6. Broken .venv shim, working PATH pytest → fall through --------
+    create_sandbox python
+    detect_project_type
+    _write_pytest_shim .venv/bin/pytest broken
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    FAKE_LOG="$SANDBOX/py.log"; export FAKE_LOG; : > "$FAKE_LOG"
+    KIND="path"; export KIND
+    FAKE_PYTEST_RC=0; export FAKE_PYTEST_RC
+    _write_pytest_shim "$cb/pytest" working
+    PATH="$cb"
+    assert_eq "shim/fallthrough: resolver skips the broken local shim" \
+        "$cb/pytest" "$(_kyzn_python_tool pytest)"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    assert_exit_code "shim/fallthrough: uses the working PATH runner → 0" 0 "$rc"
+    assert_contains "shim/fallthrough: the healthy runner actually ran" "$(cat "$FAKE_LOG")" "PYTEST path"
+
+    # 6. capture_failing_tests and gate_new_test_files use the healthy runner too
+    : > "$FAKE_LOG"
+    capture_failing_tests >/dev/null 2>&1 || true
+    assert_contains "shim/fallthrough: capture_failing_tests uses the healthy runner" \
+        "$(cat "$FAKE_LOG")" "PYTEST path"
+    : > "$FAKE_LOG"
+    echo 'def test_new(): assert True' > test_brand_new.py
+    gate_new_test_files >/dev/null 2>&1 || true
+    assert_contains "shim/fallthrough: gate_new_test_files uses the healthy runner" \
+        "$(cat "$FAKE_LOG")" "collect-only"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 1a. Local candidate whose --version exits 1 → fall through ----------
+    create_sandbox python
+    detect_project_type
+    _write_pytest_shim .venv/bin/pytest version-fail
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    FAKE_LOG="$SANDBOX/py.log"; export FAKE_LOG; : > "$FAKE_LOG"
+    KIND="path"; export KIND
+    FAKE_PYTEST_RC=0; export FAKE_PYTEST_RC
+    _write_pytest_shim "$cb/pytest" working
+    PATH="$cb"
+    assert_eq "shim/version-nonzero: resolver skips a candidate whose --version fails" \
+        "$cb/pytest" "$(_kyzn_python_tool pytest)"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "shim/version-nonzero: healthy PATH fallback used → 0" 0 "$rc"
+    assert_contains "shim/version-nonzero: healthy runner actually ran" "$(cat "$FAKE_LOG")" "PYTEST path"
+    unset FAKE_PYTEST_RC KIND
+    cleanup_sandbox
+
+    # --- 1b. EVERY candidate fails its probe → unavailable --------------------
+    create_sandbox python
+    detect_project_type
+    _write_pytest_shim .venv/bin/pytest version-fail
+    _write_pytest_shim venv/bin/pytest version-fail
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    _write_pytest_shim "$cb/pytest" version-fail
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "shim/version-nonzero: all candidates fail probe → not executed (2)" 2 "$rc"
+    assert_eq "shim/version-nonzero: status unavailable" "unavailable" "${KYZN_VERIFY_STATUS:-}"
+    cleanup_sandbox
+
+    # --- 2. Broken local shim, no usable fallback → unavailable --------------
+    create_sandbox python
+    detect_project_type
+    _write_pytest_shim .venv/bin/pytest broken
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "shim/no-fallback: broken local shim → not executed (2)" 2 "$rc"
+    assert_eq "shim/no-fallback: status unavailable" "unavailable" "${KYZN_VERIFY_STATUS:-}"
+    cleanup_sandbox
+
+    # --- 3. Broken pytest on PATH, nothing local → unavailable ---------------
+    create_sandbox python
+    detect_project_type
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    _write_pytest_shim "$cb/pytest" broken
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "shim/path-broken: broken PATH pytest → not executed (2)" 2 "$rc"
+    cleanup_sandbox
+
+    # --- 4. Passes the probe, then 126 OR 127 on the real run → unavailable --
+    local failcode
+    for failcode in 126 127; do
+        create_sandbox python
+        detect_project_type
+        _write_pytest_shim .venv/bin/pytest probe-ok
+        cb=$(_clean_path "$SANDBOX/clean-bin")
+        EXEC_FAIL_RC="$failcode"; export EXEC_FAIL_RC
+        PATH="$cb"
+        rc=0
+        verify_build &>/dev/null || rc=$?
+        PATH="$saved_path"
+        assert_exit_code "shim/exec-fail: exit $failcode on the real run → not executed (2)" 2 "$rc"
+        assert_eq "shim/exec-fail($failcode): status unavailable, not failed" \
+            "unavailable" "${KYZN_VERIFY_STATUS:-}"
+        unset EXEC_FAIL_RC
+        cleanup_sandbox
+    done
+
+    # --- 5. A genuine test failure is still an ordinary failure --------------
+    create_sandbox python
+    detect_project_type
+    FAKE_LOG="$SANDBOX/py.log"; export FAKE_LOG; : > "$FAKE_LOG"
+    KIND="venv"; export KIND
+    FAKE_PYTEST_RC=1; export FAKE_PYTEST_RC
+    _write_pytest_shim .venv/bin/pytest working
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    PATH="$cb"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "shim/real-failure: pytest exit 1 stays failed (1)" 1 "$rc"
+    assert_eq "shim/real-failure: status failed, not unavailable" "failed" "${KYZN_VERIFY_STATUS:-}"
+    unset FAKE_PYTEST_RC KIND
+    cleanup_sandbox
+
+    # --- 7. Workflow level: no usable pytest cannot reach Claude or a PR -----
+    create_sandbox python
+    detect_project_type
+    _write_pytest_shim .venv/bin/pytest broken
+    _workflow_setup report
+    rm -f "$WORKFLOW_TMP/clean-bin/pytest" 2>/dev/null || true
+    local orig; orig=$(git rev-parse --abbrev-ref HEAD)
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    local log; log=$(cat "$WORKFLOW_LOG")
+    assert_exit_code "shim/workflow: aborts non-zero" 1 "$rc"
+    assert_not_contains "shim/workflow: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "shim/workflow: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "shim/workflow: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    PATH="$saved_path"
+    unset FAKE_LOG
+    cleanup_sandbox
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -3867,6 +4068,7 @@ main() {
     test_abort_never_destroys_user_work
     test_verification_precedence_and_tool_contracts
     test_toolchain_matrix_download_authorization
+    test_python_unusable_shim_is_unavailable
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
