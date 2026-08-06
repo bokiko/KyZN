@@ -1659,22 +1659,18 @@ ${tier_findings}
                 log_ok "Self-repair succeeded for $tier batch"
                 batch_passed=true
             elif ! $baseline_verify_ok; then
-                # Baseline had failures — check if Claude added NEW ones
+                # Baseline already failed — same fail-closed decision as the quick
+                # path, from structured state rather than log text.
                 local after_failures
                 after_failures=$(capture_failing_tests 2>/dev/null) || true
-                local new_failures=""
-                if [[ -n "$after_failures" ]]; then
-                    while IFS= read -r test_name; do
-                        [[ -z "$test_name" ]] && continue
-                        if ! echo "$baseline_failures" | grep -qF "$test_name"; then
-                            new_failures+="$test_name"$'\n'
-                        fi
-                    done <<< "$after_failures"
-                fi
 
-                if [[ -z "${new_failures//[$'\n']/}" ]]; then
-                    log_warn "$tier batch: all failures are pre-existing — continuing"
+                if verify_may_continue_with_preexisting "$baseline_failures" "$after_failures"; then
+                    log_warn "$tier batch: every failing test was already failing at baseline — continuing"
                     batch_passed=true
+                elif verify_had_build_failure; then
+                    log_error "$tier batch: build/compile/type-check failure — blocks regardless of pre-existing test failures"
+                else
+                    log_error "$tier batch: failures could not be shown to be unchanged — treating as broken"
                 fi
             fi
         fi
