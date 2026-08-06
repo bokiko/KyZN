@@ -685,31 +685,29 @@ ${verify_errors}
             handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
         else
-            # Baseline had failures — check if Claude added NEW ones
+            # Baseline already failed — may this run continue on those grounds?
+            # The decision is made from structured verification state, never from
+            # log text, and fails closed.
             local after_failures
             after_failures=$(capture_failing_tests 2>/dev/null) || true
 
-            # Find tests that are in after but not in baseline
-            local new_failures=""
-            if [[ -n "$after_failures" ]]; then
-                while IFS= read -r test_name; do
-                    [[ -z "$test_name" ]] && continue
-                    if ! echo "$baseline_failures" | grep -qF "$test_name"; then
-                        new_failures+="$test_name"$'\n'
-                    fi
-                done <<< "$after_failures"
-            fi
-
-            if [[ -n "${new_failures//[$'\n']/}" ]]; then
-                log_error "Claude introduced NEW test failures:"
-                echo "$new_failures" | while IFS= read -r f; do
-                    [[ -n "$f" ]] && log_error "  - $f"
-                done
+            if verify_may_continue_with_preexisting "$baseline_failures" "$after_failures"; then
+                log_warn "Tests still failing, but every failing test was already failing at baseline. Continuing."
+            else
+                if verify_had_build_failure; then
+                    log_error "Build/compile/type-check failure — this blocks regardless of pre-existing test failures."
+                elif [[ -z "${after_failures//[$'\n' $'\t']/}" ]]; then
+                    log_error "Verification failed with no identifiable test failures — cannot show the failures are unchanged."
+                else
+                    log_error "New failures not present at baseline:"
+                    while IFS= read -r f; do
+                        [[ -z "$f" ]] && continue
+                        grep -qFx -- "$f" <<< "$baseline_failures" || log_error "  - $f"
+                    done <<< "$after_failures"
+                fi
                 rm -f "$verify_errors_file"
                 handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
                 return 1
-            else
-                log_warn "Build/tests still failing, but all failures are pre-existing. Continuing."
             fi
         fi
         rm -f "$verify_errors_file"
