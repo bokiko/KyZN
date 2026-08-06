@@ -331,35 +331,205 @@ has_cmd() {
     command -v "$1" &>/dev/null
 }
 
-# Portable timeout wrapper (macOS lacks GNU timeout)
-if ! command -v timeout &>/dev/null; then
-    timeout() {
-        local secs="$1"; shift
+# Portable timeout wrapper (macOS lacks GNU timeout). Keep input semantics the
+# same when GNU timeout is present so configuration behaves identically across
+# platforms; the system binary remains the controller for valid durations.
+_KYZN_TIMEOUT_BIN=$(type -P timeout 2>/dev/null || true)
+timeout() {
+    local duration="${1:-}"
+    (( $# > 0 )) || return 125
+    shift
 
-        # Every KyZN timeout is expressed as whole seconds. Fail explicitly for
-        # unsupported values instead of passing untrusted text to arithmetic.
-        if [[ ! "$secs" =~ ^[0-9]+$ ]]; then
-            return 125
-        fi
+    # Preserve GNU timeout's safe duration grammar on every platform: a
+    # non-negative number with an optional s/m/h/d suffix.
+    if [[ ! "$duration" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([smhd]?)$ ]] || (( $# == 0 )); then
+        echo "timeout: invalid duration '$duration' (expected a number optionally followed by s, m, h, or d)" >&2
+        return 125
+    fi
+    if [[ "$duration" =~ ^(0+([.]0*)?|[.]0+)[smhd]?$ ]]; then
+        "$@"
+        return $?
+    fi
+    if [[ -n "$_KYZN_TIMEOUT_BIN" ]]; then
+        "$_KYZN_TIMEOUT_BIN" "$duration" "$@"
+        return $?
+    fi
 
-        "$@" &
-        local pid=$!
-        local deadline=$((SECONDS + secs))
+    # Use an available portable runtime as the foreground controller. The
+    # child gets a separate process group in the caller's session. Signals are
+    # forwarded, caller death is detected, and the complete group is reaped.
+    if command -v perl &>/dev/null; then
+        perl -MPOSIX=:sys_wait_h,setpgid,SIGHUP,SIGINT,SIGQUIT,SIGTERM -MTime::HiRes=time,sleep -e '
+            use strict;
+            use warnings;
+            my ($duration, @cmd) = @ARGV;
+            my %multiplier = (s => 1, m => 60, h => 3600, d => 86400);
+            my $suffix = $duration =~ s/([smhd])$// ? $1 : "";
+            my $seconds = (0 + $duration) * ($suffix ? $multiplier{$suffix} : 1);
+            my $caller_pid = getppid();
+            my $pending_signal = 0;
+            my %signals = (HUP => SIGHUP, INT => SIGINT, QUIT => SIGQUIT, TERM => SIGTERM);
+            for my $name (keys %signals) {
+                $SIG{$name} = sub { $pending_signal = $signals{$name}; };
+            }
 
-        # Poll in the foreground so command substitution never inherits a
-        # sleeping background watcher that keeps its stdout pipe open.
-        while kill -0 "$pid" 2>/dev/null; do
-            if (( SECONDS >= deadline )); then
-                kill "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-                return 124
-            fi
-            sleep 0.1
-        done
+            my $pid = fork();
+            exit 125 unless defined $pid;
+            if ($pid == 0) {
+                exit 125 unless defined setpgid(0, 0);
+                exec { $cmd[0] } @cmd;
+                exit 127;
+            }
+            setpgid($pid, $pid);
 
-        wait "$pid" 2>/dev/null
-    }
-fi
+            my $child_reaped = 0;
+            my $child_status = 0;
+            my $poll_child = sub {
+                return if $child_reaped;
+                my $waited = waitpid($pid, WNOHANG);
+                if ($waited == $pid) {
+                    $child_reaped = 1;
+                    $child_status = $?;
+                }
+            };
+            my $terminate_group = sub {
+                my ($signal_number) = @_;
+                kill $signal_number, -$pid;
+                my $grace_deadline = time() + 1.0;
+                while (time() < $grace_deadline) {
+                    $poll_child->();
+                    last unless kill 0, -$pid;
+                    sleep 0.05;
+                }
+                kill "KILL", -$pid if kill 0, -$pid;
+                if (!$child_reaped) {
+                    waitpid($pid, 0);
+                    $child_reaped = 1;
+                    $child_status = $?;
+                }
+            };
+
+            my $deadline = time() + $seconds;
+            while (1) {
+                $poll_child->();
+                if ($child_reaped) {
+                    exit WEXITSTATUS($child_status) if WIFEXITED($child_status);
+                    exit 128 + WTERMSIG($child_status) if WIFSIGNALED($child_status);
+                    exit 125;
+                }
+                if ($pending_signal) {
+                    my $signal_number = $pending_signal;
+                    $terminate_group->($signal_number);
+                    exit 128 + $signal_number;
+                }
+                if (getppid() != $caller_pid) {
+                    $terminate_group->(SIGTERM);
+                    exit 125;
+                }
+                if (time() >= $deadline) {
+                    $terminate_group->(SIGTERM);
+                    exit 124;
+                }
+                sleep 0.05;
+            }
+        ' "$duration" "$@"
+    elif command -v python3 &>/dev/null; then
+        python3 -c '
+import os, re, signal, sys, time
+
+duration = sys.argv[1]
+command = sys.argv[2:]
+match = re.fullmatch(r"([0-9]+(?:[.][0-9]*)?|[.][0-9]+)([smhd]?)", duration)
+number, suffix = match.groups()
+seconds = float(number) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[suffix]
+caller_pid = os.getppid()
+pending_signal = 0
+
+def remember_signal(signum, _frame):
+    global pending_signal
+    pending_signal = signum
+
+for forwarded_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+    signal.signal(forwarded_signal, remember_signal)
+
+pid = os.fork()
+if pid == 0:
+    try:
+        os.setpgid(0, 0)
+        os.execvp(command[0], command)
+    except Exception:
+        os._exit(127)
+try:
+    os.setpgid(pid, pid)
+except (PermissionError, ProcessLookupError):
+    pass
+
+child_reaped = False
+child_status = 0
+
+def poll_child():
+    global child_reaped, child_status
+    if child_reaped:
+        return
+    waited, status = os.waitpid(pid, os.WNOHANG)
+    if waited == pid:
+        child_reaped = True
+        child_status = status
+
+def group_alive():
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+def terminate_group(signum):
+    global child_reaped, child_status
+    try:
+        os.killpg(pid, signum)
+    except ProcessLookupError:
+        pass
+    grace_deadline = time.monotonic() + 1.0
+    while time.monotonic() < grace_deadline:
+        poll_child()
+        if not group_alive():
+            break
+        time.sleep(0.05)
+    if group_alive():
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if not child_reaped:
+        _, child_status = os.waitpid(pid, 0)
+        child_reaped = True
+
+deadline = time.monotonic() + seconds
+while True:
+    poll_child()
+    if child_reaped:
+        if os.WIFEXITED(child_status):
+            sys.exit(os.WEXITSTATUS(child_status))
+        if os.WIFSIGNALED(child_status):
+            sys.exit(128 + os.WTERMSIG(child_status))
+        sys.exit(125)
+    if pending_signal:
+        forwarded = pending_signal
+        terminate_group(forwarded)
+        sys.exit(128 + forwarded)
+    if os.getppid() != caller_pid:
+        terminate_group(signal.SIGTERM)
+        sys.exit(125)
+    if time.monotonic() >= deadline:
+        terminate_group(signal.SIGTERM)
+        sys.exit(124)
+    time.sleep(0.05)
+' "$duration" "$@"
+    else
+        echo "timeout: portable fallback requires perl or python3" >&2
+        return 125
+    fi
+}
 
 # Get current timestamp
 timestamp() {

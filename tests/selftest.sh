@@ -1004,23 +1004,131 @@ test_timeout_flag() {
     assert_contains "has timeout wrapper" "$src" 'timeout "$claude_timeout"'
     assert_contains "has KYZN_CLAUDE_TIMEOUT env" "$src" "KYZN_CLAUDE_TIMEOUT"
     assert_contains "default 600s" "$src" ':-600'
+
+    local status=0 value error_output
+    error_output=$(timeout abc true 2>&1) || status=$?
+    assert_exit_code "timeout rejects invalid duration on every platform" "125" "$status"
+    assert_contains "timeout explains invalid duration" "$error_output" "invalid duration 'abc'"
+    value=$(timeout 0 printf disabled)
+    assert_eq "timeout zero disables deadline on every platform" "disabled" "$value"
+    value=$(timeout .5s /usr/bin/printf suffix)
+    assert_eq "timeout accepts GNU fractional suffix duration" "suffix" "$value"
+    value=$(timeout 1m /usr/bin/printf minute)
+    assert_eq "timeout accepts GNU minute duration" "minute" "$value"
+    status=0
+    timeout 3 /bin/bash -c 'exit 7' || status=$?
+    assert_exit_code "timeout preserves child status on every platform" "7" "$status"
+}
+
+_test_timeout_lifecycle() {
+    local controller="$1" action="$2" signal_name="$3" expected_status="$4"
+    local runtime_path caller_file controller_file leaf_file
+    runtime_path=$(mktemp -d)
+    caller_file=$(mktemp)
+    controller_file=$(mktemp)
+    leaf_file=$(mktemp)
+    ln -s "$(command -v "$controller")" "$runtime_path/$controller"
+    ln -s "$(command -v sleep)" "$runtime_path/sleep"
+
+    PATH="$runtime_path" /bin/bash --noprofile --norc -c '
+        printf "%s\n" "$$" > "$2"
+        source "$1"
+        timeout 30 /bin/bash -c '\''
+            printf "%s\n" "$PPID" > "$1"
+            /bin/bash -c "trap \"\" HUP INT QUIT TERM; sleep 30" &
+            printf "%s\n" "$!" > "$2"
+            wait
+        '\'' _ "$3" "$4"
+    ' _ "$KYZN_ROOT/lib/core.sh" "$caller_file" "$controller_file" "$leaf_file" \
+        >/dev/null 2>&1 &
+    local caller_pid=$!
+
+    local attempt
+    for attempt in {1..80}; do
+        [[ -s "$caller_file" && -s "$controller_file" && -s "$leaf_file" ]] && break
+        sleep 0.05
+    done
+
+    local recorded_caller controller_pid leaf_pid lifecycle_status=0
+    recorded_caller=$(<"$caller_file")
+    controller_pid=$(<"$controller_file")
+    leaf_pid=$(<"$leaf_file")
+    if [[ "$recorded_caller" != "$caller_pid" || -z "$controller_pid" || -z "$leaf_pid" ]]; then
+        kill -KILL "$caller_pid" "$controller_pid" "$leaf_pid" 2>/dev/null || true
+        wait "$caller_pid" 2>/dev/null || true
+        rm -rf "$runtime_path" "$caller_file" "$controller_file" "$leaf_file"
+        fail "$controller $action $signal_name lifecycle setup" "failed to capture validated process IDs"
+        return
+    fi
+
+    if [[ "$action" == parent-death ]]; then
+        kill "-$signal_name" "$caller_pid"
+    else
+        kill "-$signal_name" "$controller_pid"
+    fi
+    wait "$caller_pid" 2>/dev/null || lifecycle_status=$?
+
+    for attempt in {1..80}; do
+        if ! kill -0 "$controller_pid" 2>/dev/null && ! kill -0 "$leaf_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+
+    local survivors=0
+    if kill -0 "$controller_pid" 2>/dev/null; then
+        survivors=$((survivors + 1))
+        kill -KILL "$controller_pid" 2>/dev/null || true
+    fi
+    if kill -0 "$leaf_pid" 2>/dev/null; then
+        survivors=$((survivors + 1))
+        kill -KILL "$leaf_pid" 2>/dev/null || true
+    fi
+
+    rm -rf "$runtime_path" "$caller_file" "$controller_file" "$leaf_file"
+    assert_eq "$controller $action $signal_name leaves no managed processes" "0" "$survivors"
+    if [[ "$action" == signal-forward ]]; then
+        assert_exit_code "$controller forwards $signal_name with shell status" "$expected_status" "$lifecycle_status"
+    fi
 }
 
 test_portable_timeout_fallback() {
     log_header "33b. Portable timeout fallback"
 
     # Force core.sh to define its fallback even on Linux hosts that provide
-    # GNU timeout. The fallback itself only needs the external sleep command.
-    local fallback_path result
+    # GNU timeout. Provide exactly one controller runtime and an integer-only
+    # sleep stub so fractional shell polling would fail deterministically.
+    local fallback_path result controller single_marker
     fallback_path=$(mktemp -d)
-    ln -s "$(command -v sleep)" "$fallback_path/sleep"
+    if command -v perl &>/dev/null; then
+        controller=perl
+    elif command -v python3 &>/dev/null; then
+        controller=python3
+    else
+        rm -rf "$fallback_path"
+        skip "portable timeout fallback" "perl or python3 unavailable"
+        return
+    fi
+    ln -s "$(command -v "$controller")" "$fallback_path/$controller"
+    cat > "$fallback_path/sleep" <<'SH'
+#!/bin/sh
+case "$1" in
+    *.*) exit 64 ;;
+esac
+exec /bin/sleep "$@"
+SH
+    chmod +x "$fallback_path/sleep"
+
+    local descendant_pids
+    descendant_pids=$(mktemp)
+    single_marker="$fallback_path/single-exec-marker"
 
     result=$(PATH="$fallback_path" /bin/bash --noprofile --norc -c '
         source "$1"
         [[ $(type -t timeout) == function ]] || exit 90
 
         local_start=$SECONDS
-        value=$(timeout 3 printf hello)
+        value=$(timeout 3 /usr/bin/printf hello)
         fast_status=$?
         fast_elapsed=$((SECONDS - local_start))
         printf "fast=%s|%s|%s\n" "$fast_status" "$value" "$fast_elapsed"
@@ -1030,7 +1138,36 @@ test_portable_timeout_fallback() {
         timeout 1 sleep 5 || timed_status=$?
         timed_elapsed=$((SECONDS - local_start))
         printf "timed=%s|%s\n" "$timed_status" "$timed_elapsed"
-    ' _ "$KYZN_ROOT/lib/core.sh")
+
+        child_status=0
+        timeout 3 /bin/bash -c "exit 7" || child_status=$?
+        printf "child=%s\n" "$child_status"
+
+        invalid_status=0
+        invalid_output=$(timeout abc true 2>&1) || invalid_status=$?
+        printf "invalid=%s|%s\n" "$invalid_status" "$invalid_output"
+
+        suffix_value=$(timeout .5s /usr/bin/printf suffix)
+        minute_value=$(timeout 1m /usr/bin/printf minute)
+        printf "durations=%s|%s\n" "$suffix_value" "$minute_value"
+
+        zero_value=$(timeout 0 printf disabled)
+        zero_status=$?
+        printf "zero=%s|%s\n" "$zero_status" "$zero_value"
+
+        tree_status=0
+        timeout 1 /bin/bash -c '\''
+            /bin/bash -c "trap \"\" TERM; sleep 30" & echo $! >> "$1"
+            sleep 30 & echo $! >> "$1"
+            wait
+        '\'' _ "$2" || tree_status=$?
+        printf "tree=%s\n" "$tree_status"
+
+        single_status=0
+        timeout 1 "true; /usr/bin/touch $3" 2>/dev/null || single_status=$?
+        [[ -e "$3" ]] && single_created=yes || single_created=no
+        printf "single=%s|%s\n" "$single_status" "$single_created"
+    ' _ "$KYZN_ROOT/lib/core.sh" "$descendant_pids" "$single_marker")
 
     rm -rf "$fallback_path"
 
@@ -1049,6 +1186,47 @@ test_portable_timeout_fallback() {
         pass "fallback terminates long command near deadline"
     else
         fail "fallback timeout duration" "took ${timed_elapsed}s"
+    fi
+    assert_contains "fallback preserves child exit status" "$result" "child=7"
+    assert_contains "fallback rejects invalid duration" "$result" "invalid=125|timeout: invalid duration 'abc'"
+    assert_contains "fallback accepts GNU duration grammar" "$result" "durations=suffix|minute"
+    assert_contains "fallback zero disables timeout" "$result" "zero=0|disabled"
+    assert_contains "fallback times out process tree" "$result" "tree=124"
+    assert_contains "fallback never shell-interprets one argument" "$result" "single=127|no"
+
+    local leaked=0 child_pid
+    while IFS= read -r child_pid; do
+        if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+            leaked=$((leaked + 1))
+            kill "$child_pid" 2>/dev/null || true
+        fi
+    done < "$descendant_pids"
+    rm -f "$descendant_pids"
+    assert_eq "fallback reaps descendant processes" "0" "$leaked"
+
+    local no_runtime_path no_runtime_result
+    no_runtime_path=$(mktemp -d)
+    no_runtime_result=$(PATH="$no_runtime_path" /bin/bash --noprofile --norc -c '
+        source "$1"
+        status=0
+        timeout 1 true || status=$?
+        printf "status=%s\n" "$status"
+    ' _ "$KYZN_ROOT/lib/core.sh" 2>&1)
+    rm -rf "$no_runtime_path"
+    assert_contains "fallback fails explicitly without controller runtime" "$no_runtime_result" "status=125"
+    assert_contains "fallback explains missing controller runtime" "$no_runtime_result" "requires perl or python3"
+
+    local lifecycle_controller
+    for lifecycle_controller in perl python3; do
+        command -v "$lifecycle_controller" &>/dev/null || continue
+        _test_timeout_lifecycle "$lifecycle_controller" parent-death TERM 0
+        _test_timeout_lifecycle "$lifecycle_controller" parent-death KILL 0
+        _test_timeout_lifecycle "$lifecycle_controller" signal-forward TERM 143
+    done
+    command -v perl &>/dev/null && _test_timeout_lifecycle perl signal-forward INT 130
+    if command -v python3 &>/dev/null; then
+        _test_timeout_lifecycle python3 signal-forward HUP 129
+        _test_timeout_lifecycle python3 signal-forward QUIT 131
     fi
 }
 
@@ -2420,12 +2598,16 @@ test_profile_path_traversal() {
 
     source "$KYZN_ROOT/lib/prompt.sh"
 
-    # A traversal profile should be sanitized to empty — no profile content appended
+    # Make the fallback branch independent of state leaked by earlier tests.
+    # Generic has no conventions file, so this must return the tracked base
+    # prompt without ever treating it as disposable temporary output.
+    local KYZN_PROJECT_TYPE=generic
+    local base_prompt="$KYZN_ROOT/templates/system-prompt.md"
     local result
+    assert_file_exists "tracked base prompt exists before traversal test" "$base_prompt"
     result=$(get_system_prompt "../../etc/passwd")
+    assert_eq "traversal falls back to tracked base prompt" "$base_prompt" "$result"
 
-    # The result might be a temp file (if conventions exist) or the base prompt,
-    # but it must NOT contain content from /etc/passwd
     if [[ -f "$result" ]]; then
         local content
         content=$(cat "$result")
@@ -2434,12 +2616,12 @@ test_profile_path_traversal() {
         else
             pass "traversal profile sanitized — no /etc/passwd content"
         fi
-        # mktemp uses /var/folders on macOS, so do not assume /tmp here.
-        rm -f "$result"
+        # Only get_system_prompt output outside the repository can be temporary.
+        [[ "$result" != "$KYZN_ROOT/"* ]] && rm -f "$result"
     else
-        # Not a file — should be the base prompt path
-        pass "traversal returns base prompt path"
+        fail "traversal returns existing prompt" "missing file: $result"
     fi
+    assert_file_exists "tracked base prompt survives traversal test" "$base_prompt"
 }
 
 # ---------------------------------------------------------------------------
