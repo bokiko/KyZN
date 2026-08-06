@@ -4,6 +4,7 @@ on: [push, pull_request]
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ludeeus/action-shellcheck@2.0.0
@@ -13,6 +14,7 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Configure git identity
@@ -37,6 +39,7 @@ jobs:
 
   macos-tests:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Configure git identity
@@ -44,7 +47,21 @@ jobs:
           git config --global user.email "ci@kyzn.local"
           git config --global user.name "KyZN CI"
       - name: Install dependencies
-        run: brew install jq yq
+        run: |
+          brew install jq
+          # Pin yq version + checksum (matches install.sh)
+          YQ_VERSION="v4.52.4"
+          case "$(uname -m)" in
+            arm64) YQ_PLATFORM="darwin_arm64"; YQ_CHECKSUM="6bfa43a439936644d63c70308832390c8838290d064970eaada216219c218a13" ;;
+            x86_64) YQ_PLATFORM="darwin_amd64"; YQ_CHECKSUM="d72a75fe9953c707d395f653d90095b133675ddd61aa738e1ac9a73c6c05e8be" ;;
+            *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin"
+          YQ_BIN="$RUNNER_TEMP/bin/yq"
+          curl -fsSL -o "$YQ_BIN" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${YQ_PLATFORM}"
+          echo "${YQ_CHECKSUM}  ${YQ_BIN}" | shasum -a 256 -c -
+          chmod 755 "$YQ_BIN"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Run quick tests
         run: bash tests/selftest.sh
       - name: Run full tests
