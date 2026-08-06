@@ -1006,6 +1006,52 @@ test_timeout_flag() {
     assert_contains "default 600s" "$src" ':-600'
 }
 
+test_portable_timeout_fallback() {
+    log_header "33b. Portable timeout fallback"
+
+    # Force core.sh to define its fallback even on Linux hosts that provide
+    # GNU timeout. The fallback itself only needs the external sleep command.
+    local fallback_path result
+    fallback_path=$(mktemp -d)
+    ln -s "$(command -v sleep)" "$fallback_path/sleep"
+
+    result=$(PATH="$fallback_path" /bin/bash --noprofile --norc -c '
+        source "$1"
+        [[ $(type -t timeout) == function ]] || exit 90
+
+        local_start=$SECONDS
+        value=$(timeout 3 printf hello)
+        fast_status=$?
+        fast_elapsed=$((SECONDS - local_start))
+        printf "fast=%s|%s|%s\n" "$fast_status" "$value" "$fast_elapsed"
+
+        local_start=$SECONDS
+        timed_status=0
+        timeout 1 sleep 5 || timed_status=$?
+        timed_elapsed=$((SECONDS - local_start))
+        printf "timed=%s|%s\n" "$timed_status" "$timed_elapsed"
+    ' _ "$KYZN_ROOT/lib/core.sh")
+
+    rm -rf "$fallback_path"
+
+    assert_contains "fallback returns fast command output" "$result" "fast=0|hello|"
+
+    local fast_elapsed timed_elapsed
+    fast_elapsed=$(printf '%s\n' "$result" | awk -F'|' '/^fast=/{print $3}')
+    timed_elapsed=$(printf '%s\n' "$result" | awk -F'|' '/^timed=/{print $2}')
+    if (( fast_elapsed < 2 )); then
+        pass "fallback does not wait for timeout after fast command"
+    else
+        fail "fallback fast command duration" "took ${fast_elapsed}s"
+    fi
+    assert_contains "fallback returns timeout status" "$result" "timed=124|"
+    if (( timed_elapsed >= 1 && timed_elapsed < 3 )); then
+        pass "fallback terminates long command near deadline"
+    else
+        fail "fallback timeout duration" "took ${timed_elapsed}s"
+    fi
+}
+
 test_tightened_allowlist() {
     log_header "34. Tightened allowlist wildcards"
 
@@ -2388,7 +2434,8 @@ test_profile_path_traversal() {
         else
             pass "traversal profile sanitized — no /etc/passwd content"
         fi
-        [[ "$result" == /tmp/* ]] && rm -f "$result"
+        # mktemp uses /var/folders on macOS, so do not assume /tmp here.
+        rm -f "$result"
     else
         # Not a file — should be the base prompt path
         pass "traversal returns base prompt path"
@@ -4970,6 +5017,7 @@ main() {
     test_disallowed_file_globs
     test_ci_blocking
     test_timeout_flag
+    test_portable_timeout_fallback
     test_tightened_allowlist
     test_trust_in_local_yaml
     test_per_category_floor

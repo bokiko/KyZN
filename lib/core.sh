@@ -335,23 +335,29 @@ has_cmd() {
 if ! command -v timeout &>/dev/null; then
     timeout() {
         local secs="$1"; shift
+
+        # Every KyZN timeout is expressed as whole seconds. Fail explicitly for
+        # unsupported values instead of passing untrusted text to arithmetic.
+        if [[ ! "$secs" =~ ^[0-9]+$ ]]; then
+            return 125
+        fi
+
         "$@" &
         local pid=$!
-        ( sleep "$secs" && kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null ) &
-        local watcher=$!
+        local deadline=$((SECONDS + secs))
+
+        # Poll in the foreground so command substitution never inherits a
+        # sleeping background watcher that keeps its stdout pipe open.
+        while kill -0 "$pid" 2>/dev/null; do
+            if (( SECONDS >= deadline )); then
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+                return 124
+            fi
+            sleep 0.1
+        done
+
         wait "$pid" 2>/dev/null
-        local ret=$?
-        if kill -0 "$watcher" 2>/dev/null; then
-            # Process finished before timeout — cancel watcher
-            kill "$watcher" 2>/dev/null
-            wait "$watcher" 2>/dev/null
-            return $ret
-        else
-            # Watcher already exited — likely timeout fired (edge case: process finished
-            # just as sleep expired, making watcher exit before we check — rare false positive)
-            wait "$watcher" 2>/dev/null
-            return 124
-        fi
     }
 fi
 

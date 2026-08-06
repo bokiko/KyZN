@@ -34,3 +34,18 @@ jobs:
         run: bash tests/selftest.sh
       - name: Run full tests
         run: bash tests/selftest.sh --full
+
+  macos-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@kyzn.local"
+          git config --global user.name "KyZN CI"
+      - name: Install dependencies
+        run: brew install jq yq
+      - name: Run quick tests
+        run: bash tests/selftest.sh
+      - name: Run full tests
+        run: bash tests/selftest.sh --full
