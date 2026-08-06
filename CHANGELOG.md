@@ -2,6 +2,121 @@
 
 All notable changes to KyZN are documented here.
 
+## [1.3.0] — 2026-08-06
+
+### Added — C# / .NET and Java / JVM support
+
+- Project detection for `.csproj` / `.sln`, and for Maven (`pom.xml`) and Gradle
+  (`build.gradle[.kts]`, `settings.gradle[.kts]`), including the Gradle-wins precedence
+  when both build systems are present.
+- `measurers/csharp.sh` (dotnet build warnings/errors, `dotnet list package --vulnerable`,
+  test-file ratio) and `measurers/java.sh` (mvn/gradle compile output, OWASP
+  dependency-check, test-file ratio).
+- Build/test verification for both: `dotnet build` + `dotnet test`, `mvn compile` +
+  `mvn test`, and `gradle build -x test` + `gradle test` with `./gradlew` taking
+  precedence over a system Gradle.
+- Convention templates for C# and Java.
+
+### Changed — verification is now tri-state (behavior change)
+
+Verification previously had only two outcomes, so "the tool isn't installed" was reported
+as "the build passed". `verify_build` now returns:
+
+| Code | Meaning |
+|------|---------|
+| `0` | passed — checks ran and were green |
+| `1` | failed — checks ran, something is broken |
+| `2` | not executed — a required tool was unavailable |
+
+- **Unavailable required tooling blocks commits, pushes and PRs.** A run that could not
+  verify its changes will not open a PR, and the `draft-pr` failure strategy cannot bypass
+  the gate.
+- **"Not executed" outranks an ordinary failure for authorization.** If any required check
+  did not run, the run stays ineligible for commit/push/PR no matter what else failed.
+  A failure is still reported as the more actionable message; it just does not downgrade
+  the verdict.
+- Rust, Go, C# and Java verifiers no longer treat a missing toolchain as success.
+
+### Changed — language-specific verification rules
+
+- **TypeScript is checked with the project-local compiler only.** KyZN runs
+  `node_modules/.bin/tsc` and nothing else. Previously, a `tsconfig.json` with no local
+  install caused `npx tsc` to resolve and **download** the unrelated `tsc` package from the
+  registry — a supply-chain fetch and a type check that never type-checked anything. With
+  no local compiler, the result is now "not executed"; nothing is downloaded.
+- **Node requires `npm`.** A `package.json` project without `npm` reports "not executed"
+  instead of relying on a configured script eventually producing command-not-found (a
+  package with no build/test scripts previously reported a clean pass).
+- **Python requires `pytest` when the project ships tests**, recognised across `tests/`,
+  `test/`, `conftest.py`, `pytest.ini`, and root-level `test_*.py` / `*_test.py`.
+- **Python tools resolve project-local first** — `.venv/bin` → `venv/bin` → `PATH` — so a
+  virtualenv install counts without activation. Each candidate must pass a `--version`
+  probe before it is trusted, so a stale or relocated shim whose interpreter no longer
+  exists falls through to a working runner instead of being preferred over it. A pytest
+  runner that fails to execute (126/127) is reported as "not executed", never as a test
+  failure.
+- `ruff` and `mypy` remain optional and non-blocking. Generic-project behavior is unchanged.
+
+### Changed — safe abort for unverifiable runs
+
+When a run aborts because verification could not be executed, KyZN commits nothing, pushes
+nothing and opens no PR. If Claude had already modified the worktree, **nothing is deleted**:
+the working tree and the KyZN branch are preserved and stay checked out, with
+inspection-only guidance
+(`git status`, `git diff`, `git diff --cached`). No one-line discard command is offered,
+because after `--allow-dirty` KyZN cannot distinguish your work from Claude's. Runs started
+with `--allow-dirty` are warned explicitly against blind `reset --hard` / `checkout -f`.
+
+When the abort happens at baseline—before Claude has run—KyZN attempts a plain, non-forcing
+checkout back to the original branch. Only after confirming that HEAD reached the original
+branch does it remove the KyZN branch; worktree files are not deleted. If checkout fails or
+the original state was detached HEAD, the KyZN checkout is preserved instead of guessing a
+recovery target.
+
+### Added — real-toolchain CI matrix
+
+`tests/toolchain/run-matrix.sh` plus a separate read-only `toolchain-matrix.yml` workflow
+exercise `lib/verify.sh` against real compilers and test runners — project-local TypeScript
+(5.9.3 and 7.0.2), .NET, Java/Maven, Java/Gradle, and Gradle wrapper precedence — proving
+rc 0 for a valid project, rc 1 for a deliberate compile/test failure, and that the expected
+binary was the one invoked. GitHub Actions are pinned to immutable commit SHAs; SDK
+versions are pinned in the workflow and fixture dependency versions in the harness. The
+harness takes two independent flags: `--require` (a missing toolchain fails instead of
+skipping) and `--allow-downloads` (authorizes fetching pinned dependencies) — strictness
+does not imply network access.
+
+### Documentation
+
+- `kyzn.dev` linked from every user-visible touchpoint, and from the README homepage.
+- README, CLAUDE.md and CONTRIBUTING.md updated for the current test counts, the C# and
+  Java measurers, the toolchain harness, and the two CI workflows.
+
+### Migration / behavior change
+
+**Repositories missing a required toolchain may now be refused where older KyZN versions
+silently continued.** A Rust, Go, C# or Java project on a machine without its toolchain
+previously produced a green verification and could reach a PR; it now aborts with the
+reason. The same applies to a `package.json` project with no `npm`, and a Python project
+with tests but no usable `pytest`. Under the default no-dependency-install policy, the
+TypeScript case affects projects that have a `tsconfig.json` but no project-local compiler
+in `node_modules/.bin/tsc` — not every Node project that lacks `node_modules`.
+
+Two distinct kinds of missing dependency are involved, and only one of them KyZN can
+install for you:
+
+- **System toolchains** — `cargo`, `go`, `dotnet`, `mvn`, `gradle` and `npm` must be
+  installed externally. KyZN never installs them.
+- **Project dependencies** — `kyzn doctor --install`, `verification.install_deps: true`
+  and `KYZN_VERIFY_INSTALL_DEPS=true` cover Node and Python *project* dependencies only
+  (populating `node_modules` / `.venv`). They do not install system toolchains.
+
+Otherwise, use `kyzn measure` for a read-only score. Exit code `2` is also new API surface
+for anything calling `verify_build` directly.
+
+### Testing
+
+- **488 tests passing** (quick) and **499** (full suite, with stress tests).
+
 ## [1.2.1] — 2026-05-03
 
 ### Fixed (silent-failure bugs)
