@@ -37,16 +37,34 @@ verify_not_executed() {
 
 # Resolve a Python tool, preferring the project's own virtualenv so KyZN works
 # without the venv being activated (the opt-in installer creates .venv, which a
-# bare `command -v` would never see). Echoes the command; returns 1 if absent.
+# bare `command -v` would never see). Echoes the command; returns 1 if none of
+# the candidates can actually run.
+#
+# The executable bit lives on the shim FILE — a relocated or stale venv whose
+# shebang interpreter no longer exists still passes `-x` and only fails at exec
+# time with 126/127. Preferring such a shim over a working runner on PATH would
+# silently skip verification, so each candidate is probed before it is trusted.
 _kyzn_python_tool() {
-    local name="$1" p
-    for p in ".venv/bin/$name" "venv/bin/$name"; do
-        if [[ -x "$p" ]]; then
+    local name="$1" p rc
+    # "" is the PATH candidate, tried last.
+    for p in ".venv/bin/$name" "venv/bin/$name" ""; do
+        if [[ -z "$p" ]]; then
+            p=$(command -v "$name" 2>/dev/null) || return 1
+            [[ -n "$p" ]] || return 1
+        elif [[ ! -x "$p" ]]; then
+            continue
+        fi
+
+        rc=0
+        "$p" --version >/dev/null 2>&1 || rc=$?
+        # Only a clean exit 0 proves the candidate is usable. Anything else —
+        # 126/127 from a dangling shebang, or a runner that errors on its own
+        # version query — means fall through to the next candidate.
+        if (( rc == 0 )); then
             echo "$p"
             return 0
         fi
     done
-    command -v "$name" 2>/dev/null && return 0
     return 1
 }
 
@@ -411,14 +429,31 @@ verify_python() {
             if [[ -n "${KYZN_PYTEST_EXTRA_ARGS:-}" ]]; then
                 read -ra pytest_args <<< "$KYZN_PYTEST_EXTRA_ARGS"
             fi
-            if ! "$pytest_bin" "${pytest_args[@]}" 2>&1 | tail -10; then
+
+            # Keep the output streamed and bounded by `tail`, but recover the
+            # RUNNER's own status via PIPESTATUS. Testing the pipeline with `!`
+            # would collapse every non-zero code into "tests failed", reporting
+            # a runner that never executed as an ordinary failure — and an empty
+            # failure list then lets the pre-existing-failure paths carry the run
+            # all the way to a PR. Reading PIPESTATUS in the else branch is
+            # errexit-safe; `|| true` would reset it to 0.
+            local pytest_rc=0
+            if "$pytest_bin" "${pytest_args[@]}" 2>&1 | tail -10; then
+                pytest_rc=0
+            else
+                pytest_rc=${PIPESTATUS[0]}
+            fi
+
+            if (( pytest_rc == 126 || pytest_rc == 127 )); then
+                verify_unavailable "pytest at '$pytest_bin' could not be executed (exit $pytest_rc) — tests were not run"
+            elif (( pytest_rc != 0 )); then
                 log_error "Tests failed"
                 ok=false
             else
                 log_ok "Tests passed"
             fi
         else
-            verify_unavailable "project has tests but pytest was not found in .venv/bin, venv/bin, or PATH — tests were not run"
+            verify_unavailable "project has tests but no usable pytest was found in .venv/bin, venv/bin, or PATH — tests were not run"
         fi
     fi
 
