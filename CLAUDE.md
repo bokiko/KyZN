@@ -14,12 +14,12 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 277 quick tests
-kyzn selftest --full       # 286 tests including stress tests
+kyzn selftest              # 488 quick tests
+kyzn selftest --full       # 499 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
-shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
+shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolchain/run-matrix.sh
 
 # Usage
 kyzn doctor                # Check prerequisites
@@ -69,7 +69,7 @@ Profiler agent (Sonnet) reads repo files and caches conventions to `.kyzn/repo-p
 | `lib/prompt.sh` | Prompt assembly with `{{PLACEHOLDER}}` replacement |
 | `lib/allowlist.sh` | Per-language Claude tool flags |
 | `lib/report.sh` | PR body generation, `gh pr create` |
-| `measurers/*.sh` | Execute real tools, output JSON metric arrays (generic, node, python, rust, go) |
+| `measurers/*.sh` | Execute real tools, output JSON metric arrays (generic, node, python, rust, go, csharp, java) |
 
 ### Config
 
@@ -89,8 +89,26 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 - Functions: `snake_case`; commands: `cmd_` prefix; globals: `KYZN_` prefix; internal helpers: `_kyzn_` prefix
 - Health score weights (configurable): security 25%, testing 25%, quality 25%, performance 15%, documentation 10%
 - Conventional commits: `feat:`, `fix:`, `docs:`, `perf:`
-- CI runs ShellCheck at warning severity
+- CI runs ShellCheck at warning severity (`ci.yml`); `toolchain-matrix.yml` exercises
+  `lib/verify.sh` against real TypeScript, .NET, Maven and Gradle SDKs via
+  `tests/toolchain/run-matrix.sh`
+
+## Verification results
+
+`verify_build` returns three states, not two:
+
+| Code | Meaning |
+|------|---------|
+| `0` | passed — checks ran and were green |
+| `1` | failed — checks ran, something is broken |
+| `2` | **not executed** — a required tool was unavailable |
+
+"Not executed" outranks "failed" for authorization: if any required check did not run, the
+run is ineligible for commit/push/PR regardless of what else happened. Callers use
+`verify_not_executed <rc>`; `KYZN_VERIFY_STATUS` and `KYZN_VERIFY_UNAVAILABLE_REASON` carry
+the detail. An unverifiable run that already modified the worktree is preserved in place —
+nothing is committed, pushed, PR'd, or deleted.
 
 ## Test framework
 
-`tests/selftest.sh` is a self-contained 2286-line Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.
+`tests/selftest.sh` is a self-contained 4110-line Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.

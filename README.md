@@ -11,14 +11,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
-  <img src="https://img.shields.io/badge/version-1.2.1-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-292%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/version-1.3.0-2ecc71?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/tests-499%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;292+tests+%7C+CI-hardened;Tested+on+7+repos+across+4+languages" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;499+tests+%7C+CI-hardened;6+languages+%2B+real-toolchain+CI" alt="Typing SVG"></a>
 </p>
 
 ## Contents
@@ -187,8 +187,8 @@ kyzn schedule daily             # Cron at 3am daily
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
-kyzn selftest                   # Run 283 quick tests
-kyzn selftest --full            # Run 292 tests (incl. stress)
+kyzn selftest                   # Run 488 quick tests
+kyzn selftest --full            # Run 499 tests (incl. stress)
 ```
 
 ---
@@ -238,7 +238,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
-| **Build gate** | PR only if build + tests pass |
+| **Build gate** | PR only if build + tests actually ran **and** passed — verification that could not run blocks shipping just like a failure |
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
@@ -272,12 +272,15 @@ kyzn/
 │   ├── approve.sh          # Approve/reject workflow
 │   └── schedule.sh         # Cron scheduling
 ├── measurers/              # Per-language health measurers
-│   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh
+│   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh, csharp.sh, java.sh
 ├── templates/              # System prompts + analysis templates
 ├── profiles/               # Focus-specific prompts
-├── tests/selftest.sh       # 292 tests (quick + stress)
+├── tests/selftest.sh       # 488 quick / 499 full (incl. stress)
+├── tests/toolchain/
+│   └── run-matrix.sh       # Real-toolchain integration matrix
 ├── SECURITY.md             # Threat model + published audit
-└── .github/workflows/      # CI (ShellCheck)
+└── .github/workflows/      # ci.yml (ShellCheck + selftests)
+                            # toolchain-matrix.yml (real SDKs)
 ```
 
 ---
@@ -291,17 +294,18 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 283 quick tests (~4s)
-shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
+bash tests/selftest.sh          # 488 quick tests
+bash tests/selftest.sh --full   # 499 tests (incl. stress)
+shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolchain/run-matrix.sh
 ```
 
-No build step — it's pure Bash. CI runs the same ShellCheck command plus quick and full selftests with a configured git identity for sandbox commits. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions, commit format, and PR guidelines.
+No build step — it's pure Bash. `ci.yml` runs repository-wide ShellCheck at warning severity plus the quick and full selftests, with a configured git identity for sandbox commits. A second workflow, `toolchain-matrix.yml`, exercises `lib/verify.sh` against real TypeScript, .NET, Maven and Gradle toolchains on pinned SDKs. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions, commit format, and PR guidelines.
 
 ### Where to contribute
 
 | Area | What's needed | Start here |
 |------|--------------|------------|
-| **New languages** | Add measurers for Ruby, Java, PHP, etc. | `measurers/` — follow `python.sh` as a template |
+| **New languages** | Add measurers for Ruby, PHP, etc. | `measurers/` — follow `python.sh` as a template |
 | **Measurers** | Improve scoring accuracy, add new tools | `measurers/*.sh` |
 | **Analysis prompts** | Better specialist prompts, fewer false positives | `templates/` |
 | **Safety** | New edge cases, threat model gaps | `lib/execute.sh`, [SECURITY.md](SECURITY.md) |

@@ -14,10 +14,10 @@ cd KyZN
 ## Running Tests
 
 ```bash
-# Quick tests (283 cases, ~4s)
+# Quick tests (488 cases)
 bash tests/selftest.sh
 
-# Full suite with stress tests (292 cases, ~9s)
+# Full suite with stress tests (499 cases)
 bash tests/selftest.sh --full
 ```
 
@@ -26,7 +26,7 @@ bash tests/selftest.sh --full
 We use ShellCheck (matches CI):
 
 ```bash
-shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh
+shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolchain/run-matrix.sh
 ```
 
 ## Coding Conventions
