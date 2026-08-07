@@ -42,7 +42,7 @@ If verification fails on a previously clean build, KyZN attempts **self-repair**
    apply there)
 5. **Self-repair** — if verification fails, retries once with error context (reflexion loop)
 6. **Score Gate** — re-measures health. If score dropped, aborts and cleans up
-7. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root
+7. **Report** — compact terminal summary + detailed `.kyzn/kyzn-report.md` convenience copy (archived per run under `.kyzn/reports/`)
 8. **PR** — commits, pushes, and creates PR with before/after health comparison
 
 ## Health Score
