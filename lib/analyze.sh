@@ -568,7 +568,7 @@ $(cat "$report_file")
     if [[ -n "$baseline_failures" ]]; then
         baseline_context="## Pre-Existing Test Failures
 
-The following tests were ALREADY failing before your changes. Do NOT try to fix these — they are pre-existing issues. Only ensure you don't make them worse or add NEW failures.
+The following tests were already failing before this run. They are diagnostic context, not an exemption: final verification must be green. Repair any of these failures that remain after applying the assigned fixes, using minimal scoped changes. Do not hide, skip, delete, or weaken tests, and do not make the failures worse.
 
 \`\`\`
 $baseline_failures
@@ -656,8 +656,9 @@ Each finding may include a fix_plan with guidance on which file, function, and p
 - If a fix is too risky or you're not confident, skip it and note why
 - When fixing a security vulnerability (SEC-*), add at least one regression test that would have caught the vulnerability
 - When fixing a critical bug (BUG-* at CRITICAL/HIGH), add a test that verifies the fix
-- Do NOT make any changes beyond what's listed here — no drive-by refactoring
-- Do NOT delete test files or remove large blocks of existing tests — only modify tests if a finding specifically targets test code AND the test is genuinely broken
+- Final verification must be green before this batch can succeed
+- Do not make changes beyond the listed findings, except for minimal changes required to repair existing verification failures and reach green verification — no drive-by refactoring
+- Do not delete test files or remove large blocks of tests. Modify an existing test only when a listed finding targets it or when verification evidence shows that the existing test itself is genuinely broken; preserve or strengthen coverage and never weaken it merely to make verification pass
 
 ## Output
 
@@ -1589,7 +1590,7 @@ run_fix_phase() {
         else
             cat "$first_verify_out"
             # Reflexion retry — capture errors, give Claude a second chance
-            log_warn "$tier batch broke build — attempting self-repair..."
+            log_warn "$tier batch is still failing verification — attempting self-repair..."
 
             # Use saved output from first verify_build run (avoids running tests twice)
             local verify_errors
@@ -1599,7 +1600,23 @@ run_fix_phase() {
             local retry_budget
             retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
 
-            local retry_prompt="Your previous fixes for $tier severity issues broke the build/tests.
+            # Give the retry the same baseline context as the initial attempt —
+            # it is now expected to close those failures too, so withholding
+            # them would leave it repairing blind.
+            local retry_baseline_context=""
+            if [[ -n "$baseline_failures" ]]; then
+                retry_baseline_context="
+## Known Baseline Failures
+
+These were already failing before this run. Final verification must be green, so any that remain must also be repaired:
+
+\`\`\`
+$baseline_failures
+\`\`\`
+"
+            fi
+
+            local retry_prompt="Build/tests are still failing after your fixes for the $tier severity issues.
 
 ## Errors (last 50 lines)
 ${verify_errors}
@@ -1608,9 +1625,9 @@ ${verify_errors}
 \`\`\`json
 ${tier_findings}
 \`\`\`
-
+${retry_baseline_context}
 ## Repair Instructions
-- Fix ONLY the issues your changes introduced. Do not revert all changes — preserve what works.
+- Make final verification green. Repair failures introduced by this batch and any remaining baseline failures. Preserve working improvements, keep repairs minimal and scoped, and do not hide, skip, delete, or weaken tests.
 - If a test import fails (ModuleNotFoundError), rewrite the test using mocks instead:
   - Python: use unittest.mock (Mock, patch, MagicMock) — do NOT import the missing package
   - Node: use jest.mock()
