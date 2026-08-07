@@ -12,13 +12,13 @@
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
   <img src="https://img.shields.io/badge/version-2.0.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-660%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/selftests-Linux%20%2B%20macOS-2ecc71?style=flat-square" alt="Self-tests on Linux and macOS">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;660+tests+%7C+CI-hardened;6+languages+%2B+real-toolchain+CI" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;Quick+%2B+full+selftests+on+Linux+%2B+macOS;6+language+profiles+%2B+real-toolchain+CI" alt="Typing SVG"></a>
 </p>
 
 ## Contents
@@ -188,8 +188,8 @@ kyzn schedule daily             # Disabled until KyZN provides isolated executio
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
-kyzn selftest                   # Run 649 quick tests
-kyzn selftest --full            # Run 660 tests (incl. stress)
+kyzn selftest                   # Run the quick self-test suite
+kyzn selftest --full            # Include stress tests
 ```
 
 ---
@@ -222,7 +222,29 @@ kyzn fix --allow-unsafe-host-execution
 
 **Health score** (out of 100): security 25%, testing 25%, quality 25%, performance 15%, documentation 10%. Configurable.
 
-**Languages:** Node.js (eslint, tsc, vitest/jest), Python (ruff, mypy, pytest), Rust (clippy, cargo test), Go (go vet, go test), C# / .NET (dotnet build, dotnet test, dotnet format), Java / JVM (mvn test, gradle test, dependency-check). Generic works on anything.
+**Languages:** Node.js, Python, Rust, Go, C# / .NET, and Java / JVM have detection, measurement, agent-tool, and verification profiles. Generic analysis works on any repository; mutating generic runs require a passing Makefile `check`/`test` target or explicit `verification.command`. A gitignored `.kyzn/local.yaml` command overrides the committed fallback, and KyZN prints the exact command before running it. A tracked `local.yaml` is refused and cannot override the committed contract.
+
+| Project profile | Detection | Measurement | Agent tools | Verification | CI fixtures | Isolated runner |
+|-----------------|-----------|-------------|-------------|--------------|-------------|-----------------|
+| Node.js | Yes | eslint / TypeScript / audit signals | npm/npx profile | npm build/test + TypeScript | Linux + macOS | No |
+| Python | Yes | ruff / mypy / audit signals | pytest/ruff/mypy profile | pytest + optional ruff/mypy | Linux + macOS | No |
+| Rust | Yes | clippy / audit signals | cargo profile | cargo build/test | Linux + macOS | No |
+| Go | Yes | vet / vulnerability signals | go profile | go build/test/vet | Linux + macOS | No |
+| C# / .NET | Yes | dotnet signals | dotnet profile | dotnet build/test/format | Linux + macOS | No |
+| Java / JVM | Yes | Maven/Gradle signals | Maven/Gradle profile | Maven or Gradle build/test | Linux + macOS | No |
+| Generic | Fallback | Static repository signals | read/search only | Explicit command or Make target | Linux + macOS | No |
+
+The CI entries above are deterministic KyZN fixtures, not claims that every external language toolchain is installed in the matrix. Host execution remains explicitly unsafe until an isolated runner ships.
+
+<!-- BEGIN GENERATED REPOSITORY FACTS -->
+- Repository files: **74**
+- Bash entrypoints/modules/scripts: **24** files, **12557** lines
+- Self-test harness: **94** test functions, **4451** lines (runtime assertion totals are reported by the suite, not hardcoded)
+- Project profiles: **6** languages plus the generic fallback
+- CI matrix: **Linux and macOS**, each running quick and full self-tests
+<!-- END GENERATED REPOSITORY FACTS -->
+
+Verification fails closed when a required language runner is unavailable. Root and nested tracked or untracked Python test layouts are detected. KyZN never converts broken tests into ignore flags.
 
 ---
 
@@ -277,7 +299,7 @@ kyzn/
 │   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh, csharp.sh, java.sh
 ├── templates/              # System prompts + analysis templates
 ├── profiles/               # Focus-specific prompts
-├── tests/selftest.sh       # 649 quick / 660 full (incl. stress)
+├── tests/selftest.sh       # Quick, full, and stress self-test harness
 ├── tests/toolchain/
 │   └── run-matrix.sh       # Real-toolchain integration matrix
 ├── SECURITY.md             # Threat model + published audit
@@ -296,8 +318,8 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 649 quick tests
-bash tests/selftest.sh --full   # 660 tests (incl. stress)
+bash tests/selftest.sh          # Quick self-test suite
+bash tests/selftest.sh --full   # Include stress tests
 shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolchain/run-matrix.sh
 ```
 

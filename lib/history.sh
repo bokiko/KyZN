@@ -264,16 +264,53 @@ cmd_diff() {
         return 1
     fi
 
-    # Try to find the branch (use fixed-string grep to prevent regex injection)
-    local branch
-    branch=$(git branch -a 2>/dev/null | grep "kyzn/" | grep -F "${run_id}" | head -1 | tr -d ' *' | sed 's|^remotes/origin/||') || true
+    # Prefer the exact branch recorded with this run. Never select a branch by
+    # substring: run IDs can be prefixes/suffixes of unrelated branch names.
+    local branch="" recorded_branch="" history_file="$KYZN_HISTORY_DIR/$run_id.json"
+    if [[ -s "$history_file" ]]; then
+        recorded_branch=$(jq -r '.branch // empty' "$history_file" 2>/dev/null) || recorded_branch=""
+    fi
+    if [[ -n "$recorded_branch" ]]; then
+        if git check-ref-format --branch "$recorded_branch" >/dev/null 2>&1 && \
+           git show-ref --verify --quiet "refs/heads/$recorded_branch"; then
+            branch="$recorded_branch"
+        elif git check-ref-format --branch "$recorded_branch" >/dev/null 2>&1 && \
+             git show-ref --verify --quiet "refs/remotes/origin/$recorded_branch"; then
+            branch="origin/$recorded_branch"
+        else
+            log_warn "History for $run_id names an unavailable or invalid branch; checking reports instead."
+        fi
+    elif git show-ref --verify --quiet "refs/heads/kyzn/$run_id"; then
+        # Narrow compatibility for legacy runs whose entire validated run ID
+        # was the branch leaf. Local and origin refs normalize to one name.
+        branch="kyzn/$run_id"
+    elif git show-ref --verify --quiet "refs/remotes/origin/kyzn/$run_id"; then
+        branch="origin/kyzn/$run_id"
+    fi
 
     if [[ -n "$branch" ]]; then
         git diff "main...$branch" 2>/dev/null || git diff "master...$branch" 2>/dev/null
     else
-        # Fall back to report
-        local report="$KYZN_REPORTS_DIR/$run_id.md"
-        if [[ -f "$report" ]]; then
+        # Fall back to every current report shape. Analysis and fix share the
+        # detailed -analysis report; quick/improve uses the plain report, and
+        # failed quick runs may only have the -failed report.
+        local report="" candidate
+        for candidate in \
+            "$KYZN_REPORTS_DIR/$run_id.md" \
+            "$KYZN_REPORTS_DIR/$run_id-analysis.md" \
+            "$KYZN_REPORTS_DIR/$run_id-failed.md"; do
+            if [[ -f "$candidate" ]]; then report="$candidate"; break; fi
+        done
+
+        # Backward compatibility for analysis reports created before the
+        # convenience copy moved under .kyzn/. Only use it when its embedded
+        # run ID exactly matches the requested validated ID.
+        if [[ -z "$report" && -f "kyzn-report.md" ]] && \
+           grep -Fq "**Run ID:** \`$run_id\`" "kyzn-report.md"; then
+            report="kyzn-report.md"
+        fi
+
+        if [[ -n "$report" ]]; then
             cat "$report"
         else
             log_error "No diff or report found for run $run_id"

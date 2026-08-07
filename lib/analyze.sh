@@ -1178,9 +1178,12 @@ cmd_analyze() {
 
     generate_detailed_report "$findings_file" "$report_file" "$run_id" "$profile" "$total_cost" "$finding_count" "$_sev_c" "$_sev_h" "$_sev_m" "$_sev_l"
 
-    # Copy report to project root for easy access (archive stays in .kyzn/)
-    local root_report="kyzn-report.md"
-    cp "$report_file" "$root_report" || log_warn "Could not copy report to project root"
+    # Keep the convenience copy with KyZN-owned ignored state so analysis does
+    # not leave an untracked file in the target repository root.
+    local root_report="$KYZN_DIR/kyzn-report.md"
+    if ! $fix; then
+        copy_analysis_convenience_report "$report_file" || log_warn "Could not create convenience report"
+    fi
 
     echo ""
     log_ok "Full report: ${BOLD}$root_report${RESET}"
@@ -1211,6 +1214,14 @@ cmd_analyze() {
         echo -e "  ${DIM}This runs project commands and AI changes as your user without container/VM isolation.${RESET}"
         echo ""
     fi
+}
+
+# Copy the current analysis report to a stable, ignored convenience path.
+# The per-run archive remains the source of truth for history/diff lookup.
+copy_analysis_convenience_report() {
+    local report_file="$1"
+    ensure_kyzn_dirs
+    cp "$report_file" "$KYZN_DIR/kyzn-report.md"
 }
 
 # ---------------------------------------------------------------------------

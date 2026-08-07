@@ -2229,6 +2229,102 @@ test_path_traversal_reject_diff() {
     cleanup_sandbox
 }
 
+test_report_discovery_and_clean_handoff() {
+    log_header "50b. Report discovery covers current formats without dirtying target repos"
+
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+    create_sandbox generic
+    ensure_kyzn_dirs
+    git add .kyzn/.gitignore
+    git commit -q -m "KyZN report ignore fixture"
+
+    local run_id output status report baseline_status original_branch
+    run_id="test-a"
+    git branch "kyzn/unrelated-test-a-extra"
+    for report in \
+        "$KYZN_REPORTS_DIR/$run_id.md:plain-report" \
+        "$KYZN_REPORTS_DIR/$run_id-analysis.md:analysis-report" \
+        "$KYZN_REPORTS_DIR/$run_id-failed.md:failed-report"; do
+        rm -f "$KYZN_REPORTS_DIR/$run_id.md" "$KYZN_REPORTS_DIR/$run_id-analysis.md" "$KYZN_REPORTS_DIR/$run_id-failed.md"
+        printf '%s\n' "${report#*:}" > "${report%%:*}"
+        status=0
+        output=$(cmd_diff "$run_id" 2>&1) || status=$?
+        assert_exit_code "diff discovers ${report#*:} location" "0" "$status"
+        assert_contains "diff prints ${report#*:}" "$output" "${report#*:}"
+    done
+
+    original_branch=$(git branch --show-current)
+    git checkout -q -b "kyzn/history-test-ambiguous-selected"
+    printf 'history-selected\n' > history-selected.txt
+    git add history-selected.txt
+    git commit -q -m "history-selected branch fixture"
+    git checkout -q "$original_branch"
+    git branch "kyzn/unrelated-test-ambiguous-extra"
+    status=0
+    cmd_diff "test-ambiguous" >/dev/null 2>&1 || status=$?
+    assert_exit_code "diff refuses substring-only ambiguous branches" "1" "$status"
+    printf '%s\n' '{"branch":"kyzn/history-test-ambiguous-selected"}' > "$KYZN_HISTORY_DIR/test-ambiguous.json"
+    status=0
+    output=$(cmd_diff "test-ambiguous" 2>&1) || status=$?
+    assert_exit_code "diff deterministically uses exact history branch" "0" "$status"
+    assert_contains "diff output comes from exact history branch" "$output" "history-selected"
+
+    rm -f "$KYZN_REPORTS_DIR/$run_id.md" "$KYZN_REPORTS_DIR/$run_id-analysis.md" "$KYZN_REPORTS_DIR/$run_id-failed.md"
+    printf '# Legacy\n\n**Run ID:** `%s`\nlegacy-report\n' "$run_id" > kyzn-report.md
+    output=$(cmd_diff "$run_id")
+    assert_contains "diff safely reads matching legacy root report" "$output" "legacy-report"
+    status=0
+    cmd_diff "test-other-report" >/dev/null 2>&1 || status=$?
+    assert_exit_code "diff rejects mismatched legacy root report" "1" "$status"
+    rm -f kyzn-report.md
+
+    printf 'archived analysis\n' > "$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    baseline_status=$(git status --porcelain)
+    copy_analysis_convenience_report "$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    assert_file_exists "analysis convenience report lives under .kyzn" "$KYZN_DIR/kyzn-report.md"
+    [[ ! -e kyzn-report.md ]] && pass "analysis no longer writes root convenience report" || fail "analysis no longer writes root convenience report" "root report exists"
+    assert_eq "analysis report handoff preserves target worktree state" "$baseline_status" "$(git status --porcelain)"
+    assert_contains "analysis convenience report preserves content" "$(cat "$KYZN_DIR/kyzn-report.md")" "archived analysis"
+
+    cleanup_sandbox
+}
+
+test_repository_facts_are_index_deterministic() {
+    log_header "50c. Repository facts derive only from Git index objects"
+
+    local fixture baseline noisy staged
+    fixture=$(mktemp -d)
+    mkdir -p "$fixture/scripts" "$fixture/lib" "$fixture/measurers" "$fixture/templates/conventions" "$fixture/tests" "$fixture/.github/workflows"
+    cp "$KYZN_ROOT/scripts/check-repository-facts.sh" "$fixture/scripts/"
+    cp "$KYZN_ROOT/kyzn" "$fixture/"
+    cp "$KYZN_ROOT/tests/selftest.sh" "$fixture/tests/"
+    cp "$KYZN_ROOT/.github/workflows/ci.yml" "$fixture/.github/workflows/"
+    cp "$KYZN_ROOT/lib/detect.sh" "$KYZN_ROOT/lib/measure.sh" "$KYZN_ROOT/lib/allowlist.sh" "$KYZN_ROOT/lib/verify.sh" "$fixture/lib/"
+    cp "$KYZN_ROOT"/measurers/*.sh "$fixture/measurers/"
+    cp "$KYZN_ROOT"/templates/conventions/*.md "$fixture/templates/conventions/"
+    cd "$fixture"
+    git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
+    git add .
+    git commit -q -m "facts fixture"
+
+    baseline=$(bash scripts/check-repository-facts.sh --print 2>/dev/null)
+    printf 'untracked noise\n' > arbitrary-untracked.tmp
+    printf '# dirty tracked noise\n' >> lib/detect.sh
+    noisy=$(bash scripts/check-repository-facts.sh --print 2>/dev/null)
+    assert_eq "facts ignore arbitrary untracked and dirty tracked files" "$baseline" "$noisy"
+
+    printf '#!/usr/bin/env bash\ntrue\n' > staged-addition.sh
+    git add staged-addition.sh
+    staged=$(bash scripts/check-repository-facts.sh --print 2>/dev/null)
+    [[ "$staged" != "$baseline" ]] && pass "facts include staged additions" || fail "facts include staged additions" "staged file did not change facts"
+
+    cd "$KYZN_ROOT"
+    rm -rf "$fixture"
+}
+
 test_validate_run_id() {
     log_header "51. validate_run_id accepts valid IDs and rejects invalid"
 
@@ -5424,6 +5520,8 @@ main() {
     test_unstage_secrets
     test_unstage_secrets_nested_dotenv
     test_path_traversal_reject_diff
+    test_report_discovery_and_clean_handoff
+    test_repository_facts_are_index_deterministic
     test_validate_run_id
     test_reflexion_retry_loop
     test_gitignore_preserves_custom

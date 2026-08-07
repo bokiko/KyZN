@@ -32,6 +32,8 @@ jobs:
           echo "${YQ_CHECKSUM}  /tmp/yq" | sha256sum -c --strict || { echo "yq checksum mismatch — aborting"; exit 1; }
           sudo install -m 755 /tmp/yq /usr/local/bin/yq
           rm -f /tmp/yq
+      - name: Check generated repository facts
+        run: bash scripts/check-repository-facts.sh
       - name: Run quick tests
         run: bash tests/selftest.sh
       - name: Run full tests
@@ -62,6 +64,8 @@ jobs:
           echo "${YQ_CHECKSUM}  ${YQ_BIN}" | shasum -a 256 -c -
           chmod 755 "$YQ_BIN"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Check generated repository facts
+        run: bash scripts/check-repository-facts.sh
       - name: Run quick tests
         run: bash tests/selftest.sh
       - name: Run full tests

@@ -8,14 +8,14 @@ KyZN (from "kaizen") is a pure-Bash CLI that autonomously improves code quality.
 
 ## Prerequisites
 
-Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Language-specific tools are optional (eslint/tsc, ruff/mypy, cargo, go vet, etc.).
+Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`, and either Perl or Python 3 for portable safety controllers. Language-specific tools are optional (eslint/tsc, ruff/mypy, cargo, go vet, etc.).
 
 ## Commands
 
 ```bash
 # Run tests
-kyzn selftest              # 649 quick tests
-kyzn selftest --full       # 660 tests including stress tests
+kyzn selftest              # Quick self-test suite
+kyzn selftest --full       # Include stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -134,4 +134,12 @@ remain on the branch; preserving them is deliberate, and the branch is left for 
 
 ## Test framework
 
-`tests/selftest.sh` is a self-contained Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.
+`tests/selftest.sh` is a self-contained Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos. Runtime assertion totals come from the suite output; repository-size facts below are generated and checked in CI.
+
+<!-- BEGIN GENERATED REPOSITORY FACTS -->
+- Repository files: **74**
+- Bash entrypoints/modules/scripts: **24** files, **12557** lines
+- Self-test harness: **94** test functions, **4451** lines (runtime assertion totals are reported by the suite, not hardcoded)
+- Project profiles: **6** languages plus the generic fallback
+- CI matrix: **Linux and macOS**, each running quick and full self-tests
+<!-- END GENERATED REPOSITORY FACTS -->
