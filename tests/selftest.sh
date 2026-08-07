@@ -1291,7 +1291,7 @@ test_generate_fix_prompt() {
     assert_contains "fix prompt has skip guidance" "$prompt" "contradicts reality"
     assert_contains "fix prompt requires security tests" "$prompt" "regression test"
     assert_contains "fix prompt requires critical bug tests" "$prompt" "verifies the fix"
-    assert_contains "fix prompt forbids test deletion" "$prompt" "Do NOT delete test files"
+    assert_contains "fix prompt forbids test deletion" "$prompt" "Do not delete test files"
 
     # Test with baseline failures context
     local prompt_with_baseline
@@ -4236,6 +4236,249 @@ SH
     cleanup_sandbox
 }
 
+# A red baseline that KyZN is allowed to attempt must also be REPAIRABLE.
+#
+# Requiring a green final verification is only coherent if the prompts permit
+# reaching one. The fix prompts were written when a red baseline was waived
+# through, so they told Sonnet to leave those failures alone — which, under the
+# green gate, guarantees every batch is reverted and makes analyze/fix a
+# structural no-op on exactly the repositories the gate is meant to serve.
+#
+# These tests assert on the EMITTED PROMPTS, and drive a "Claude" that obeys
+# them: it repairs the pre-existing failure only when the prompt it received
+# permits that. A prompt that forbids it produces a run that stays red.
+_promptaware_sandbox() { # _promptaware_sandbox <mode: fixprompt|retryprompt>
+    local mode="$1"
+    create_sandbox node
+    rm -f tsconfig.json
+    echo '{"name":"fx","scripts":{"build":"x","test":"x"}}' > package.json
+    mkdir -p src; echo 'console.log(1)' > src/index.js
+    git add -A && git commit -q -m scaffold
+    detect_project_type
+    _workflow_setup report
+
+    HEAL_MARK="$WORKFLOW_TMP/healed"; export HEAL_MARK
+    PROMPT_MODE="$mode"; export PROMPT_MODE
+    # WORKFLOW_TMP is not exported by _workflow_setup, so the mock needs its own
+    # exported handle or its prompt capture silently writes nowhere.
+    PROMPT_DIR="$WORKFLOW_TMP"; export PROMPT_DIR
+    rm -f "$HEAL_MARK"
+
+    # Build is always green; tests stay red until the baseline failure is repaired.
+    rm -f "$WORKFLOW_TMP/clean-bin/npm"
+    cat > "$WORKFLOW_TMP/clean-bin/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then exit 0; fi
+if [[ "${1:-}" == "test" ]]; then
+    [[ -f "$HEAL_MARK" ]] && exit 0
+    if [[ "${PROMPT_MODE:-}" == "emptybaseline" ]]; then
+        # Red, but emits nothing capture_failing_tests can parse.
+        echo "runner crashed: no results emitted"
+    else
+        echo "FAIL src/a.test.js"
+    fi
+    exit 1
+fi
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/npm"
+
+    # Prompt-obeying Claude: captures each prompt, and repairs the pre-existing
+    # failure ONLY if that prompt permits repairing baseline failures.
+    rm -f "$WORKFLOW_TMP/clean-bin/claude"
+    cat > "$WORKFLOW_TMP/clean-bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo "CLAUDE-INVOKED" >> "$WORKFLOW_LOG"
+n=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+
+prompt=""; prev=""
+for a in "$@"; do
+    [[ "$prev" == "-p" ]] && prompt="$a"
+    prev="$a"
+done
+printf '%s' "$prompt" > "$PROMPT_DIR/prompt-$n.txt"
+
+# The batch may only be repaired when the prompt BOTH permits baseline repair
+# and states the green requirement, and contains no contradicting scope rule.
+permits=false
+grep -qiE 'repair any of these failures that remain|any remaining baseline failures' \
+    <<< "$prompt" && permits=true
+grep -qiE 'final verification must be green' <<< "$prompt" && permits=true
+
+# Any of these, unqualified, forbids the repair the green gate now requires.
+grep -qiE 'do not try to fix these|fix only the issues your changes introduced' \
+    <<< "$prompt" && permits=false
+grep -qiE 'do NOT make any changes beyond what' <<< "$prompt" && permits=false
+grep -qiE 'only modify tests if a finding specifically targets test code' \
+    <<< "$prompt" && permits=false
+
+# Score-neutral change so the batch always produces a diff.
+printf '# Test Project\n\nUsage documentation.\n' > README.md
+
+case "${PROMPT_MODE:-}" in
+    fixprompt|emptybaseline)
+        $permits && touch "$HEAL_MARK" ;;
+    retryprompt)
+        # Deliberately leaves the baseline red on the first pass, so the value
+        # of the RETRY prompt is what decides the run.
+        (( n >= 2 )) && $permits && touch "$HEAL_MARK" ;;
+esac
+
+echo '{"total_cost_usd":0.01,"result":"mock change"}'
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/claude"
+}
+
+test_fix_prompts_permit_reaching_green() {
+    log_header "82. analyze/fix prompts must permit reaching a green verification"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc out log prompt retry_prompt
+    local findings='[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]'
+
+    # --- 1 + 2. The initial fix prompt ------------------------------------
+    create_sandbox node
+    prompt=$(generate_fix_prompt "$findings" "" "FAIL src/a.test.js" "" "")
+    assert_contains "fix-prompt: carries the real baseline identifier" \
+        "$prompt" "FAIL src/a.test.js"
+    assert_contains "fix-prompt: states final verification must be green" \
+        "$prompt" "final verification must be green"
+    assert_contains "fix-prompt: asks for the remaining failures to be repaired" \
+        "$prompt" "Repair any of these failures that remain"
+    assert_not_contains "fix-prompt: no prohibition on fixing baseline failures" \
+        "$prompt" "Do NOT try to fix these"
+    assert_not_contains "fix-prompt: not framed as an exemption" \
+        "$prompt" "they are pre-existing issues"
+    assert_contains "fix-prompt: still forbids hiding or weakening tests" \
+        "$prompt" "Do not hide, skip, delete, or weaken tests"
+    # Both permissions must be expressible WITHOUT a named identifier: a red
+    # verification caused by test source that will not compile, or by a runner
+    # emitting nothing parseable, is real but unnamed.
+    assert_contains "fix-prompt: scope exception covers existing verification failures" \
+        "$prompt" "except for minimal changes required to repair existing verification failures"
+    assert_contains "fix-prompt: test repair keyed to verification evidence, not a name" \
+        "$prompt" "when verification evidence shows that the existing test itself is genuinely broken"
+    assert_not_contains "fix-prompt: scope exception does not presuppose a named failure" \
+        "$prompt" "repair known baseline failures"
+    assert_not_contains "fix-prompt: test rule does not presuppose a named test" \
+        "$prompt" "that named baseline test"
+    assert_contains "fix-prompt: coverage must be preserved or strengthened" \
+        "$prompt" "preserve or strengthen coverage and never weaken it"
+    assert_not_contains "fix-prompt: no unqualified no-drive-by rule" \
+        "$prompt" "Do NOT make any changes beyond what's listed here"
+    assert_not_contains "fix-prompt: no unqualified test-modification rule" \
+        "$prompt" "only modify tests if a finding specifically targets test code"
+
+    # The green requirement is unconditional: a red baseline can yield NO
+    # identifiable test names, and the instruction must survive that.
+    local empty_prompt
+    empty_prompt=$(generate_fix_prompt "$findings" "" "" "" "")
+    assert_contains "fix-prompt/empty-baseline: still states the green requirement" \
+        "$empty_prompt" "Final verification must be green before this batch can succeed"
+    assert_contains "fix-prompt/empty-baseline: carries the scope exception" \
+        "$empty_prompt" "except for minimal changes required to repair existing verification failures"
+    assert_contains "fix-prompt/empty-baseline: carries the test-repair permission" \
+        "$empty_prompt" "when verification evidence shows that the existing test itself is genuinely broken"
+    assert_contains "fix-prompt/empty-baseline: deletion still forbidden" \
+        "$empty_prompt" "Do not delete test files or remove large blocks of tests"
+    assert_contains "fix-prompt/empty-baseline: weakening still forbidden" \
+        "$empty_prompt" "never weaken it merely to make verification pass"
+    cleanup_sandbox
+
+    # --- 4 + 5a + 6. The initial prompt must be able to drive red -> green --
+    _promptaware_sandbox fixprompt
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260807-pp001-analysis.md"
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260807-pp001" "1.00" \
+        > "$WORKFLOW_TMP/pp.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/pp.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "fix-prompt/e2e: batch verified green" "$out" "Build/tests pass"
+    assert_contains "fix-prompt/e2e: batch applied" "$out" "1 batches applied"
+    assert_contains "fix-prompt/e2e: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "fix-prompt/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "fix-prompt/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 3 + 5b + 6. The SELF-REPAIR prompt must be able to drive red -> green
+    _promptaware_sandbox retryprompt
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260807-pp002-analysis.md"
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260807-pp002" "1.00" \
+        > "$WORKFLOW_TMP/pr.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/pr.out"); log=$(cat "$WORKFLOW_LOG")
+
+    retry_prompt=""
+    [[ -f "$WORKFLOW_TMP/prompt-2.txt" ]] && retry_prompt=$(cat "$WORKFLOW_TMP/prompt-2.txt")
+    assert_contains "retry-prompt: capture actually worked" "$retry_prompt" "Repair Instructions"
+    assert_contains "retry-prompt: was actually emitted" "$out" "attempting self-repair"
+    assert_contains "retry-prompt: permits repairing remaining baseline failures" \
+        "$retry_prompt" "any remaining baseline failures"
+    assert_contains "retry-prompt: states the goal is a green verification" \
+        "$retry_prompt" "Make final verification green"
+    assert_not_contains "retry-prompt: drops the ONLY-my-changes restriction" \
+        "$retry_prompt" "Fix ONLY the issues your changes introduced"
+    assert_contains "retry-prompt: carries the known baseline failures" \
+        "$retry_prompt" "FAIL src/a.test.js"
+    assert_contains "retry-prompt: still forbids hiding or weakening tests" \
+        "$retry_prompt" "do not hide, skip, delete, or weaken tests"
+    assert_contains "retry-prompt: neutral 'still failing' framing" \
+        "$retry_prompt" "Build/tests are still failing after your fixes"
+    assert_not_contains "retry-prompt: does not blame the batch for a red baseline" \
+        "$retry_prompt" "broke the build/tests"
+    assert_contains "retry-prompt/e2e: self-repair succeeded" "$out" "Self-repair succeeded"
+    assert_contains "retry-prompt/e2e: batch applied" "$out" "1 batches applied"
+    assert_contains "retry-prompt/e2e: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "retry-prompt/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "retry-prompt/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- Red baseline with NO identifiable test names must still reach green --
+    # capture_failing_tests returns nothing here, so the green requirement has to
+    # come from the unconditional rule rather than the baseline paragraph.
+    _promptaware_sandbox emptybaseline
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260807-pp003-analysis.md"
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260807-pp003" "1.00" \
+        > "$WORKFLOW_TMP/pe.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/pe.out"); log=$(cat "$WORKFLOW_LOG")
+    local first_prompt=""
+    [[ -f "$WORKFLOW_TMP/prompt-1.txt" ]] && first_prompt=$(cat "$WORKFLOW_TMP/prompt-1.txt")
+    assert_not_contains "empty-baseline: no identifier section was emitted" \
+        "$first_prompt" "Pre-Existing Test Failures"
+    assert_contains "empty-baseline: green requirement present without identifiers" \
+        "$first_prompt" "Final verification must be green before this batch can succeed"
+    assert_contains "empty-baseline: scope exception present without identifiers" \
+        "$first_prompt" "except for minimal changes required to repair existing verification failures"
+    assert_contains "empty-baseline: test-repair permission present without identifiers" \
+        "$first_prompt" "when verification evidence shows that the existing test itself is genuinely broken"
+    assert_contains "empty-baseline: hiding/weakening still forbidden" \
+        "$first_prompt" "never weaken it merely to make verification pass"
+    assert_contains "empty-baseline/e2e: batch applied" "$out" "1 batches applied"
+    assert_contains "empty-baseline/e2e: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "empty-baseline/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "empty-baseline/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    PATH="$saved_path"
+    unset HEAL_MARK PROMPT_MODE PROMPT_DIR
+}
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -4339,6 +4582,7 @@ main() {
     test_toolchain_matrix_download_authorization
     test_python_unusable_shim_is_unavailable
     test_red_final_verification_never_ships
+    test_fix_prompts_permit_reaching_green
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
