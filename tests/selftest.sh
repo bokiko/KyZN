@@ -1822,17 +1822,23 @@ test_reflexion_retry_loop() {
     local src
     src=$(cat "$KYZN_ROOT/lib/execute.sh")
 
-    # 1. Retry flag exists to prevent infinite loops
-    assert_contains "has retried flag" "$src" 'local retried=false'
+    # 1. Exactly one retry is expressed by the control flow itself — the first
+    #    red verification runs one retry, and every retry outcome either returns
+    #    or falls through to success. There is no flag to assert, and no path
+    #    back to the retry decision. Behavioural proof lives in test 83.
 
-    # 2. Retry is gated on baseline_verify_ok (only retry when Claude broke clean build)
-    assert_contains "retry gated on baseline_verify_ok" "$src" 'baseline_verify_ok'
+    # 2. Exactly one retry, for ANY red final verification. The retry is no
+    #    longer gated on the baseline having started clean — that left a red
+    #    baseline one-shot against a gate that demands green. Behavioural proof
+    #    of both the retry and its single-attempt cap lives in test 83.
 
     # 3. Captures verify_build output to a temp file for error context
     assert_contains "captures verify errors to file" "$src" 'verify_errors_file'
 
     # 4. Constructs retry prompt with error context and mock guidance
-    assert_contains "retry prompt has error message" "$src" 'Your previous changes broke the build'
+    assert_contains "retry prompt has error message" "$src" 'Build/tests are still failing after your changes'
+    assert_not_contains "retry prompt does not blame Claude for a red baseline" \
+        "$src" 'Your previous changes broke the build'
     assert_contains "retry prompt includes errors" "$src" 'verify_errors'
     assert_contains "retry has mock guidance" "$src" 'unittest.mock'
 
@@ -1845,11 +1851,10 @@ test_reflexion_retry_loop() {
     # 7. Logs self-repair attempt
     assert_contains "logs self-repair attempt" "$src" 'self-repair'
 
-    # 8. Sets retried flag to prevent double-retry
-    assert_contains "sets retried=true" "$src" 'retried=true'
-
-    # 9. Only retries once (checks retried flag)
-    assert_contains "checks retried flag" "$src" '$retried'
+    # 8 + 9. The single-retry limit is structural, not flag-based: the retry
+    #        runs once and every outcome returns or falls through to success.
+    #        Test 83 proves the limit behaviourally (exactly two Claude
+    #        invocations) rather than asserting on source text here.
 }
 
 test_gitignore_preserves_custom() {
@@ -4101,8 +4106,8 @@ SH
     out=$(cat "$WORKFLOW_TMP/s.out"); log=$(cat "$WORKFLOW_LOG")
     assert_contains "unchanged/baseline-red: Claude still got to attempt improvements" \
         "$log" "CLAUDE-INVOKED"
-    assert_contains "unchanged: final verification is still red" \
-        "$out" "Verification is still failing after improvements"
+    assert_contains "unchanged: final verification is still red after the retry" \
+        "$out" "Self-repair failed -- verification is still not green"
     assert_contains "unchanged: explicitly not treated as success" \
         "$out" "will not treat a red final verification as a success"
     assert_not_contains "unchanged: nothing pushed or PR'd" "$log" "FORBIDDEN"
@@ -4136,8 +4141,8 @@ SH
     cmd_improve --auto > "$WORKFLOW_TMP/tc.out" 2>&1 || rc=$?
     trap - EXIT INT TERM
     out=$(cat "$WORKFLOW_TMP/tc.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_contains "testcompile: final verification is still red" \
-        "$out" "Verification is still failing after improvements"
+    assert_contains "testcompile: final verification is still red after the retry" \
+        "$out" "Self-repair failed -- verification is still not green"
     assert_contains "testcompile: explicitly not treated as success" \
         "$out" "will not treat a red final verification as a success"
     assert_not_contains "testcompile: nothing pushed or PR'd" "$log" "FORBIDDEN"
@@ -4150,8 +4155,8 @@ SH
     cmd_improve --auto > "$WORKFLOW_TMP/n.out" 2>&1 || rc=$?
     trap - EXIT INT TERM
     out=$(cat "$WORKFLOW_TMP/n.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_contains "no-identifiers: final verification is still red" \
-        "$out" "Verification is still failing after improvements"
+    assert_contains "no-identifiers: final verification is still red after the retry" \
+        "$out" "Self-repair failed -- verification is still not green"
     assert_not_contains "no-identifiers: nothing pushed or PR'd" "$log" "FORBIDDEN"
     assert_exit_code "no-identifiers: aborts non-zero" 1 "$rc"
     PATH="$saved_path"; cleanup_sandbox
@@ -4479,6 +4484,243 @@ test_fix_prompts_permit_reaching_green() {
     PATH="$saved_path"
     unset HEAL_MARK PROMPT_MODE PROMPT_DIR
 }
+# The quick path must be able to reach the green it is now judged against.
+#
+# `cmd_improve` never forbade repairing baseline failures, but it never permitted
+# it either: the prompt was assembled before baseline verification, so it carried
+# neither the failures nor the green requirement, and the self-repair retry was
+# gated on the baseline having started clean. A red-baseline run was therefore
+# one-shot and blind — it reached green only if unrelated improvements happened
+# to fix it.
+#
+# These tests assert the EMITTED prompts and drive a Claude that obeys them.
+_quick_promptaware_sandbox() { # <mode: qfix|qempty|qretry|qretryred|qcleanretry>
+    local mode="$1"
+    create_sandbox node
+    rm -f tsconfig.json
+    echo '{"name":"fx","scripts":{"build":"x","test":"x"}}' > package.json
+    mkdir -p src; echo 'console.log(1)' > src/index.js
+    git add -A && git commit -q -m scaffold
+    detect_project_type
+    _workflow_setup report
+
+    HEAL_MARK="$WORKFLOW_TMP/healed"; export HEAL_MARK
+    BREAK_MARK="$WORKFLOW_TMP/broken"; export BREAK_MARK
+    QMODE="$mode"; export QMODE
+    PROMPT_DIR="$WORKFLOW_TMP"; export PROMPT_DIR
+    rm -f "$HEAL_MARK" "$BREAK_MARK"
+
+    rm -f "$WORKFLOW_TMP/clean-bin/npm"
+    cat > "$WORKFLOW_TMP/clean-bin/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then exit 0; fi
+if [[ "${1:-}" == "test" ]]; then
+    if [[ -f "$BREAK_MARK" ]]; then echo "FAIL src/broken.test.js"; exit 1; fi
+    # qcleanretry starts GREEN; every other mode starts red.
+    [[ "${QMODE:-}" == "qcleanretry" ]] && exit 0
+    [[ -f "$HEAL_MARK" ]] && exit 0
+    if [[ "${QMODE:-}" == "qempty" || "${QMODE:-}" == "qemptyretry" ]]; then
+        echo "runner crashed: no results emitted"
+    else
+        echo "FAIL src/a.test.js"
+    fi
+    exit 1
+fi
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/npm"
+
+    rm -f "$WORKFLOW_TMP/clean-bin/claude"
+    cat > "$WORKFLOW_TMP/clean-bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo "CLAUDE-INVOKED" >> "$WORKFLOW_LOG"
+n=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+prompt=""; prev=""
+for a in "$@"; do
+    [[ "$prev" == "-p" ]] && prompt="$a"
+    prev="$a"
+done
+printf '%s' "$prompt" > "$PROMPT_DIR/qprompt-$n.txt"
+
+permits=false
+grep -qiE 'repair existing verification failures' <<< "$prompt" && permits=true
+grep -qiE 'final verification must be green' <<< "$prompt" && permits=true
+grep -qiE 'do not try to fix these|fix only the issues your changes introduced' \
+    <<< "$prompt" && permits=false
+
+printf '# Test Project\n\nUsage documentation.\n' > README.md
+
+case "${QMODE:-}" in
+    qfix|qempty)  $permits && touch "$HEAL_MARK" ;;
+    qretry|qemptyretry)
+                  (( n >= 2 )) && $permits && touch "$HEAL_MARK" ;;
+    qretryred)    : ;;   # obeys nothing; stays red so the retry budget is proven
+    qcleanretry)  if (( n == 1 )); then touch "$BREAK_MARK"; else rm -f "$BREAK_MARK"; fi ;;
+esac
+
+echo '{"total_cost_usd":0.01,"result":"mock change"}'
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/claude"
+}
+
+test_quick_prompts_permit_reaching_green() {
+    log_header "83. quick-path prompts and retry must permit reaching green"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+
+    local saved_path="$PATH" rc out log p1 p2 calls
+
+    # --- 1. Named red baseline: the INITIAL prompt must be able to reach green
+    _quick_promptaware_sandbox qfix
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qf.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/qf.out"); log=$(cat "$WORKFLOW_LOG")
+    p1=""; [[ -f "$WORKFLOW_TMP/qprompt-1.txt" ]] && p1=$(cat "$WORKFLOW_TMP/qprompt-1.txt")
+
+    assert_contains "quick/initial: prompt capture worked" "$p1" "Current Health Score"
+    assert_contains "quick/initial: states the green requirement" \
+        "$p1" "Final verification must be green before this run can enter the normal success path"
+    assert_contains "quick/initial: carries the baseline identifier" "$p1" "FAIL src/a.test.js"
+    assert_contains "quick/initial: identifiers are context, not an exemption" \
+        "$p1" "diagnostic context, not an exemption"
+    assert_contains "quick/initial: permits minimal repair" \
+        "$p1" "repair existing verification failures"
+    assert_contains "quick/initial: forbids hiding or weakening tests" \
+        "$p1" "Do not hide, skip, delete, or weaken tests"
+    assert_contains "quick/initial: states precedence over mode constraints" \
+        "$p1" "overrides mode constraints only for minimal changes"
+    assert_contains "quick/initial: refuses to authorize unrelated work" \
+        "$p1" "must not authorize unrelated refactoring or feature work"
+    assert_contains "quick/initial/e2e: reaches success" "$out" "Build and tests passed"
+    assert_contains "quick/initial/e2e: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "quick/initial/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "quick/initial/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 2. Empty / unparseable baseline output --------------------------
+    _quick_promptaware_sandbox qempty
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qe.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    p1=""; [[ -f "$WORKFLOW_TMP/qprompt-1.txt" ]] && p1=$(cat "$WORKFLOW_TMP/qprompt-1.txt")
+    assert_contains "quick/empty: still states the green requirement" \
+        "$p1" "Final verification must be green before this run can enter the normal success path"
+    assert_contains "quick/empty: still permits minimal repair" \
+        "$p1" "repair existing verification failures"
+    assert_exit_code "quick/empty/e2e: succeeds" 0 "$rc"
+    assert_contains "quick/empty/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 3 + 4 + 5. Red baseline still red after attempt 1 gets ONE retry --
+    _quick_promptaware_sandbox qretry
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qr.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/qr.out"); log=$(cat "$WORKFLOW_LOG")
+    calls=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+    p2=""; [[ -f "$WORKFLOW_TMP/qprompt-2.txt" ]] && p2=$(cat "$WORKFLOW_TMP/qprompt-2.txt")
+
+    assert_eq "quick/retry: red baseline received exactly one retry" "2" "$calls"
+    assert_contains "quick/retry: self-repair was attempted" "$out" "self-repair"
+    assert_contains "quick/retry: neutral wording" \
+        "$p2" "Build/tests are still failing after your changes"
+    assert_not_contains "quick/retry: does not blame Claude for a red baseline" \
+        "$p2" "Your previous changes broke the build"
+    assert_contains "quick/retry: carries baseline context" "$p2" "FAIL src/a.test.js"
+    assert_contains "quick/retry: restates the green requirement" \
+        "$p2" "verification must be green"
+    assert_contains "quick/retry: preserves mock guidance" "$p2" "unittest.mock"
+    assert_contains "quick/retry/e2e: retry reached green" "$out" "Self-repair succeeded"
+    assert_contains "quick/retry/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "quick/retry/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 6. A retry that ends red must not ship, and must not loop --------
+    _quick_promptaware_sandbox qretryred
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qrr.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/qrr.out"); log=$(cat "$WORKFLOW_LOG")
+    calls=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+    assert_eq "quick/retry-red: exactly one retry, no loop" "2" "$calls"
+    assert_not_contains "quick/retry-red: nothing committed, pushed or PR'd" "$log" "FORBIDDEN"
+    assert_contains "quick/retry-red: routed to failure handling" "$out" "Self-repair failed"
+    assert_exit_code "quick/retry-red: aborts non-zero" 1 "$rc"
+    p2=""; [[ -f "$WORKFLOW_TMP/qprompt-2.txt" ]] && p2=$(cat "$WORKFLOW_TMP/qprompt-2.txt")
+    assert_contains "quick/retry-red: the retry prompt still demanded green" \
+        "$p2" "verification must be green"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 6b. A genuinely UNNAMED red baseline must survive the retry too ---
+    # Distinct from qretryred, whose runner does emit an identifier. Here
+    # capture_failing_tests returns nothing, so the retry prompt has to describe
+    # the failure without naming it — and still reach green.
+    _quick_promptaware_sandbox qemptyretry
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qer.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/qer.out"); log=$(cat "$WORKFLOW_LOG")
+    calls=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+    p2=""; [[ -f "$WORKFLOW_TMP/qprompt-2.txt" ]] && p2=$(cat "$WORKFLOW_TMP/qprompt-2.txt")
+
+    assert_contains "quick/empty-retry: retry prompt capture worked" "$p2" "Repair Instructions"
+    assert_not_contains "quick/empty-retry: no identifier could have been captured" \
+        "$p2" "FAIL src/a.test.js"
+    assert_contains "quick/empty-retry: says the baseline was already failing, unnamed" \
+        "$p2" "already failing before you started, and verification produced no identifiable test names"
+    assert_contains "quick/empty-retry: permits repairing existing verification failures" \
+        "$p2" "Existing verification failures may still need repair"
+    assert_contains "quick/empty-retry: demands green verification" \
+        "$p2" "Final verification must be green before this run can enter the normal success path"
+    assert_eq "quick/empty-retry: exactly two Claude invocations" "2" "$calls"
+    assert_contains "quick/empty-retry/e2e: retry reached green" "$out" "Self-repair succeeded"
+    assert_contains "quick/empty-retry/e2e: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "quick/empty-retry/e2e: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "quick/empty-retry/e2e: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 7. Baseline-clean self-repair must still work --------------------
+    _quick_promptaware_sandbox qcleanretry
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/qc.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/qc.out"); log=$(cat "$WORKFLOW_LOG")
+    calls=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+    assert_eq "quick/clean-retry: exactly one retry" "2" "$calls"
+    assert_contains "quick/clean-retry: self-repair succeeded" "$out" "Self-repair succeeded"
+    assert_contains "quick/clean-retry: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "quick/clean-retry: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 8. rc 2 remains an unconditional abort ---------------------------
+    create_sandbox node
+    detect_project_type              # tsconfig.json present, no local tsc
+    local cb
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/npm" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$cb/npm"
+    PATH="$cb"
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "quick/rc2: unavailable tooling still returns 2" 2 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    PATH="$saved_path"
+    unset HEAL_MARK BREAK_MARK QMODE PROMPT_DIR
+}
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -4583,6 +4825,7 @@ main() {
     test_python_unusable_shim_is_unavailable
     test_red_final_verification_never_ships
     test_fix_prompts_permit_reaching_green
+    test_quick_prompts_permit_reaching_green
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
