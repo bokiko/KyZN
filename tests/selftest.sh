@@ -3968,10 +3968,10 @@ test_python_unusable_shim_is_unavailable() {
 }
 
 # Drives a full cmd_improve / run_fix_phase run whose BASELINE already fails, so
-# the pre-existing-failure branch is the one under test. The npm mock keeps the
-# failing-test set constant and flips the BUILD independently, which is exactly
-# the case where comparing test names alone reaches the wrong verdict.
-_preexisting_sandbox() { # _preexisting_sandbox <mode: buildbreak|newtest|notests|samefail>
+# the red-baseline branch is the one under test. The npm mock controls the test
+# result and the build result independently, which is what lets each scenario
+# isolate one reason for the final verification being red.
+_preexisting_sandbox() { # _preexisting_sandbox <mode: buildbreak|newtest|notests|samefail|testcompile|heals>
     local mode="$1"
     create_sandbox node
     rm -f tsconfig.json
@@ -4001,6 +4001,19 @@ if [[ "${1:-}" == "test" ]]; then
         newtest)  # build stays green; a DIFFERENT test starts failing
             if [[ -f "$AFTER_MARK" ]]; then echo "FAIL src/b.test.js"; exit 1; fi
             echo "FAIL src/a.test.js"; exit 1 ;;
+        testcompile)  # the already-failing suite stops COMPILING. jest prints the
+                      # SAME `FAIL <file>` line either way, so the identifier is
+                      # byte-identical to baseline and no identifier comparison
+                      # could ever tell these two states apart.
+            if [[ -f "$AFTER_MARK" ]]; then
+                echo "FAIL src/a.test.js"
+                echo "  ● Test suite failed to run"
+                exit 1
+            fi
+            echo "FAIL src/a.test.js"; exit 1 ;;
+        heals)    # red baseline that Claude actually repairs
+            if [[ -f "$AFTER_MARK" ]]; then exit 0; fi
+            echo "FAIL src/a.test.js"; exit 1 ;;
         *)        echo "FAIL src/a.test.js"; exit 1 ;;
     esac
 fi
@@ -4012,15 +4025,37 @@ SH
 #!/usr/bin/env bash
 touch "$AFTER_MARK"
 case "${FAIL_MODE:-}" in
-    buildbreak) touch "$BREAK_BUILD" ;;
+    buildbreak) touch "$BREAK_BUILD"; echo "// claude edit" >> src/index.js ;;
+    heals)
+        # Must be a genuine improvement: the success path continues into the
+        # score-regression gate, which is a SEPARATE guard. Appending a bare
+        # comment trips it (86 -> 85) and would stop the run for a reason that
+        # has nothing to do with the verification contract under test.
+        printf '# Test Project\n\nUsage documentation.\n' > README.md ;;
+    *) echo "// claude edit" >> src/index.js ;;
 esac
-echo "// claude edit" >> src/index.js
 SH
     CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
 }
 
-test_new_build_failure_blocks() {
-    log_header "81. a newly introduced build failure blocks, even with failing baseline tests"
+# A red FINAL verification is never a success, whatever it looks like.
+#
+# KyZN used to carry an escape hatch: if the baseline was already failing and the
+# post-change failures "looked pre-existing", the run continued to commit/push/PR.
+# Deciding that required KyZN to work out WHY a run was red from the runner's
+# output — and some toolchains make that undecidable. `go build ./...` never
+# compiles _test.go, so a broken test file leaves the build green while `go test`
+# reprints the baseline identifiers next to `[build failed]`. jest prints the same
+# `FAIL <file>` line whether a test failed or the suite never ran at all. In both
+# cases the identifier set is byte-identical to baseline.
+#
+# The bypass is gone, so none of that has to be recognised. The contract is:
+#   baseline rc 1 → Claude may still attempt improvements
+#   final    rc 0 → success path
+#   final    rc 1 → build-failure policy, always
+#   final    rc 2 → unconditional unavailable abort
+test_red_final_verification_never_ships() {
+    log_header "81. a red final verification never enters the success path"
 
     source "$KYZN_ROOT/lib/core.sh"
     source "$KYZN_ROOT/lib/detect.sh"
@@ -4033,177 +4068,168 @@ test_new_build_failure_blocks() {
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
 
-    local saved_path="$PATH" rc out
+    local saved_path="$PATH" rc out log cb
 
-    # --- 3/4/5/6. The authorization decision itself -------------------------
-    # Structured state, not log-message parsing, decides whether a still-failing
-    # run may continue as "pre-existing".
-    # shellcheck disable=SC2034 # Read by verify_had_build_failure in verify.sh.
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        pass "decide/4: unchanged named test failure may continue"
-    else
-        fail "decide/4" "unchanged pre-existing test failure was blocked"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a
-FAIL b" 2>/dev/null; then
-        fail "decide/5" "a newly introduced named test failure was allowed"
-    else
-        pass "decide/5: newly introduced named test failure blocks"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL a" "" 2>/dev/null; then
-        fail "decide/3" "empty post-change evidence was allowed"
-    else
-        pass "decide/3: empty post-change failure evidence fails closed"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="build"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        fail "decide/1" "a build failure was waved through as pre-existing"
-    else
-        pass "decide/1+6: any build failure blocks regardless of test names"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="typecheck"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        fail "decide/typecheck" "a type-check failure was waved through"
-    else
-        pass "decide: type-check failure blocks like a build failure"
-    fi
+    # --- 7a. rc 2 (unavailable) is still an unconditional abort -------------
+    create_sandbox node
+    detect_project_type              # ships tsconfig.json, no local tsc
+    cb=$(_clean_path "$SANDBOX/clean-bin")
+    cat > "$cb/npm" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$cb/npm"
+    PATH="$cb"
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "rc2: unavailable tooling still returns 2" 2 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
 
-    # The category set must be EXACTLY "test". An empty set means nothing was
-    # recorded and we cannot characterise the failure; an unknown or mixed set
-    # means a future check type we have no rule for. Both fail closed.
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        pass "decide/exact: category 'test' + identical identifiers continues"
-    else
-        fail "decide/exact" "the one legitimate continue case was blocked"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES=""
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        fail "decide/empty-category" "empty category set was allowed to continue"
-    else
-        pass "decide/empty-category: no recorded category fails closed"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="lint"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        fail "decide/unknown-category" "an unknown category was allowed to continue"
-    else
-        pass "decide/unknown-category: unrecognised category fails closed"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="test build"
-    if verify_may_continue_with_preexisting "FAIL a" "FAIL a" 2>/dev/null; then
-        fail "decide/mixed-category" "a mixed category set was allowed to continue"
-    else
-        pass "decide/mixed-category: mixed categories fail closed"
-    fi
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL a" "" 2>/dev/null; then
-        fail "decide/test-empty-ids" "category test with no identifiers was allowed"
-    else
-        pass "decide/test-empty-ids: category test + empty identifiers blocks"
-    fi
-    # A new identifier that is merely a SUBSTRING of a baseline one is still new.
-    KYZN_VERIFY_FAILED_CATEGORIES="test"
-    if verify_may_continue_with_preexisting "FAIL src/foo.test.js" "FAIL src/foo.test" 2>/dev/null; then
-        fail "decide/substring" "a substring of a baseline identifier was treated as pre-existing"
-    else
-        pass "decide/substring: substring identifier is not a baseline match"
-    fi
-    # shellcheck disable=SC2034 # Reset for the workflow runs below; read by verify.sh.
-    KYZN_VERIFY_FAILED_CATEGORIES=""
+    # --- 7b. A project with no applicable checks is still rc 0 -------------
+    create_sandbox generic
+    detect_project_type
+    rm -f Makefile
+    rc=0; verify_build &>/dev/null || rc=$?
+    assert_exit_code "no-checks: nothing applicable to run still returns 0" 0 "$rc"
+    cleanup_sandbox
 
-    # --- 1 + 7(quick). Same test names, new build failure → must not ship ---
+    # --- 1. Unchanged named baseline failures no longer reach success ------
+    # This is the case the removed bypass used to wave through.
+    _preexisting_sandbox samefail
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/s.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/s.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "unchanged/baseline-red: Claude still got to attempt improvements" \
+        "$log" "CLAUDE-INVOKED"
+    assert_contains "unchanged: final verification is still red" \
+        "$out" "Verification is still failing after improvements"
+    assert_contains "unchanged: explicitly not treated as success" \
+        "$out" "will not treat a red final verification as a success"
+    assert_not_contains "unchanged: nothing pushed or PR'd" "$log" "FORBIDDEN"
+    assert_exit_code "unchanged: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 2. A newly introduced named failure blocks -------------------------
+    _preexisting_sandbox newtest
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/nt.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    assert_not_contains "newtest: nothing pushed or PR'd" "$log" "FORBIDDEN"
+    assert_exit_code "newtest: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 3a. A build failure blocks ----------------------------------------
     _preexisting_sandbox buildbreak
     rc=0
     cmd_improve --auto > "$WORKFLOW_TMP/q.out" 2>&1 || rc=$?
     trap - EXIT INT TERM
-    out=$(cat "$WORKFLOW_TMP/q.out"); local log; log=$(cat "$WORKFLOW_LOG")
-    assert_contains "quick/buildbreak: Claude ran" "$log" "CLAUDE-INVOKED"
-    assert_not_contains "quick/buildbreak: nothing pushed or PR'd" "$log" "FORBIDDEN"
-    assert_not_contains "quick/buildbreak: not waved through as pre-existing" \
-        "$out" "all failures are pre-existing"
-    assert_exit_code "quick/buildbreak: aborts non-zero" 1 "$rc"
+    log=$(cat "$WORKFLOW_LOG")
+    assert_not_contains "buildbreak: nothing pushed or PR'd" "$log" "FORBIDDEN"
+    assert_exit_code "buildbreak: aborts non-zero" 1 "$rc"
     PATH="$saved_path"; cleanup_sandbox
 
-    # --- 2. Compile error that produces no test identifiers ----------------
+    # --- 3b. A test-loader / test-compilation failure blocks, and does so
+    #         WITHOUT KyZN recognising the runner's wording ------------------
+    _preexisting_sandbox testcompile
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/tc.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/tc.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "testcompile: final verification is still red" \
+        "$out" "Verification is still failing after improvements"
+    assert_contains "testcompile: explicitly not treated as success" \
+        "$out" "will not treat a red final verification as a success"
+    assert_not_contains "testcompile: nothing pushed or PR'd" "$log" "FORBIDDEN"
+    assert_exit_code "testcompile: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 4. Empty / unparseable identifier output cannot authorize ---------
     _preexisting_sandbox notests
     rc=0
     cmd_improve --auto > "$WORKFLOW_TMP/n.out" 2>&1 || rc=$?
     trap - EXIT INT TERM
     out=$(cat "$WORKFLOW_TMP/n.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_not_contains "quick/no-identifiers: nothing pushed or PR'd" "$log" "FORBIDDEN"
-    assert_not_contains "quick/no-identifiers: not waved through" "$out" "already failing at baseline"
-    # It must block for the RIGHT reason: an unparseable failure list, not a
-    # build failure. The build command stays green in this scenario.
-    assert_contains "quick/no-identifiers: blocks on the empty identifier list" \
-        "$out" "no identifiable test failures"
-    assert_not_contains "quick/no-identifiers: build diagnostic did NOT fire" \
-        "$out" "Build/compile/type-check failure"
-    assert_not_contains "quick/no-identifiers: build itself never failed" "$out" "Build failed"
-    assert_exit_code "quick/no-identifiers: aborts non-zero" 1 "$rc"
+    assert_contains "no-identifiers: final verification is still red" \
+        "$out" "Verification is still failing after improvements"
+    assert_not_contains "no-identifiers: nothing pushed or PR'd" "$log" "FORBIDDEN"
+    assert_exit_code "no-identifiers: aborts non-zero" 1 "$rc"
     PATH="$saved_path"; cleanup_sandbox
 
-    # --- 7(analyze). The fix loop must reach the same verdict --------------
-    _preexisting_sandbox buildbreak
+    # --- 5. A red baseline that Claude makes GREEN may proceed -------------
+    # Guard against over-blocking: removing the bypass must not strand every
+    # repository that starts red.
+    _preexisting_sandbox heals
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/h.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/h.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "heals: red baseline was allowed to attempt improvements" \
+        "$log" "CLAUDE-INVOKED"
+    assert_contains "heals: final verification is green" "$out" "Build and tests passed"
+    # End to end, not just an intermediate green line: the run must actually
+    # reach push AND PR creation, and exit 0.
+    assert_contains "heals: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "heals: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "heals: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 6. analyze/fix follows the identical rule -------------------------
+    local m
+    for m in samefail testcompile notests; do
+        _preexisting_sandbox "$m"
+        echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]' \
+            > "$WORKFLOW_TMP/findings.json"
+        printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260806-blk001-analysis.md"
+        rc=0
+        run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260806-blk001" "1.00" \
+            > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+        trap - EXIT INT TERM
+        out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
+        assert_contains "analyze/$m: still failing after self-repair" \
+            "$out" "verification still failing after self-repair"
+        assert_contains "analyze/$m: the batch is reverted" \
+            "$out" "still broken after retry — reverting batch"
+        assert_not_contains "analyze/$m: nothing pushed or PR'd" "$log" "FORBIDDEN"
+        assert_exit_code "analyze/$m: aborts non-zero" 1 "$rc"
+        PATH="$saved_path"; cleanup_sandbox
+    done
+
+    # --- 6b. analyze/fix still ships a red baseline that turns green --------
+    _preexisting_sandbox heals
     echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]' \
         > "$WORKFLOW_TMP/findings.json"
-    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260806-blk001-analysis.md"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260806-blk002-analysis.md"
     rc=0
-    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260806-blk001" "1.00" > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260806-blk002" "1.00" \
+        > "$WORKFLOW_TMP/ah.out" 2>&1 || rc=$?
     trap - EXIT INT TERM
-    out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_not_contains "analyze/buildbreak: nothing pushed or PR'd" "$log" "FORBIDDEN"
-    assert_not_contains "analyze/buildbreak: not waved through" "$out" "all failures are pre-existing"
-    assert_exit_code "analyze/buildbreak: aborts non-zero" 1 "$rc"
+    out=$(cat "$WORKFLOW_TMP/ah.out"); log=$(cat "$WORKFLOW_LOG")
+    # Complete end-to-end success, not an intermediate green line followed by a
+    # later abort: the batch must be applied, and the run must reach push AND PR.
+    assert_contains "analyze/heals: batch verified green" "$out" "Build/tests pass"
+    assert_contains "analyze/heals: batch applied" "$out" "1 batches applied"
+    assert_contains "analyze/heals: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "analyze/heals: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "analyze/heals: succeeds" 0 "$rc"
     PATH="$saved_path"; cleanup_sandbox
 
-    # --- 4(workflow). Unchanged named test failures MUST still continue -----
-    # Guard against over-blocking: the fix must not turn every pre-existing
-    # failure into a hard stop.
-    _preexisting_sandbox samefail
-    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
-#!/usr/bin/env bash
-echo "// harmless claude edit" >> src/index.js
-SH
-    rc=0
-    cmd_improve --auto > "$WORKFLOW_TMP/s.out" 2>&1 || rc=$?
-    trap - EXIT INT TERM
-    out=$(cat "$WORKFLOW_TMP/s.out")
-    assert_contains "quick/unchanged: pre-existing test failures still continue" \
-        "$out" "already failing at baseline"
-    assert_not_contains "quick/unchanged: not misreported as a build failure" \
-        "$out" "blocks regardless of pre-existing"
-    PATH="$saved_path"; cleanup_sandbox
-
-    # --- 5(workflow). A newly introduced NAMED test failure must block ------
-    _preexisting_sandbox newtest
-    rc=0
-    cmd_improve --auto > "$WORKFLOW_TMP/nt.out" 2>&1 || rc=$?
-    trap - EXIT INT TERM
-    out=$(cat "$WORKFLOW_TMP/nt.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_contains "quick/newtest: Claude ran" "$log" "CLAUDE-INVOKED"
-    assert_not_contains "quick/newtest: nothing pushed or PR'd" "$log" "FORBIDDEN"
-    assert_not_contains "quick/newtest: not waved through" "$out" "already failing at baseline"
-    assert_contains "quick/newtest: names the new failure" "$out" "New failures not present at baseline"
-    assert_exit_code "quick/newtest: aborts non-zero" 1 "$rc"
-    PATH="$saved_path"; cleanup_sandbox
-
-    # --- 6. A baseline build failure that persists cannot ship --------------
-    _preexisting_sandbox buildbreak
-    touch "$BREAK_BUILD"          # broken BEFORE the run, still broken after
-    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
-#!/usr/bin/env bash
-echo "// claude edit" >> src/index.js
-SH
-    rc=0
-    cmd_improve --auto > "$WORKFLOW_TMP/b.out" 2>&1 || rc=$?
-    trap - EXIT INT TERM
-    out=$(cat "$WORKFLOW_TMP/b.out"); log=$(cat "$WORKFLOW_LOG")
-    assert_not_contains "quick/preexisting-build: nothing pushed or PR'd" "$log" "FORBIDDEN"
-    assert_not_contains "quick/preexisting-build: not waved through" "$out" "already failing at baseline"
-    assert_exit_code "quick/preexisting-build: aborts non-zero" 1 "$rc"
+    # --- The bypass machinery itself must be gone --------------------------
+    if declare -F verify_may_continue_with_preexisting >/dev/null 2>&1; then
+        fail "removed/bypass" "verify_may_continue_with_preexisting still exists"
+    else
+        pass "removed: verify_may_continue_with_preexisting is gone"
+    fi
+    if declare -F verify_had_build_failure >/dev/null 2>&1; then
+        fail "removed/categories" "verify_had_build_failure still exists"
+    else
+        pass "removed: failure-category machinery is gone"
+    fi
+    if declare -F capture_failing_tests >/dev/null 2>&1; then
+        pass "kept: capture_failing_tests retained for baseline diagnostics/prompts"
+    else
+        fail "kept/capture" "capture_failing_tests was removed but still feeds prompts"
+    fi
 
     PATH="$saved_path"
     unset CLAUDE_MUTATE BREAK_BUILD AFTER_MARK FAIL_MODE
@@ -4312,7 +4338,7 @@ main() {
     test_verification_precedence_and_tool_contracts
     test_toolchain_matrix_download_authorization
     test_python_unusable_shim_is_unavailable
-    test_new_build_failure_blocks
+    test_red_final_verification_never_ships
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

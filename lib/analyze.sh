@@ -1658,19 +1658,13 @@ ${tier_findings}
             elif (( retry_verify_rc == 0 )); then
                 log_ok "Self-repair succeeded for $tier batch"
                 batch_passed=true
-            elif ! $baseline_verify_ok; then
-                # Baseline already failed — same fail-closed decision as the quick
-                # path, from structured state rather than log text.
-                local after_failures
-                after_failures=$(capture_failing_tests 2>/dev/null) || true
-
-                if verify_may_continue_with_preexisting "$baseline_failures" "$after_failures"; then
-                    log_warn "$tier batch: every failing test was already failing at baseline — continuing"
-                    batch_passed=true
-                elif verify_had_build_failure; then
-                    log_error "$tier batch: build/compile/type-check failure — blocks regardless of pre-existing test failures"
-                else
-                    log_error "$tier batch: failures could not be shown to be unchanged — treating as broken"
+            else
+                # Red after self-repair is a failed batch — same rule as the
+                # quick path: only a green final verification passes, and a red
+                # baseline buys no exemption.
+                log_error "$tier batch: verification still failing after self-repair"
+                if ! $baseline_verify_ok; then
+                    log_dim "  The baseline was already red; that does not make a red result a pass."
                 fi
             fi
         fi

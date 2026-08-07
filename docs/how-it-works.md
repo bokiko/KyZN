@@ -34,7 +34,10 @@ If verification fails on a previously clean build, KyZN attempts **self-repair**
 1. **Detect** — identifies project type and features (TypeScript, tests, CI, Docker, linter)
 2. **Measure** — runs real tools and computes a health score out of 100
 3. **Improve/Analyze** — Sonnet for incremental fixes, 4 parallel Opus specialists for deep code review
-4. **Verify** — runs build and tests. Aborts on new failures, continues on pre-existing ones
+4. **Verify** — runs build and tests. A repository whose baseline is already red can still be
+   improved, but only a green final verification enters the normal success path. A red final
+   result always routes through the configured failure strategy; it is never certified as
+   successful merely because it resembles the baseline
 5. **Self-repair** — if verification fails, retries once with error context (reflexion loop)
 6. **Score Gate** — re-measures health. If score dropped, aborts and cleans up
 7. **Report** — compact terminal summary + detailed `kyzn-report.md` saved to project root
