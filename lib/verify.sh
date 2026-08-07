@@ -36,72 +36,13 @@ verify_not_executed() {
 }
 
 # ---------------------------------------------------------------------------
-# Structured failure categories
+# Failures are deliberately NOT classified here.
 #
-# Authorization must never be decided by parsing human-readable log lines. Each
-# verifier records WHAT kind of check failed, so callers can distinguish a build
-# or type-check failure (which produces no test identifiers, and therefore can
-# never be shown to be "unchanged") from an ordinary test failure.
+# Invariant: authorization depends only on the final verify_build exit code.
+# Classifying failure OUTPUT must never authorize success.
 #
-# Categories: build | typecheck | test
-# Reset on every verify_build; never carried between runs.
+# Rationale and the toolchain cases behind it: test 81, docs/how-it-works.md.
 # ---------------------------------------------------------------------------
-KYZN_VERIFY_FAILED_CATEGORIES=""
-
-verify_record_failure() {
-    local category="$1"
-    case " $KYZN_VERIFY_FAILED_CATEGORIES " in
-        *" $category "*) return 0 ;;
-    esac
-    KYZN_VERIFY_FAILED_CATEGORIES="${KYZN_VERIFY_FAILED_CATEGORIES:+$KYZN_VERIFY_FAILED_CATEGORIES }$category"
-}
-
-# True when the last verify_build saw a failure that cannot be expressed as a
-# set of test identifiers — a build, compile or type-check failure.
-verify_had_build_failure() {
-    case " $KYZN_VERIFY_FAILED_CATEGORIES " in
-        *" build "*|*" typecheck "*) return 0 ;;
-    esac
-    return 1
-}
-
-# Decide whether a still-failing verification may proceed on the grounds that
-# its failures were already present at baseline. FAILS CLOSED.
-#
-# Continues only when ALL of:
-#   - the recorded category set is EXACTLY "test". An empty set means nothing
-#     was characterised; an unknown or mixed set means a check type this rule
-#     was never written for. Neither is safe to wave through, so only the one
-#     category we can reason about — identifiable test failures — may continue.
-#   - the post-change failure list is non-empty (otherwise nothing is proven),
-#   - every post-change failing identifier was present at baseline, matched as a
-#     WHOLE LINE. Substring matching would let a new identifier that happens to
-#     be a prefix of a baseline one pass as pre-existing.
-#
-# Usage: verify_may_continue_with_preexisting <baseline_failures> <after_failures>
-verify_may_continue_with_preexisting() {
-    local baseline_failures="${1:-}" after_failures="${2:-}"
-
-    # Exactly one category, and it must be the one we have a rule for.
-    if [[ "$KYZN_VERIFY_FAILED_CATEGORIES" != "test" ]]; then
-        return 1
-    fi
-
-    # No identifiable failures after the change means we cannot establish that
-    # the failures are unchanged — a compile error that swallows test output
-    # looks exactly like this.
-    if [[ -z "${after_failures//[$'\n' $'\t']/}" ]]; then
-        return 1
-    fi
-
-    local t
-    while IFS= read -r t; do
-        [[ -z "$t" ]] && continue
-        grep -qFx -- "$t" <<< "$baseline_failures" || return 1
-    done <<< "$after_failures"
-
-    return 0
-}
 
 # Resolve a Python tool, preferring the project's own virtualenv so KyZN works
 # without the venv being activated (the opt-in installer creates .venv, which a
@@ -156,8 +97,14 @@ _kyzn_python_has_tests() {
 }
 
 # ---------------------------------------------------------------------------
-# Capture failing test names (for pre-existing failure comparison)
-# Returns newline-separated list of FAILED test identifiers
+# Capture failing test names — DIAGNOSTICS AND PROMPTS ONLY.
+#
+# No authorization decision reads this. It is captured once at baseline so the
+# run can show the operator which tests were already red, and so the fix prompt
+# can tell Claude which failures it did not cause. Best-effort by construction:
+# an incomplete or empty list degrades the message, never the verdict.
+#
+# Returns newline-separated list of FAILED test identifiers.
 # ---------------------------------------------------------------------------
 capture_failing_tests() {
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
@@ -318,7 +265,6 @@ verify_build() {
     # Reset outcome tracking — verify_build is called repeatedly within a run
     KYZN_VERIFY_STATUS="passed"
     KYZN_VERIFY_UNAVAILABLE_REASON=""
-    KYZN_VERIFY_FAILED_CATEGORIES=""
 
     case "$project_type" in
         node)
@@ -345,7 +291,6 @@ verify_build() {
                 log_step "Running make check (Makefile detected)..."
                 make check 2>/dev/null || make test 2>/dev/null || {
                     log_warn "make check/test failed — treating as verification failure"
-                    verify_record_failure build
                     build_ok=false
                 }
             else
@@ -404,7 +349,6 @@ verify_node() {
         log_step "Running npm build..."
         if ! npm run build 2>&1 | tail -20; then
             log_error "Build failed"
-            verify_record_failure build
             ok=false
         else
             log_ok "Build passed"
@@ -420,7 +364,6 @@ verify_node() {
             log_step "Running TypeScript check (node_modules/.bin/tsc)..."
             if ! node_modules/.bin/tsc --noEmit 2>&1 | tail -20; then
                 log_error "TypeScript check failed"
-                verify_record_failure typecheck
                 ok=false
             else
                 log_ok "TypeScript check passed"
@@ -445,7 +388,6 @@ verify_node() {
             else
                 echo "$test_output" | tail -10
                 log_error "Tests failed"
-                verify_record_failure test
                 ok=false
             fi
         else
@@ -521,7 +463,6 @@ verify_python() {
                 verify_unavailable "pytest at '$pytest_bin' could not be executed (exit $pytest_rc) — tests were not run"
             elif (( pytest_rc != 0 )); then
                 log_error "Tests failed"
-                verify_record_failure test
                 ok=false
             else
                 log_ok "Tests passed"
@@ -548,7 +489,6 @@ verify_rust() {
     log_step "Running cargo check..."
     if ! cargo check 2>&1 | tail -20; then
         log_error "Build failed"
-        verify_record_failure build
         ok=false
     else
         log_ok "Build passed"
@@ -557,7 +497,6 @@ verify_rust() {
     log_step "Running cargo test..."
     if ! cargo test 2>&1 | tail -10; then
         log_error "Tests failed"
-        verify_record_failure test
         ok=false
     else
         log_ok "Tests passed"
@@ -580,7 +519,6 @@ verify_go() {
     log_step "Running go build..."
     if ! go build ./... 2>&1 | tail -20; then
         log_error "Build failed"
-        verify_record_failure build
         ok=false
     else
         log_ok "Build passed"
@@ -589,7 +527,6 @@ verify_go() {
     log_step "Running go test..."
     if ! go test ./... 2>&1 | tail -10; then
         log_error "Tests failed"
-        verify_record_failure test
         ok=false
     else
         log_ok "Tests passed"
@@ -619,7 +556,6 @@ verify_csharp() {
     log_step "Running dotnet build..."
     if ! dotnet build --nologo -v quiet 2>&1 | tail -20; then
         log_error "Build failed"
-        verify_record_failure build
         ok=false
     else
         log_ok "Build passed"
@@ -628,7 +564,6 @@ verify_csharp() {
     log_step "Running dotnet test..."
     if ! dotnet test --nologo --verbosity quiet 2>&1 | tail -20; then
         log_error "Tests failed"
-        verify_record_failure test
         ok=false
     else
         log_ok "Tests passed"
@@ -663,7 +598,6 @@ verify_java() {
         log_step "Running mvn compile..."
         if ! mvn -q compile 2>&1 | tail -20; then
             log_error "Build failed"
-            verify_record_failure build
             ok=false
         else
             log_ok "Build passed"
@@ -672,7 +606,6 @@ verify_java() {
         log_step "Running mvn test..."
         if ! mvn -q test 2>&1 | tail -20; then
             log_error "Tests failed"
-            verify_record_failure test
             ok=false
         else
             log_ok "Tests passed"
@@ -684,7 +617,6 @@ verify_java() {
         log_step "Running $gw build -x test..."
         if ! $gw build -x test 2>&1 | tail -20; then
             log_error "Build failed"
-            verify_record_failure build
             ok=false
         else
             log_ok "Build passed"
@@ -693,7 +625,6 @@ verify_java() {
         log_step "Running $gw test..."
         if ! $gw test 2>&1 | tail -20; then
             log_error "Tests failed"
-            verify_record_failure test
             ok=false
         else
             log_ok "Tests passed"

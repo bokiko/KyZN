@@ -678,37 +678,23 @@ ${verify_errors}
                 handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
                 return 1
             fi
-        elif $baseline_verify_ok; then
-            # Already retried and still failing
-            log_error "Build or tests failed after improvements."
+        else
+            # The retry is spent, or the baseline was red from the start. Either
+            # way the FINAL verification is red.
+            #
+            # Only a green final verification enters the success path; failure
+            # output is never inspected to authorize one. Red always routes to
+            # the configured failure strategy (report / discard / draft PR).
+            if $baseline_verify_ok; then
+                log_error "Build or tests failed after improvements."
+            else
+                log_error "Verification is still failing after improvements."
+                log_dim "  The baseline was already red. KyZN can still try to improve this repository,"
+                log_dim "  but it will not treat a red final verification as a success."
+            fi
             rm -f "$verify_errors_file"
             handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
-        else
-            # Baseline already failed — may this run continue on those grounds?
-            # The decision is made from structured verification state, never from
-            # log text, and fails closed.
-            local after_failures
-            after_failures=$(capture_failing_tests 2>/dev/null) || true
-
-            if verify_may_continue_with_preexisting "$baseline_failures" "$after_failures"; then
-                log_warn "Tests still failing, but every failing test was already failing at baseline. Continuing."
-            else
-                if verify_had_build_failure; then
-                    log_error "Build/compile/type-check failure — this blocks regardless of pre-existing test failures."
-                elif [[ -z "${after_failures//[$'\n' $'\t']/}" ]]; then
-                    log_error "Verification failed with no identifiable test failures — cannot show the failures are unchanged."
-                else
-                    log_error "New failures not present at baseline:"
-                    while IFS= read -r f; do
-                        [[ -z "$f" ]] && continue
-                        grep -qFx -- "$f" <<< "$baseline_failures" || log_error "  - $f"
-                    done <<< "$after_failures"
-                fi
-                rm -f "$verify_errors_file"
-                handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
-                return 1
-            fi
         fi
         rm -f "$verify_errors_file"
     fi
