@@ -702,11 +702,13 @@ cmd_analyze() {
             --export)       [[ $# -ge 2 ]] || { log_error "--export requires a value"; return 1; }; export_path="$2"; shift 2 ;;
             --auto)         auto=true; shift ;;
             --allow-dirty)  allow_dirty=true; shift ;;
+            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
             *)              log_error "Unknown option: $1"; return 1 ;;
         esac
     done
 
     if $fix; then
+        require_unsafe_host_execution "analyze --fix" || return 1
         require_clean_worktree "$allow_dirty" || return 1
     fi
 
@@ -1205,7 +1207,8 @@ cmd_analyze() {
     elif ! $auto; then
         echo ""
         echo -e "  ${DIM}To auto-fix these findings:${RESET}"
-        echo -e "  ${CYAN}kyzn fix${RESET}"
+        echo -e "  ${CYAN}kyzn fix --allow-unsafe-host-execution${RESET}"
+        echo -e "  ${DIM}This runs project commands and AI changes as your user without container/VM isolation.${RESET}"
         echo ""
     fi
 }
@@ -1326,6 +1329,10 @@ run_fix_phase() {
     local run_id="$3"
     local fix_budget="$4"
     local repo_profile="${5:-$KYZN_PROFILE_CACHE}"
+
+    # Defense in depth for direct/internal callers; cmd_analyze gates before
+    # spending analysis budget, but the fix phase must also fail closed.
+    require_unsafe_host_execution "fix phase" || return 1
 
     # Concurrency lock (prevents two concurrent analyze-fix runs from corrupting working tree)
     acquire_kyzn_lock "fix" || return 1

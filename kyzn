@@ -49,7 +49,7 @@ Commands:
   fix             Deep analysis + auto-fix (analyze → fix → verify → PR)
   analyze         Deep analysis only — report, no changes
   quick           Quick single-pass improvement (lighter, cheaper)
-  measure         Measure project health (no changes)
+  measure         Static measurements by default (no project commands)
   doctor          Check prerequisites
   init            Interactive setup (creates .kyzn/config.yaml)
   status          Show health score dashboard
@@ -60,13 +60,13 @@ Commands:
   history         Show all runs with scores and trends
   dashboard       Machine-wide activity summary (all projects)
 
-  schedule        Set up recurring runs (cron)
+  schedule        Remove legacy recurring runs (creation disabled in Phase 0)
   selftest        Run the test suite
   update          Pull latest version
   version         Show version
 
 Quick options:
-  --auto              Use saved config (no prompts, for cron)
+  --auto              Use saved config without prompts (manual PR review still required)
   --focus <area>      Target specific area (security, testing, perf, quality, doc)
   --mode <mode>       deep | clean | full
   --model <model>     sonnet | opus | haiku
@@ -74,6 +74,8 @@ Quick options:
   --turns <N>         Max Claude turns per run
   --allow-ci          Allow CI/pipeline file creation
   --allow-dirty       Allow running with uncommitted local changes
+  --allow-unsafe-host-execution
+                      Explicitly allow repository commands and AI changes on this host
   -v, --verbose       Show live Claude progress
 
 Fix options:
@@ -83,6 +85,8 @@ Fix options:
   --profile <p>       opus | hybrid | sonnet
   --budget <USD>      Budget for analysis phase
   --allow-dirty       Allow running with uncommitted local changes
+  --allow-unsafe-host-execution
+                      Explicitly allow repository commands and AI changes on this host
 
 Analyze options:
   --auto              Run without prompts
@@ -92,9 +96,17 @@ Analyze options:
   --focus <area>      Narrow analysis to one area
   --profile <p>       opus | hybrid | sonnet
   --allow-dirty       Only applies with --fix
+  --allow-unsafe-host-execution
+                      Enable dynamic measurements; required with --fix
+
+Measure options:
+  --allow-unsafe-host-execution
+                      Enable package/build-tool measurements on this host
 
 Doctor options:
   --install           Install project verification dependencies (Node/Python)
+  --allow-unsafe-host-execution
+                      Required with --install
 
 History options:
   --global            Show history from all projects
@@ -106,15 +118,23 @@ General:
 Examples:
   kyzn init                       # First-time setup
   kyzn doctor                     # Check prerequisites
-  kyzn fix                        # Deep analysis + auto-fix → PR
-  kyzn fix --auto                 # Non-interactive (cron-safe)
-  kyzn fix --profile hybrid       # Cheaper analysis model mix
+  kyzn fix --allow-unsafe-host-execution
+                                    # Deep analysis + auto-fix → PR
+  kyzn fix --auto --allow-unsafe-host-execution
+                                    # Non-interactive; still requires manual PR review
+  kyzn fix --profile hybrid --allow-unsafe-host-execution
+                                    # Cheaper analysis model mix
   kyzn analyze                    # Analysis report only, no changes
   kyzn analyze --focus security   # Single-area deep dive
-  kyzn quick                      # Quick single-pass improvement
-  kyzn quick --auto               # Use saved config (for cron)
-  kyzn quick --mode deep          # Real improvements only
-  kyzn measure                    # Measure only, no changes
+  kyzn quick --allow-unsafe-host-execution
+                                    # Quick single-pass improvement
+  kyzn quick --auto --allow-unsafe-host-execution
+                                    # Use saved config; still requires manual PR review
+  kyzn quick --mode deep --allow-unsafe-host-execution
+                                    # Real improvements only
+  kyzn measure                    # Static measurements (no project commands)
+  kyzn measure --allow-unsafe-host-execution
+                                    # Include package/build-tool measurements
   kyzn history --global           # All projects
 
 Website:  https://www.kyzn.dev
@@ -125,8 +145,8 @@ EOF
 # Update check — notify user if a newer version exists
 # ---------------------------------------------------------------------------
 check_for_updates() {
-    # Check if install dir is a git repo
-    [[ -d "$KYZN_ROOT/.git" ]] || return
+    # A linked worktree uses a .git file rather than a directory.
+    [[ -e "$KYZN_ROOT/.git" ]] || return 0
 
     # Quick check: is local HEAD behind remote? (fetch once per day)
     local check_file="${HOME}/.kyzn/last-update-check"
@@ -308,9 +328,14 @@ cmd_doctor() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --install) install_deps=true; shift ;;
+            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
             *) log_error "Unknown option: $1"; return 1 ;;
         esac
     done
+
+    if $install_deps; then
+        require_unsafe_host_execution "doctor dependency installation" || return 1
+    fi
 
     log_header "KyZN doctor — checking prerequisites"
     local ok=true
@@ -346,22 +371,10 @@ cmd_doctor() {
         fi
     done
 
-    # Claude auth (API key OR OAuth login)
-    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-        # Validate the key actually works (quick test)
-        local _key_test
-        _key_test=$(claude -p "hi" --output-format json --no-session-persistence --max-turns 1 2>/dev/null) || true
-        if echo "$_key_test" | grep -q '"is_error":true' 2>/dev/null; then
-            log_fail "Claude auth: API key is SET but INVALID"
-            log_dim "  Your ANTHROPIC_API_KEY is expired or wrong."
-            log_dim "  Fix: unset ANTHROPIC_API_KEY  (to use OAuth login instead)"
-            log_dim "  Or replace the key in ~/.bashrc with a valid one."
-            ok=false
-        else
-            log_ok "Claude auth: API key (verified)"
-        fi
-    elif claude auth status &>/dev/null 2>&1 || [[ -d "${HOME}/.claude" ]]; then
-        log_ok "Claude auth: logged in (no API key needed)"
+    # Non-agent status probe: never start a model session from an untrusted
+    # repository merely to check credentials.
+    if claude auth status --json &>/dev/null 2>&1; then
+        log_ok "Claude auth: configured"
     else
         log_warn "Claude not authenticated. Either:"
         log_dim "  • Run 'claude' and log in via browser (recommended)"

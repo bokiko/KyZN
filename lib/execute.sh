@@ -463,11 +463,13 @@ cmd_improve() {
             --model)    [[ $# -ge 2 ]] || { log_error "--model requires a value"; return 1; }; model="$2"; model_from_cli=true; shift 2 ;;
             --allow-ci) export KYZN_ALLOW_CI=true; shift ;;
             --allow-dirty) allow_dirty=true; shift ;;
+            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             *)          log_error "Unknown option: $1"; return 1 ;;
         esac
     done
 
+    require_unsafe_host_execution "quick/improve" || return 1
     require_clean_worktree "$allow_dirty" || return 1
 
     # Prevent concurrent runs on the same repo

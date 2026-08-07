@@ -7,6 +7,7 @@
 run_measurements() {
     local project_type="${1:-$KYZN_PROJECT_TYPE}"
     local output_dir="${2:-}"
+    KYZN_DYNAMIC_MEASUREMENTS_SKIPPED=false
 
     if [[ -z "$output_dir" ]]; then
         output_dir=$(mktemp -d)
@@ -20,44 +21,44 @@ run_measurements() {
 
     # Always run generic measurer
     log_step "Running generic measurements..."
-    run_measurer "$KYZN_ROOT/measurers/generic.sh" "$results_file"
+    run_measurer "$KYZN_ROOT/measurers/generic.sh" "$results_file" "static"
 
     # Run language-specific measurers
     case "$project_type" in
         node)
             if [[ -f "$KYZN_ROOT/measurers/node.sh" ]]; then
                 log_step "Running Node.js measurements..."
-                run_measurer "$KYZN_ROOT/measurers/node.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/node.sh" "$results_file" "dynamic"
             fi
             ;;
         python)
             if [[ -f "$KYZN_ROOT/measurers/python.sh" ]]; then
                 log_step "Running Python measurements..."
-                run_measurer "$KYZN_ROOT/measurers/python.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/python.sh" "$results_file" "dynamic"
             fi
             ;;
         rust)
             if [[ -f "$KYZN_ROOT/measurers/rust.sh" ]]; then
                 log_step "Running Rust measurements..."
-                run_measurer "$KYZN_ROOT/measurers/rust.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/rust.sh" "$results_file" "dynamic"
             fi
             ;;
         go)
             if [[ -f "$KYZN_ROOT/measurers/go.sh" ]]; then
                 log_step "Running Go measurements..."
-                run_measurer "$KYZN_ROOT/measurers/go.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/go.sh" "$results_file" "dynamic"
             fi
             ;;
         csharp)
             if [[ -f "$KYZN_ROOT/measurers/csharp.sh" ]]; then
                 log_step "Running C# measurements..."
-                run_measurer "$KYZN_ROOT/measurers/csharp.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/csharp.sh" "$results_file" "dynamic"
             fi
             ;;
         java)
             if [[ -f "$KYZN_ROOT/measurers/java.sh" ]]; then
                 log_step "Running Java measurements..."
-                run_measurer "$KYZN_ROOT/measurers/java.sh" "$results_file"
+                run_measurer "$KYZN_ROOT/measurers/java.sh" "$results_file" "dynamic"
             fi
             ;;
     esac
@@ -75,10 +76,23 @@ run_measurements() {
 run_measurer() {
     local measurer="$1"
     local results_file="$2"
+    local execution_class="${3:-dynamic}"
 
     if [[ ! -f "$measurer" ]]; then
         log_warn "Measurer not found: $measurer"
         return
+    fi
+
+    # Side-effect boundary: language measurers invoke repository-controlled
+    # package/build tooling. Static generic metrics remain available without
+    # host execution, but dynamic scripts require the explicit per-run flag.
+    if [[ "$execution_class" == "dynamic" ]]; then
+        if [[ "$_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED" != "true" ]]; then
+            KYZN_DYNAMIC_MEASUREMENTS_SKIPPED=true
+            log_warn "Dynamic measurements skipped: $(basename "$measurer") requires --allow-unsafe-host-execution."
+            return 0
+        fi
+        require_unsafe_host_execution "dynamic project measurement" || return 1
     fi
 
     local output stderr_tmp
@@ -263,10 +277,18 @@ display_health_dashboard() {
 }
 
 # ---------------------------------------------------------------------------
-# cmd_measure — measure only, no changes
+# cmd_measure — static project measurements by default; writes KyZN history
 # ---------------------------------------------------------------------------
 cmd_measure() {
     require_git_repo
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
+            *) log_error "Unknown measure option: $1"; return 1 ;;
+        esac
+    done
+
     detect_project_type
     detect_project_features
     print_detection
@@ -285,7 +307,8 @@ cmd_measure() {
         local weakest_score
         weakest_score=$(echo "$KYZN_CATEGORY_SCORES" | jq -r --arg c "$weakest" '.[$c]')
         log_info "Weakest area: ${BOLD}$weakest${RESET} ($weakest_score%)"
-        echo -e "  Run ${CYAN}kyzn fix${RESET} for deep analysis + auto-fix."
+        echo -e "  Run ${CYAN}kyzn fix --allow-unsafe-host-execution${RESET} for deep analysis + auto-fix."
+        echo -e "  ${DIM}This executes project commands and AI changes on your host without container/VM isolation.${RESET}"
         echo -e "  Run ${CYAN}kyzn analyze${RESET} for a report without changes."
     fi
 
