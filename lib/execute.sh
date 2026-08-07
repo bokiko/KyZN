@@ -355,6 +355,54 @@ execute_claude() {
 # ---------------------------------------------------------------------------
 # Main improve command
 # ---------------------------------------------------------------------------
+# Verification requirements appended to the quick-path prompt once the baseline
+# result is known.
+#
+# Always states the green requirement. When the baseline is red it adds the
+# captured identifiers (when there are any), frames them as context rather than
+# an exemption, and grants a NARROW permission to repair them — narrow because
+# quick modes carry their own constraints, and "clean" mode in particular tells
+# Claude not to change behaviour. Without an explicit precedence rule those two
+# instructions contradict each other and the run cannot reach green.
+#
+# Usage: _kyzn_verification_prompt_section <baseline_ok:true|false> <failures>
+_kyzn_verification_prompt_section() {
+    local baseline_ok="${1:-true}" failures="${2:-}"
+    local section="## Verification Requirement
+
+Final verification must be green before this run can enter the normal success path."
+
+    if [[ "$baseline_ok" != "false" ]]; then
+        echo "$section"
+        return 0
+    fi
+
+    section+="
+
+Build or tests were ALREADY failing before you started."
+
+    if [[ -n "${failures//[$'\n' $'\t']/}" ]]; then
+        section+="
+
+\`\`\`
+$failures
+\`\`\`
+
+These identifiers are diagnostic context, not an exemption."
+    else
+        section+=" Verification produced no identifiable test names, so the failures are real but unnamed. Treat the verification output itself as the evidence."
+    fi
+
+    section+="
+
+Make minimal, scoped changes required to repair existing verification failures and reach green verification. Do not hide, skip, delete, or weaken tests, and do not make the failures worse; preserve or strengthen coverage.
+
+This verification requirement overrides mode constraints only for minimal changes necessary to repair existing verification failures and reach green verification. It must not authorize unrelated refactoring or feature work."
+
+    echo "$section"
+}
+
+
 cmd_improve() {
     require_git_repo
 
@@ -570,6 +618,16 @@ cmd_improve() {
         fi
     fi
 
+    # Step 3.6: Tell Claude what it is actually being judged against.
+    #
+    # The prompt above was assembled before verification ran, so it knows nothing
+    # about the baseline. Only a green FINAL verification enters the success
+    # path, so the requirement is stated unconditionally — including when the
+    # baseline produced no identifiable failures, which a red verification often
+    # does (test sources that will not compile, or a runner that emits nothing
+    # parseable).
+    prompt+=$'\n\n'"$(_kyzn_verification_prompt_section "$baseline_verify_ok" "$baseline_failures")"
+
     # Step 4: Execute Claude
     execute_claude "$prompt" "$sys_prompt_file" "$budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose" || {
         log_error "Claude execution failed"
@@ -600,7 +658,6 @@ cmd_improve() {
     log_info "Changes: +$diff_lines -$del_lines ($total_diff lines)"
 
     # Step 6: Verify (with reflexion retry on failure)
-    local retried=false
     local verify_errors_file
     verify_errors_file=$(mktemp)
 
@@ -631,67 +688,84 @@ cmd_improve() {
         echo "$verify_errors" > "$verify_errors_file"
         rm -f "$verify_out"
 
-        if $baseline_verify_ok && ! $retried; then
-            # Baseline was clean, Claude broke it — attempt self-repair (one retry)
-            log_warn "Build failed -- attempting self-repair..."
-            retried=true
+        # Exactly one self-repair attempt for ANY red final verification. The
+        # retry used to be reserved for runs whose baseline started clean, which
+        # left a red-baseline run one-shot: it could only reach the green it is
+        # judged against by accident.
+        #
+        # The single attempt is expressed by the control flow, not by a flag:
+        # this runs once, and every retry outcome either returns or falls
+        # through to success. There is no path back to this point.
+        log_warn "Build/tests failing -- attempting self-repair..."
 
-            # Halve the budget for the retry attempt
-            local retry_budget
-            retry_budget=$(awk -v b="$budget" 'BEGIN { printf "%.2f", b / 2 }')
+        # Halve the budget for the retry attempt
+        local retry_budget
+        retry_budget=$(awk -v b="$budget" 'BEGIN { printf "%.2f", b / 2 }')
 
-            # Construct retry prompt with error context + mock guidance
-            local retry_prompt
-            retry_prompt="Your previous changes broke the build. Here are the errors (last 50 lines):
+        # Carry the baseline context into the retry. Wording stays neutral:
+        # when the baseline was already red, "your changes broke the build"
+        # is simply false, and a prompt that misdescribes the situation
+        # invites the model to revert work that was never the problem.
+        local retry_baseline_context=""
+        if ! $baseline_verify_ok; then
+            if [[ -n "${baseline_failures//[$'\n' $'\t']/}" ]]; then
+                retry_baseline_context="
+## Already Failing Before This Run
+
+\`\`\`
+$baseline_failures
+\`\`\`
+
+These are diagnostic context, not an exemption. Repair any that remain."
+            else
+                retry_baseline_context="
+## Already Failing Before This Run
+
+Build or tests were already failing before you started, and verification produced no identifiable test names. Existing verification failures may still need repair; use the errors above as the evidence."
+            fi
+        fi
+
+        # Construct retry prompt with error context + mock guidance
+        local retry_prompt
+        retry_prompt="Build/tests are still failing after your changes. Here are the errors (last 50 lines):
 
 ${verify_errors}
+${retry_baseline_context}
 
 ## Repair Instructions
-- Fix these issues while preserving your improvements. Do not revert all changes — only fix what is broken.
+- Final verification must be green before this run can enter the normal success path.
+- Make minimal, scoped changes to reach green while preserving your improvements. Do not revert all changes.
+- Do not hide, skip, delete, or weaken tests; preserve or strengthen coverage.
 - If a test import fails (ModuleNotFoundError), rewrite using unittest.mock (Python) or jest.mock (Node).
 - Do NOT install new packages or add dependencies."
 
-            # Execute Claude again with error context
-            if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then
-                # Re-verify after retry — branch explicitly on 0 / 1 / 2 rather
-                # than relying on global state surviving later control flow.
-                local retry_rc=0
-                verify_build || retry_rc=$?
-                if verify_not_executed "$retry_rc"; then
-                    log_error "Verification was not executed after self-repair: $KYZN_VERIFY_UNAVAILABLE_REASON"
-                    log_error "Refusing to open a PR for changes KyZN cannot verify."
-                    rm -f "$verify_errors_file"
-                    abort_unverified_run "$branch_name" true
-                    return 1
-                elif (( retry_rc == 0 )); then
-                    log_ok "Self-repair succeeded -- build and tests pass after retry!"
-                    rm -f "$verify_errors_file"
-                else
-                    log_error "Self-repair failed -- build still broken after retry."
-                    rm -f "$verify_errors_file"
-                    handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
-                    return 1
-                fi
+        # Execute Claude again with error context
+        if execute_claude "$retry_prompt" "$sys_prompt_file" "$retry_budget" "$max_turns" "$KYZN_PROJECT_TYPE" "$model" "$verbose"; then
+            # Re-verify after retry — branch explicitly on 0 / 1 / 2 rather
+            # than relying on global state surviving later control flow.
+            local retry_rc=0
+            verify_build || retry_rc=$?
+            if verify_not_executed "$retry_rc"; then
+                log_error "Verification was not executed after self-repair: $KYZN_VERIFY_UNAVAILABLE_REASON"
+                log_error "Refusing to open a PR for changes KyZN cannot verify."
+                rm -f "$verify_errors_file"
+                abort_unverified_run "$branch_name" true
+                return 1
+            elif (( retry_rc == 0 )); then
+                log_ok "Self-repair succeeded -- build and tests pass after retry!"
+                rm -f "$verify_errors_file"
             else
-                log_error "Self-repair failed -- Claude execution error on retry."
+                log_error "Self-repair failed -- verification is still not green."
+                if ! $baseline_verify_ok; then
+                    log_dim "  The baseline was already red. KyZN can still try to improve this repository,"
+                    log_dim "  but it will not treat a red final verification as a success."
+                fi
                 rm -f "$verify_errors_file"
                 handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
                 return 1
             fi
         else
-            # The retry is spent, or the baseline was red from the start. Either
-            # way the FINAL verification is red.
-            #
-            # Only a green final verification enters the success path; failure
-            # output is never inspected to authorize one. Red always routes to
-            # the configured failure strategy (report / discard / draft PR).
-            if $baseline_verify_ok; then
-                log_error "Build or tests failed after improvements."
-            else
-                log_error "Verification is still failing after improvements."
-                log_dim "  The baseline was already red. KyZN can still try to improve this repository,"
-                log_dim "  but it will not treat a red final verification as a success."
-            fi
+            log_error "Self-repair failed -- Claude execution error on retry."
             rm -f "$verify_errors_file"
             handle_build_failure "$on_fail" "$run_id" "$branch_name" "$mode" "$focus"
             return 1
