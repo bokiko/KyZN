@@ -15,6 +15,14 @@ _resolve() {
 }
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve "${BASH_SOURCE[0]}")")" && pwd)"
 KYZN_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Never let self-tests read or write the operator's real KyZN state. Keeping
+# HOME isolated also covers nested `kyzn` processes spawned by CLI tests.
+SELFTEST_ORIGINAL_HOME="$HOME"
+SELFTEST_HOME=$(mktemp -d)
+export HOME="$SELFTEST_HOME"
+trap 'rm -rf "$SELFTEST_HOME"' EXIT
+
 source "$KYZN_ROOT/lib/core.sh"
 
 # ---------------------------------------------------------------------------
@@ -170,6 +178,13 @@ cleanup_sandbox() {
 
 test_core() {
     log_header "1. Core library tests"
+
+    assert_eq "selftest global state uses isolated HOME" "$SELFTEST_HOME/.kyzn" "$KYZN_GLOBAL_DIR"
+    if [[ "$KYZN_GLOBAL_DIR" != "$SELFTEST_ORIGINAL_HOME/.kyzn" ]]; then
+        pass "selftest never targets operator KyZN state"
+    else
+        fail "selftest never targets operator KyZN state" "global directory still points at the original HOME"
+    fi
 
     # generate_run_id
     local rid
