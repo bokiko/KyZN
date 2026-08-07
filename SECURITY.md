@@ -18,36 +18,24 @@ KyZN runs AI agents with real tool access inside your codebase. We take this ser
 - **Score gate** — aborts if health score drops after changes
 - **Diff guard** — aborts if changes exceed threshold
 - **Secret detection** — regex-based heuristic matching on staged files (`.env`, `.pem`, `.key`, etc.)
-- **Trust isolation** — autopilot trust level stored in gitignored `local.yaml`, not committable config
-- **Supply chain** — `jq` and `yq` verified with SHA256 checksums on install and in CI
+- **Unsafe host-execution gate** — mutating runs require a per-run `--allow-unsafe-host-execution` acknowledgement
+- **Manual merge** — autopilot is disabled; generated PRs require human review
+- **Supply chain** — CI pins and checksum-verifies its downloaded `yq`; installer downloads are verified when a published checksum is available
 - **Prompt hardening** — project names sanitized, raw measurement/findings data fenced to prevent prompt injection
 - **Concurrency lock** — atomic `mkdir`-based lock with stale PID detection prevents concurrent runs
 - **Hook protection** — all git operations disable hooks via `core.hooksPath=/dev/null`
 
-## Autopilot Mode
+## Autopilot and Host Execution
 
-**Autopilot mode auto-merges AI-generated PRs without human review.** When trust is set to `autopilot` (via `kyzn init`), any PR that passes the build gate, test gate, score regression gate, and diff size gate will be merged automatically via `gh pr merge --auto --squash`.
+Autopilot is disabled. KyZN creates reviewable PRs and never requests GitHub auto-merge. Existing gitignored `local.yaml` files containing `trust: autopilot` are handled safely: KyZN warns that the saved mode is disabled and leaves the PR for manual review.
 
-**What this means:**
-- Claude-generated code changes are merged into your default branch with no human in the loop
-- The only gates are automated checks (build, tests, health score, diff size)
-- If your project has no CI pipeline, GitHub's auto-merge triggers immediately on PR creation
+KyZN also has no container or VM isolation yet. `kyzn analyze` and `kyzn measure` default to static generic measurements; their language-specific package/build-tool measurements require `--allow-unsafe-host-execution`. Commands that mutate a repository, execute its build/tests, or install its dependencies fail closed unless the operator passes the same flag for that run. Recurring mutating schedule creation is disabled entirely until KyZN can run it in isolation. The flag is an acknowledgement, not a sandbox: repository code executes with the operator's user permissions, environment, filesystem access, and network access.
 
-**When autopilot is appropriate:**
-- You have comprehensive CI (tests, linting, type checking) that catches regressions
-- You are running KyZN for low-risk improvements on non-critical projects
-- You accept that AI-generated changes may introduce subtle issues not caught by automated tests
-
-**When autopilot is NOT appropriate:**
-- Production services handling user data or financial transactions
-- Projects without a test suite or with low test coverage
-- Security-sensitive code (auth, crypto, access control)
-
-**Recommendation:** Start with `guardian` mode. Only enable `autopilot` after you have reviewed several KyZN PRs and are confident in your test coverage.
+Automatic merge must not return until KyZN can verify all of the following: isolated fresh-commit execution, protected branches, mandatory independent CI, and required human/code-owner review.
 
 ## Threat Model
 
-The primary attack surface is **malicious repositories**. KyZN executes your project's build and test commands (`npm test`, `pytest`, `cargo test`, etc.). Do not run KyZN on repositories you don't trust.
+The primary attack surface is **malicious repositories**. With the explicit unsafe-host flag, KyZN executes project build and test commands (`npm test`, `pytest`, `cargo test`, etc.) as your user. Do not enable host execution for repositories you do not trust.
 
 ## How We Audit
 

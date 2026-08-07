@@ -1329,6 +1329,195 @@ test_trust_in_local_yaml() {
     cleanup_sandbox
 }
 
+test_phase0_execution_and_autopilot_gates() {
+    log_header "35b. Phase 0 unsafe-execution and autopilot gates"
+
+    local gate_output gate_status=0
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+    gate_output=$(require_unsafe_host_execution "test mutation" 2>&1) || gate_status=$?
+    assert_exit_code "unsafe host execution defaults closed" "1" "$gate_status"
+    assert_contains "closed gate points to analysis-only" "$gate_output" "kyzn analyze"
+    assert_contains "closed gate names explicit override" "$gate_output" "--allow-unsafe-host-execution"
+
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+    gate_status=0
+    gate_output=$(require_unsafe_host_execution "test mutation" 2>&1) || gate_status=$?
+    assert_exit_code "explicit unsafe host execution opt-in passes" "0" "$gate_status"
+    assert_contains "unsafe opt-in gives isolation warning" "$gate_output" "no container/VM isolation"
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+
+    local inherited_output inherited_status=0
+    inherited_output=$(_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true /bin/bash --noprofile --norc -c '
+        source "$1"
+        require_unsafe_host_execution "inherited environment test"
+    ' _ "$KYZN_ROOT/lib/core.sh" 2>&1) || inherited_status=$?
+    assert_exit_code "inherited environment cannot authorize host execution" "1" "$inherited_status"
+    assert_contains "inherited authorization still names explicit CLI flag" "$inherited_output" "--allow-unsafe-host-execution"
+
+    source "$KYZN_ROOT/lib/measure.sh"
+    local measurement_tmp measurement_script measurement_results measurement_marker
+    measurement_tmp=$(mktemp -d)
+    measurement_script="$measurement_tmp/dynamic.sh"
+    measurement_results="$measurement_tmp/results.json"
+    measurement_marker="$measurement_tmp/ran"
+    cat > "$measurement_script" <<'DYNAMIC_MEASURER'
+#!/usr/bin/env bash
+printf 'ran\n' > "$KYZN_TEST_MARKER"
+printf '[]\n'
+DYNAMIC_MEASURER
+    chmod +x "$measurement_script"
+    printf '[]\n' > "$measurement_results"
+    export KYZN_TEST_MARKER="$measurement_marker"
+
+    local measurement_output measurement_status=0
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+    measurement_output=$(run_measurer "$measurement_script" "$measurement_results" "dynamic" 2>&1) || measurement_status=$?
+    assert_exit_code "dynamic measurer skip is non-fatal" "0" "$measurement_status"
+    assert_contains "dynamic measurer explains explicit flag" "$measurement_output" "--allow-unsafe-host-execution"
+    if [[ ! -e "$measurement_marker" ]]; then
+        pass "dynamic measurer cannot launch without explicit flag"
+    else
+        fail "dynamic measurer cannot launch without explicit flag" "side-effect marker was created"
+    fi
+
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+    measurement_status=0
+    measurement_output=$(run_measurer "$measurement_script" "$measurement_results" "dynamic" 2>&1) || measurement_status=$?
+    assert_exit_code "explicit flag allows dynamic measurer" "0" "$measurement_status"
+    assert_contains "dynamic measurer opt-in warns about missing isolation" "$measurement_output" "no container/VM isolation"
+    assert_file_exists "explicit flag reaches dynamic measurer side effect" "$measurement_marker"
+    unset KYZN_TEST_MARKER
+    rm -rf "$measurement_tmp"
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+
+    create_sandbox node
+    local gate_tmp="$SANDBOX/gate-test" gate_bin="$SANDBOX/gate-test/bin"
+    mkdir -p "$gate_bin" "$gate_tmp/home/.kyzn"
+    date +%s > "$gate_tmp/home/.kyzn/last-update-check"
+    cat > "$gate_bin/claude" <<'FAKE_CLAUDE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KYZN_TEST_MARKER"
+exit 0
+FAKE_CLAUDE
+    chmod +x "$gate_bin/claude"
+    export KYZN_TEST_MARKER="$gate_tmp/claude-invocations"
+
+    local cli_output cli_status=0
+    cli_output=$(HOME="$gate_tmp/home" PATH="$gate_bin:$PATH" "$BASH" "$KYZN_ROOT/kyzn" quick --auto 2>&1) || cli_status=$?
+    assert_exit_code "quick CLI defaults closed" "1" "$cli_status"
+    assert_contains "quick CLI names explicit override" "$cli_output" "--allow-unsafe-host-execution"
+    if [[ ! -e "$KYZN_TEST_MARKER" ]]; then
+        pass "quick CLI cannot invoke Claude without explicit flag"
+    else
+        fail "quick CLI cannot invoke Claude without explicit flag" "Claude marker was created"
+    fi
+
+    cli_status=0
+    cli_output=$(HOME="$gate_tmp/home" PATH="$gate_bin:$PATH" "$BASH" "$KYZN_ROOT/kyzn" fix --auto 2>&1) || cli_status=$?
+    assert_exit_code "fix CLI defaults closed" "1" "$cli_status"
+    assert_contains "fix CLI names explicit override" "$cli_output" "--allow-unsafe-host-execution"
+    if [[ ! -e "$KYZN_TEST_MARKER" ]]; then
+        pass "fix CLI cannot invoke Claude without explicit flag"
+    else
+        fail "fix CLI cannot invoke Claude without explicit flag" "Claude marker was created"
+    fi
+
+    cat > "$gate_bin/npm" <<'FAKE_NPM'
+#!/usr/bin/env bash
+printf 'npm %s\n' "$*" >> "$KYZN_TEST_MARKER"
+printf '{}\n'
+FAKE_NPM
+    cat > "$gate_bin/npx" <<'FAKE_NPX'
+#!/usr/bin/env bash
+printf 'npx %s\n' "$*" >> "$KYZN_TEST_MARKER"
+exit 1
+FAKE_NPX
+    chmod +x "$gate_bin/npm" "$gate_bin/npx"
+    rm -f "$KYZN_TEST_MARKER"
+
+    cli_status=0
+    cli_output=$(HOME="$gate_tmp/home" PATH="$gate_bin:$PATH" "$BASH" "$KYZN_ROOT/kyzn" measure 2>&1) || cli_status=$?
+    assert_exit_code "measure CLI keeps static path available by default" "0" "$cli_status"
+    assert_contains "measure CLI reports skipped dynamic tools" "$cli_output" "Dynamic measurements skipped"
+    if [[ ! -e "$KYZN_TEST_MARKER" ]]; then
+        pass "measure CLI cannot launch package tools without explicit flag"
+    else
+        fail "measure CLI cannot launch package tools without explicit flag" "package-tool marker was created"
+    fi
+
+    cli_status=0
+    cli_output=$(HOME="$gate_tmp/home" PATH="$gate_bin:$PATH" "$BASH" "$KYZN_ROOT/kyzn" measure --allow-unsafe-host-execution 2>&1) || cli_status=$?
+    assert_exit_code "measure CLI explicit flag allows dynamic tools" "0" "$cli_status"
+    assert_contains "measure CLI explicit flag warns about host execution" "$cli_output" "no container/VM isolation"
+    assert_file_exists "measure CLI explicit flag reaches package tools" "$KYZN_TEST_MARKER"
+    unset KYZN_TEST_MARKER
+    cleanup_sandbox
+
+    source "$KYZN_ROOT/lib/schedule.sh"
+    local schedule_tmp schedule_marker schedule_output schedule_status=0
+    schedule_tmp=$(mktemp -d)
+    schedule_marker="$schedule_tmp/crontab-invoked"
+    crontab() { printf 'invoked\n' > "$schedule_marker"; }
+    schedule_output=$(cmd_schedule daily 2>&1) || schedule_status=$?
+    assert_exit_code "daily schedule creation is disabled" "1" "$schedule_status"
+    assert_contains "schedule failure explains isolation requirement" "$schedule_output" "isolated execution"
+    if [[ ! -e "$schedule_marker" ]]; then
+        pass "disabled schedule creation never invokes crontab"
+    else
+        fail "disabled schedule creation never invokes crontab" "crontab marker was created"
+    fi
+    unset -f crontab
+    rm -rf "$schedule_tmp"
+
+    source "$KYZN_ROOT/lib/report.sh"
+    local autopilot_output
+    autopilot_output=$(maybe_request_automerge "autopilot" "https://example.invalid/pr" 2>&1)
+    assert_contains "legacy autopilot is visibly disabled" "$autopilot_output" "autopilot mode is disabled"
+    assert_contains "legacy autopilot requires manual review" "$autopilot_output" "manual review"
+
+    local report_src execute_src analyze_src interview_src schedule_src measure_src kyzn_src
+    report_src=$(cat "$KYZN_ROOT/lib/report.sh")
+    execute_src=$(cat "$KYZN_ROOT/lib/execute.sh")
+    analyze_src=$(cat "$KYZN_ROOT/lib/analyze.sh")
+    interview_src=$(cat "$KYZN_ROOT/lib/interview.sh")
+    schedule_src=$(cat "$KYZN_ROOT/lib/schedule.sh")
+    measure_src=$(cat "$KYZN_ROOT/lib/measure.sh")
+    kyzn_src=$(cat "$KYZN_ROOT/kyzn")
+
+    local executable_sources="" source_file merge_command automerge_flags
+    for source_file in "$KYZN_ROOT/kyzn" "$KYZN_ROOT/install.sh" "$KYZN_ROOT"/lib/*.sh "$KYZN_ROOT"/measurers/*.sh "$KYZN_ROOT/tests/selftest.sh"; do
+        executable_sources+=$(cat "$source_file")
+    done
+    merge_command='gh pr'' merge'
+    automerge_flags='--auto ''--squash'
+    assert_not_contains "all executable sources avoid GitHub auto-merge" "$executable_sources" "$merge_command"
+    assert_not_contains "all executable sources avoid auto-merge flags" "$executable_sources" "$automerge_flags"
+    assert_not_contains "init no longer offers autopilot" "$interview_src" "Autopilot — auto-merge"
+    assert_contains "quick parser exposes unsafe host flag" "$execute_src" "--allow-unsafe-host-execution"
+    assert_contains "quick requires unsafe host gate" "$execute_src" 'require_unsafe_host_execution "quick/improve"'
+    assert_contains "analyze fix requires unsafe host gate" "$analyze_src" 'require_unsafe_host_execution "analyze --fix"'
+    assert_contains "fix phase independently requires gate" "$analyze_src" 'require_unsafe_host_execution "fix phase"'
+    assert_contains "dynamic measurement gate is at launch boundary" "$measure_src" 'require_unsafe_host_execution "dynamic project measurement"'
+    assert_contains "static generic measurement remains available" "$measure_src" '"static"'
+    assert_contains "measure runtime recommends explicit fix opt-in" "$measure_src" "kyzn fix --allow-unsafe-host-execution"
+    assert_contains "measure runtime explains missing isolation" "$measure_src" "without container/VM isolation"
+    assert_contains "analyze runtime recommends explicit fix opt-in" "$analyze_src" "kyzn fix --allow-unsafe-host-execution"
+    assert_contains "analyze runtime explains host risk" "$analyze_src" "project commands and AI changes as your user"
+    assert_contains "init runtime describes static measure boundary" "$interview_src" "static measurements (no project commands)"
+    assert_contains "init runtime recommends explicit fix opt-in" "$interview_src" "kyzn fix --allow-unsafe-host-execution"
+    assert_contains "scheduled mutation creation is disabled" "$schedule_src" "disabled until KyZN provides isolated execution"
+    assert_not_contains "schedule creation cannot persist an opt-in" "$schedule_src" "improve --auto --allow-unsafe-host-execution"
+    assert_contains "doctor install exposes unsafe host flag" "$kyzn_src" "--allow-unsafe-host-execution"
+    assert_contains "doctor install requires unsafe host gate" "$kyzn_src" 'require_unsafe_host_execution "doctor dependency installation"'
+    assert_contains "doctor uses non-agent auth status probe" "$kyzn_src" "claude auth status --json"
+    assert_not_contains "doctor never starts a model session for auth" "$kyzn_src" 'claude -p "hi"'
+}
+
 test_per_category_floor() {
     log_header "36. Per-category score floor logic"
 
@@ -5202,6 +5391,7 @@ main() {
     test_portable_timeout_fallback
     test_tightened_allowlist
     test_trust_in_local_yaml
+    test_phase0_execution_and_autopilot_gates
     test_per_category_floor
     test_analyze_prompt_assembly
     test_consensus_prompt

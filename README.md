@@ -51,7 +51,7 @@ Improving a codebase with Claude is powerful — but doing it manually means you
 **KyZN replaces all of that with one command.** It runs real tools, scores your repo, dispatches 4 specialist agents to find issues across security, correctness, performance, and architecture — then fixes them in severity batches with build verification after each one. If something breaks, it auto-retries. If the health score drops, it aborts. When it's done, you get a PR with before/after scores.
 
 ```
-kyzn fix   →  profile repo  →  4 Opus specialists  →  consensus  →  Sonnet fixes  →  verify  →  PR
+kyzn fix --allow-unsafe-host-execution  →  profile repo  →  4 Opus specialists  →  consensus  →  Sonnet fixes  →  verify  →  PR
 ```
 
 Supports **Node.js**, **Python**, **Rust**, **Go**, **C# / .NET**, and **Java / JVM** out of the box. Works on any project type for generic analysis.
@@ -86,7 +86,7 @@ $ kyzn measure
   performance     ████████████████████ 100%
   documentation   ████████████░░░░░░░░  60%
 
-$ kyzn fix
+$ kyzn fix --allow-unsafe-host-execution
 
   → Profiler: scanning repo conventions...
   → 4 specialists dispatched (security | correctness | performance | architecture)
@@ -110,8 +110,8 @@ One command. Zero config. Real bugs fixed, verified, and shipped.
 | `git` | Yes | Branch management |
 | `gh` | Yes | PR creation ([GitHub CLI](https://cli.github.com)) |
 | `claude` | Yes | AI analysis ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)) |
-| `jq` | Yes | JSON processing (auto-installed with checksum verification) |
-| `yq` | Yes | YAML config (auto-installed with checksum verification) |
+| `jq` | Yes | JSON processing (installer may use the system package manager) |
+| `yq` | Yes | YAML config (downloaded pinned binaries are checksum-verified when a published checksum is available) |
 
 > **macOS:** Requires Bash 4.3+ (`brew install bash`). The system `/bin/bash` is v3.2 and will not work.
 
@@ -132,8 +132,8 @@ ln -sf ~/.kyzn-cli/kyzn ~/.local/bin/kyzn
 ```bash
 kyzn doctor     # Check prerequisites
 kyzn init       # Interactive setup → .kyzn/config.yaml
-kyzn measure    # See your health score
-kyzn fix        # Deep analysis + auto-fix → PR
+kyzn measure    # Static measurements (no project commands)
+kyzn fix --allow-unsafe-host-execution  # Deep analysis + auto-fix → PR
 ```
 
 ---
@@ -143,12 +143,12 @@ kyzn fix        # Deep analysis + auto-fix → PR
 ### `kyzn fix` — The main command
 
 ```bash
-kyzn fix                        # Full pipeline: profile → analyze → fix → verify → PR
-kyzn fix --auto                 # Non-interactive (cron-safe)
-kyzn fix --profile hybrid       # Opus for security+correctness, Sonnet for perf+arch
-kyzn fix --min-severity HIGH    # Only fix HIGH+ findings
-kyzn fix --fix-budget 10.00     # Budget for fix phase
-kyzn fix --allow-dirty          # Expert mode: run with local uncommitted changes
+kyzn fix --allow-unsafe-host-execution                         # Full pipeline: profile → analyze → fix → verify → PR
+kyzn fix --auto --allow-unsafe-host-execution                  # Non-interactive; manual PR review remains required
+kyzn fix --profile hybrid --allow-unsafe-host-execution        # Opus for security+correctness, Sonnet for perf+arch
+kyzn fix --min-severity HIGH --allow-unsafe-host-execution     # Only fix HIGH+ findings
+kyzn fix --fix-budget 10.00 --allow-unsafe-host-execution      # Budget for fix phase
+kyzn fix --allow-dirty --allow-unsafe-host-execution           # Expert mode: run with local uncommitted changes
 ```
 
 Profiler scans conventions, 4 Opus specialists find issues in parallel, consensus deduplicates, Sonnet fixes in severity batches (CRITICAL → HIGH → MEDIUM → LOW) with build/test verification after each batch. If a fix breaks the build, reflexion retry gives Sonnet a second chance with the error output. Opens a PR when done.
@@ -165,25 +165,26 @@ kyzn analyze --export report.md # Export to custom path
 ### `kyzn quick` — Lightweight single-pass
 
 ```bash
-kyzn quick                      # Single Sonnet pass, fast
-kyzn quick --auto               # Non-interactive
-kyzn quick --mode deep          # Real improvements only
-kyzn quick --mode clean         # Dead code + naming cleanup
-kyzn quick --mode full          # Everything
-kyzn quick --allow-dirty        # Expert mode: allow uncommitted local changes
+kyzn quick --allow-unsafe-host-execution                       # Single Sonnet pass, fast
+kyzn quick --auto --allow-unsafe-host-execution                # Non-interactive; manual PR review remains required
+kyzn quick --mode deep --allow-unsafe-host-execution           # Real improvements only
+kyzn quick --mode clean --allow-unsafe-host-execution          # Dead code + naming cleanup
+kyzn quick --mode full --allow-unsafe-host-execution           # Everything
+kyzn quick --allow-dirty --allow-unsafe-host-execution         # Expert mode: allow uncommitted local changes
 ```
 
 ### Other commands
 
 ```bash
-kyzn measure                    # Health score only
+kyzn measure                    # Static measurements (no project commands)
+kyzn measure --allow-unsafe-host-execution  # Include package/build-tool measurements
 kyzn doctor                     # Check prerequisites
-kyzn doctor --install           # Opt in to project dependency install for verification
+kyzn doctor --install --allow-unsafe-host-execution  # Opt in to dependency installation on this host
 kyzn history                    # Show all runs
 kyzn diff <run-id>              # Show what changed
 kyzn approve <run-id>           # Sign off
 kyzn reject <run-id> -r "why"   # Reject with feedback
-kyzn schedule daily             # Cron at 3am daily
+kyzn schedule daily             # Disabled until KyZN provides isolated execution
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
@@ -196,7 +197,7 @@ kyzn selftest --full            # Run 660 tests (incl. stress)
 ## How It Works
 
 ```
-kyzn fix
+kyzn fix --allow-unsafe-host-execution
   │
   ├─ Detect project type (package.json / Cargo.toml / go.mod / etc.)
   ├─ Measure health score with real tools (eslint, ruff, clippy, go vet)
@@ -233,6 +234,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 |-------|-----------|
 | **Branch isolation** | All changes on `kyzn/` branches, never touches `main` |
 | **Clean-worktree gate** | Mutating runs refuse uncommitted changes unless `--allow-dirty` is explicit |
+| **Host-execution gate** | Mutating runs fail closed unless each run explicitly passes `--allow-unsafe-host-execution` |
 | **Hook protection** | All git operations disable hooks via `core.hooksPath=/dev/null` |
 | **Tool allowlist** | Per-language restrictions tightened to specific subcommands (glob-safe where possible) |
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
@@ -242,12 +244,12 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
-| **Trust isolation** | Autopilot stored in gitignored `local.yaml` (not poisonable via commits) |
-| **Supply chain** | `jq` and `yq` verified with SHA256 checksums on install and in CI |
+| **Manual merge** | Autopilot is disabled; every generated PR waits for human review |
+| **Supply chain** | CI pins and checksum-verifies its downloaded `yq` binary; installer downloads are verified when a published checksum is available |
 | **Prompt hardening** | Project names sanitized, raw data fenced to prevent prompt injection |
 | **Concurrency lock** | Atomic `mkdir`-based lock with stale PID detection prevents concurrent runs |
 
-> **Important:** KyZN executes your project's build and test commands. It does **not** install Node/Python dependencies during verification by default. To opt in, run `kyzn doctor --install`, set `verification.install_deps: true` in `.kyzn/config.yaml`, or export `KYZN_VERIFY_INSTALL_DEPS=true`. Note: `doctor --install` is the only `kyzn doctor` invocation that writes to disk (creates `node_modules` / `.venv`); the default `kyzn doctor` remains read-only. Do not run on repos you don't trust. See [SECURITY.md](SECURITY.md) for the full threat model.
+> **Important:** KyZN does not yet provide container or VM isolation. `kyzn analyze` and `kyzn measure` default to static generic measurements; language-specific package/build tools run only with `--allow-unsafe-host-execution`. Mutating commands fail closed unless that run explicitly passes the same flag. This acknowledgement means repository-controlled builds/tests and AI-generated changes run with your user permissions. Dependency installation additionally requires `kyzn doctor --install --allow-unsafe-host-execution`. Recurring mutating schedule creation is disabled until isolated execution exists. Do not enable host execution for repositories you do not trust. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ---
 
@@ -256,7 +258,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 ```
 kyzn/
 ├── kyzn                    # Entry point + subcommand routing
-├── install.sh              # Installer (checksum-verified deps)
+├── install.sh              # Installer (package-manager or verified download)
 ├── lib/                    # 13 core modules
 │   ├── core.sh             # Logging, config, constants
 │   ├── detect.sh           # Project type detection
@@ -270,7 +272,7 @@ kyzn/
 │   ├── interview.sh        # Interactive setup
 │   ├── history.sh          # Run history + dashboard
 │   ├── approve.sh          # Approve/reject workflow
-│   └── schedule.sh         # Cron scheduling
+│   └── schedule.sh         # Legacy schedule removal; creation disabled
 ├── measurers/              # Per-language health measurers
 │   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh, csharp.sh, java.sh
 ├── templates/              # System prompts + analysis templates

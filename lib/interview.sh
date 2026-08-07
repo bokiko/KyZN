@@ -58,28 +58,10 @@ run_interview() {
         3) on_fail="draft-pr" ;;
     esac
 
-    # Step 5: Trust level
-    local trust
-    trust=$(prompt_choice "Trust level for auto-merging?" \
-        "Guardian — always create PR, always wait for approval (recommended)" \
-        "Autopilot — auto-merge if build passes + tests pass + diff < threshold")
-
-    case "$trust" in
-        1) trust="guardian" ;;
-        2) trust="autopilot" ;;
-    esac
-
-    if [[ "$trust" == "autopilot" ]]; then
-        echo ""
-        echo -e "  ${YELLOW}${BOLD}WARNING:${RESET} ${YELLOW}Autopilot will auto-merge AI-generated PRs without human review.${RESET}"
-        echo -e "  ${YELLOW}Only safe if you have comprehensive CI (tests, lint, type checking).${RESET}"
-        echo -e "  ${YELLOW}Projects without CI will have PRs merge immediately on creation.${RESET}"
-        echo ""
-        if ! prompt_yn "Are you sure you want autopilot mode?"; then
-            trust="guardian"
-            log_info "Switched to guardian mode."
-        fi
-    fi
+    # Step 5: Guardian is enforced until isolated verification and independent
+    # remote merge gates are available. Autopilot is intentionally unavailable.
+    local trust="guardian"
+    log_info "Guardian mode enforced — automatic merge is disabled."
 
     # Step 6: Save config
     save_interview_config "$mode" "$budget" "$on_fail" "$trust" "${priorities[@]}"
@@ -286,7 +268,7 @@ EOF
     # Write trust to gitignored local config (prevents config poisoning)
     cat > "$KYZN_LOCAL_CONFIG" <<EOF
 # KyZN local config — NOT committed (gitignored)
-# Trust level controls auto-merge behavior
+# Guardian is enforced while automatic merge is disabled by the safety gate.
 trust: "$trust"
 EOF
 
@@ -329,8 +311,9 @@ cmd_init() {
     echo ""
     log_ok "KyZN is ready! Next steps:"
     echo -e "  ${CYAN}kyzn doctor${RESET}    — verify prerequisites"
-    echo -e "  ${CYAN}kyzn measure${RESET}   — see your project health score"
-    echo -e "  ${CYAN}kyzn fix${RESET}       — deep analysis + auto-fix → PR"
+    echo -e "  ${CYAN}kyzn measure${RESET}   — static measurements (no project commands)"
+    echo -e "  ${CYAN}kyzn fix --allow-unsafe-host-execution${RESET}"
+    echo -e "                     — auto-fix on this host without container/VM isolation"
     echo -e "  ${CYAN}kyzn analyze${RESET}   — analysis report only (no changes)"
 }
 

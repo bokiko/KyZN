@@ -23,14 +23,15 @@ shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolc
 
 # Usage
 kyzn doctor                # Check prerequisites
-kyzn doctor --install      # Opt in to project dependency install for verification
+kyzn doctor --install --allow-unsafe-host-execution  # Opt in to dependency install on this host
 kyzn init                  # Interactive setup → .kyzn/config.yaml
-kyzn measure               # Health score only
-kyzn fix                   # Deep analysis + auto-fix → PR (recommended)
-kyzn fix --auto            # Non-interactive (cron-safe)
+kyzn measure               # Static measurements (no project commands)
+kyzn measure --allow-unsafe-host-execution  # Include package/build-tool measurements
+kyzn fix --allow-unsafe-host-execution       # Deep analysis + auto-fix → PR (recommended)
+kyzn fix --auto --allow-unsafe-host-execution  # Non-interactive; manual PR review required
 kyzn analyze               # 4 Opus specialists + consensus report (no changes)
-kyzn quick                 # Quick single-pass improvement
-kyzn quick --auto          # Non-interactive (cron-safe)
+kyzn quick --allow-unsafe-host-execution      # Quick single-pass improvement
+kyzn quick --auto --allow-unsafe-host-execution  # Non-interactive; manual PR review required
 ```
 
 ## Architecture
@@ -75,10 +76,12 @@ Profiler agent (Sonnet) reads repo files and caches conventions to `.kyzn/repo-p
 
 ### Config
 
-Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.yaml` (gitignored, trust level — `guardian` vs `autopilot`). Config mutation uses `strenv()` in yq to prevent injection.
+Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.yaml` (gitignored local policy; guardian is enforced and legacy autopilot values are ignored). Config mutation uses `strenv()` in yq to prevent injection.
 
 ## Safety model
 
+- Mutating workflows fail closed unless the operator passes `--allow-unsafe-host-execution` for that run; this is an acknowledgement, not isolation
+- Autopilot is disabled and every generated PR requires manual review
 - `safe_git` disables git hooks (`core.hooksPath=/dev/null`) to prevent RCE from malicious repos
 - `KYZN_SETTINGS_JSON` blocks file access to sensitive paths (`~/.ssh`, `~/.aws`, `.env`, `~/.claude`, etc.)
 - Tool allowlist tightened to specific subcommands (e.g. `Bash(npm test*)` — not open shell)

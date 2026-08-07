@@ -331,6 +331,28 @@ has_cmd() {
     command -v "$1" &>/dev/null
 }
 
+# Phase 0 safety gate: KyZN does not yet provide an isolated runner. Mutating
+# workflows must receive an explicit per-run acknowledgement before executing
+# repository-controlled build/test code or AI-generated changes on the host.
+_KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
+_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+require_unsafe_host_execution() {
+    local context="${1:-mutating workflow}"
+
+    if [[ "$_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED" != "true" ]]; then
+        log_error "Unsafe host execution is disabled; $context was not started."
+        log_info "Analysis-only remains available: kyzn analyze"
+        log_info "To accept this per-run risk, pass --allow-unsafe-host-execution."
+        return 1
+    fi
+
+    if [[ "$_KYZN_UNSAFE_HOST_EXECUTION_WARNED" != "true" ]]; then
+        log_warn "UNSAFE HOST EXECUTION ENABLED for $context."
+        log_warn "KyZN has no container/VM isolation yet. Repository-controlled commands and AI-generated changes run with your user permissions."
+        _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
+    fi
+}
+
 # Portable timeout wrapper (macOS lacks GNU timeout). Keep input semantics the
 # same when GNU timeout is present so configuration behaves identically across
 # platforms; the system binary remains the controller for valid durations.

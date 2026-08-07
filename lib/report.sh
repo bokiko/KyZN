@@ -111,12 +111,18 @@ Cost: \$${KYZN_CLAUDE_COST:-unknown}" 2>/dev/null || true
 
     log_ok "PR created: $pr_url"
 
-    # Auto-merge if autopilot mode
+    maybe_request_automerge "$trust" "$pr_url"
+}
+
+# Phase 0: automatic merge is disabled until KyZN has isolated verification
+# and can prove protected branches, independent required CI, and human review.
+# Legacy local.yaml values are handled safely rather than silently auto-merging.
+maybe_request_automerge() {
+    local trust="${1:-guardian}"
+
     if [[ "$trust" == "autopilot" ]]; then
-        log_step "Autopilot mode: auto-merging..."
-        gh pr merge --auto --squash "$pr_url" 2>/dev/null || {
-            log_warn "Auto-merge failed. Merge manually."
-        }
+        log_warn "Saved autopilot mode is disabled by the Phase 0 safety gate."
+        log_info "PR created for manual review; KyZN did not request auto-merge."
     fi
 }
 
