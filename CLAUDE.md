@@ -122,7 +122,9 @@ What a red result *does* differs by workflow — do not state it as one rule:
 not run, the run is ineligible for commit/push/PR regardless of what else happened. Callers use
 `verify_not_executed <rc>`; `KYZN_VERIFY_STATUS` and `KYZN_VERIFY_UNAVAILABLE_REASON` carry
 the detail. An unverifiable run that already modified the worktree is preserved in place —
-nothing is committed, pushed, PR'd, or deleted.
+no further changes are committed, and nothing is pushed, PR'd, or deleted. For
+`analyze --fix`, severity batches that were already verified and committed before the abort
+remain on the branch; preserving them is deliberate, and the branch is left for inspection.
 
 ## Test framework
 
