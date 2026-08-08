@@ -57,7 +57,9 @@ verified and committed on its own, so the outcome is per batch rather than per r
   were skipped.
 - A red baseline is still worked on in both workflows: Claude receives the baseline failures
   and an explicit requirement that final verification must be green, plus **one** repair
-  attempt. Only the verified result is kept.
+  attempt. Only a green final verification is ever certified as verified — which is not the
+  same as being discarded: on the quick/improve path `on_build_fail: draft-pr` still commits,
+  pushes and opens a clearly-marked draft PR of a red result.
 - Exit `0` continues to mean *either* every applicable required check passed *or* no required
   check applied. **It does not by itself prove that checks executed** — a project with no
   applicable checks still returns `0`. Use exit `2` to detect "could not verify".

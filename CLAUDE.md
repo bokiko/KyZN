@@ -107,12 +107,15 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 
 Authorization reads the **final** code and nothing else — there is no comparison of failure
 output, and no "these were already failing" exemption. Baseline rc 1 still earns an
-improvement attempt and one repair attempt; only a verified rc 0 result is ever kept.
+improvement attempt and one repair attempt; only a verified rc 0 result is ever certified as
+verified. "Certified" is not the same as "kept" — see the `draft-pr` case below.
 
 What a red result *does* differs by workflow — do not state it as one rule:
 
 - **`cmd_improve` (quick):** final rc 1 → `handle_build_failure "$on_fail"` (report / discard /
-  draft-pr), and the run returns non-zero.
+  draft-pr), and the run returns non-zero. `report` and `discard` delete the branch, but
+  **`draft-pr` keeps the red result** — it commits, pushes and opens a clearly-marked draft PR
+  (`lib/execute.sh:976-993`). The result is retained and surfaced, never certified as verified.
 - **`run_fix_phase` (analyze --fix):** the unit is the severity batch. A red batch is reverted
   with `git reset --hard "$pre_batch_head"` and the loop **continues**; `handle_build_failure`
   is never called from `lib/analyze.sh` and `on_build_fail` is not consulted. A run whose
@@ -128,4 +131,4 @@ remain on the branch; preserving them is deliberate, and the branch is left for 
 
 ## Test framework
 
-`tests/selftest.sh` is a self-contained 4110-line Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.
+`tests/selftest.sh` is a self-contained Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos.
