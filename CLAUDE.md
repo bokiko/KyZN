@@ -14,8 +14,8 @@ Bash 4.3+, `git`, `gh` (GitHub CLI), `claude` (Anthropic CLI), `jq`, `yq`. Langu
 
 ```bash
 # Run tests
-kyzn selftest              # 488 quick tests
-kyzn selftest --full       # 499 tests including stress tests
+kyzn selftest              # 649 quick tests
+kyzn selftest --full       # 660 tests including stress tests
 bash tests/selftest.sh     # Direct test runner
 
 # Lint (matches CI)
@@ -46,8 +46,10 @@ Detect project type → Baseline measure → Create kyzn/ branch
 → Assemble prompt (templates/ + {{PLACEHOLDERS}})
 → execute_claude (allowlist + budget + timeout)
 → Diff size check → verify_build
-  ├─ fail (was clean baseline) → reflexion retry at ½ budget with error output
-  └─ still fail → handle_build_failure (report/discard/draft-pr)
+  ├─ rc 1 (any baseline) → ONE reflexion retry at ½ budget with error output
+  │    ├─ green → re-check diff size → continue
+  │    └─ still rc 1 → handle_build_failure (report/discard/draft-pr)
+  └─ rc 2 → unconditional abort, nothing shipped
 → Re-measure → Score regression gate → Per-category floor gate
 → git commit → git push → gh pr create
 ```
@@ -102,6 +104,11 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 | `0` | passed/no-op — every applicable required check passed, or no required check applied |
 | `1` | failed — one or more applicable checks ran and failed |
 | `2` | not executed — an applicable required check could not run |
+
+Authorization reads the **final** code and nothing else — there is no comparison of failure
+output, and no "these were already failing" exemption. Baseline rc 1 still earns an
+improvement attempt and one repair attempt; only a final rc 0 enters the success path, and a
+final rc 1 always routes to the configured failure strategy.
 
 "Not executed" outranks "failed" for authorization: if an applicable required check could
 not run, the run is ineligible for commit/push/PR regardless of what else happened. Callers use

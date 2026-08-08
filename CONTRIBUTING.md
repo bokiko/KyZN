@@ -14,10 +14,10 @@ cd KyZN
 ## Running Tests
 
 ```bash
-# Quick tests (488 cases)
+# Quick tests (649 cases)
 bash tests/selftest.sh
 
-# Full suite with stress tests (499 cases)
+# Full suite with stress tests (660 cases)
 bash tests/selftest.sh --full
 ```
 

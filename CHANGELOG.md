@@ -2,7 +2,7 @@
 
 All notable changes to KyZN are documented here.
 
-## [1.3.0] — 2026-08-06
+## [1.3.0] — 2026-08-08
 
 ### Added — C# / .NET and Java / JVM support
 
@@ -16,6 +16,56 @@ All notable changes to KyZN are documented here.
   `mvn test`, and `gradle build -x test` + `gradle test` with `./gradlew` taking
   precedence over a system Gradle.
 - Convention templates for C# and Java.
+
+### Changed — only a green final verification ships (BREAKING for red-baseline projects)
+
+> **Compatibility break, read this first.** KyZN used to continue to commit, push and PR when
+> a run ended red as long as every failing test had already been failing at baseline.
+> **That no longer happens.** A repository whose tests are permanently red will stop receiving
+> normal "verified" pull requests. Its runs route to the configured failure strategy instead —
+> `report`, `discard`, or a **clearly marked draft PR** — so the work is still surfaced, just
+> never certified as verified. If you rely on KyZN opening PRs against a persistently failing
+> suite, set `on_build_fail: draft-pr` to keep receiving them, clearly labelled.
+
+Authorization now depends **only on the final `verify_build` exit code**:
+
+| Final code | Outcome |
+|------------|---------|
+| `0` | normal success path — commit, push, PR |
+| `1` | **always** the configured failure strategy, never success |
+| `2` | unconditional abort — nothing is committed, pushed or opened |
+
+- A red baseline is still worked on: Claude receives the baseline failures and an explicit
+  requirement that final verification must be green, plus **one** repair attempt. Only the
+  final result decides whether anything ships.
+- Exit `0` continues to mean *either* every applicable required check passed *or* no required
+  check applied. **It does not by itself prove that checks executed** — a project with no
+  applicable checks still returns `0`. Use exit `2` to detect "could not verify".
+
+Why the previous behaviour was removed rather than tightened: deciding whether failures were
+"unchanged" required inferring *why* a run was red from runner output, which some toolchains
+make undecidable. `go build ./...` never compiles `_test.go`, so broken test code leaves the
+build green while `go test` reprints the baseline `--- FAIL:` identifiers beside
+`[build failed]`; jest emits the same `FAIL <file>` line whether a test failed or the suite
+never ran. In both cases the captured identifier set is byte-identical to the baseline, so no
+comparison can distinguish "nothing new broke" from "test code stopped compiling".
+
+The pre-existing-failure comparison and its failure-category machinery
+(`verify_may_continue_with_preexisting`, `verify_had_build_failure`, `verify_record_failure`,
+`KYZN_VERIFY_FAILED_CATEGORIES`) were removed. `capture_failing_tests` remains, used only for
+baseline diagnostics and prompt context — no authorization decision reads it.
+
+Alongside this, so the gate is actually reachable:
+
+- Both `kyzn quick` and `analyze --fix` now receive the baseline failures and the green
+  requirement, and each gets exactly one repair attempt after a red final verification.
+  Failures with no identifiable test name are supported explicitly.
+- Prompts permit only *minimal, scoped* repairs of existing verification failures. Deleting,
+  hiding, skipping or weakening tests remains forbidden, and coverage must be preserved or
+  strengthened.
+- The diff-size limit is enforced after a successful self-repair as well as before
+  verification, and newly added untracked binaries are now classified by Git rather than
+  `wc -l` (a binary previously counted as zero lines and slipped past the limit).
 
 ### Changed — verification is now tri-state (behavior change)
 
@@ -116,7 +166,7 @@ for anything calling `verify_build` directly.
 
 ### Testing
 
-- **488 tests passing** (quick) and **499** (full suite, with stress tests).
+- **649 tests passing** (quick) and **660** (full suite, with stress tests).
 
 ## [1.2.1] — 2026-05-03
 
