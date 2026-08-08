@@ -68,8 +68,15 @@ count_diff_size() {
         grep -vE "$_KYZN_GENERATED_DIRS" | \
         grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
 
-    # Also count new untracked files by real line count (excluding KyZN artifacts and generated dirs)
-    local _nf_list _nf_file _nf_lines
+    # Also count new untracked files (excluding KyZN artifacts and generated dirs).
+    #
+    # Git classifies each one, rather than `wc -l`: a binary has no lines, so it
+    # used to contribute nothing AND never register as binary, letting a new
+    # binary slip past the limit entirely. `--numstat` emits "-<TAB>-" for binary
+    # content — the same marker already counted for tracked changes — so no
+    # extension guessing or `file` output parsing is needed. `--no-index` exits
+    # non-zero whenever the two paths differ, which is always here.
+    local _nf_list _nf_file _nf_stat
     local new_files_stat=""
     _nf_list=$(git ls-files --others --exclude-standard 2>/dev/null \
         | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
@@ -78,9 +85,8 @@ count_diff_size() {
     [[ -n "$_nf_list" ]] && mapfile -t _nf_arr <<< "$_nf_list"
     for _nf_file in "${_nf_arr[@]}"; do
         [[ -z "$_nf_file" || ! -f "$_nf_file" ]] && continue
-        _nf_lines=$(wc -l < "$_nf_file" 2>/dev/null) || _nf_lines=0
-        _nf_lines="${_nf_lines// /}"
-        new_files_stat+="${_nf_lines}"$'\t'"0"$'\t'"${_nf_file}"$'\n'
+        _nf_stat=$(git diff --no-index --numstat -- /dev/null "$_nf_file" 2>/dev/null) || true
+        [[ -n "$_nf_stat" ]] && new_files_stat+="${_nf_stat}"$'\n'
     done
 
     local combined="${numstat}"$'\n'"${new_files_stat}"
@@ -95,6 +101,35 @@ count_diff_size() {
     printf -v "$_var_added" '%s' "$added"
     printf -v "$_var_deleted" '%s' "$deleted"
     printf -v "$_var_binary" '%s' "$binary"
+}
+
+# ---------------------------------------------------------------------------
+# Safety: one diff-size policy, applied at every point work can grow.
+#
+# Reports and returns; it performs NO branch cleanup, so both callers route an
+# over-limit result through the same existing abort path rather than growing a
+# second copy of the policy — or a second cleanup implementation.
+#
+# Usage: _kyzn_diff_within_limit <diff_limit>   → 0 within limit, 1 over
+# ---------------------------------------------------------------------------
+_kyzn_diff_within_limit() {
+    local diff_limit="$1"
+    local diff_lines=0 del_lines=0 binary_count=0
+    count_diff_size diff_lines del_lines binary_count
+    local total_diff=$(( diff_lines + del_lines ))
+
+    if (( binary_count > 0 )); then
+        log_warn "Claude added $binary_count binary file(s)"
+        total_diff=$(( total_diff + binary_count * 500 )) # penalize binaries
+    fi
+
+    if (( total_diff > diff_limit )); then
+        log_warn "Diff exceeds limit ($total_diff > $diff_limit lines). Aborting."
+        return 1
+    fi
+
+    log_info "Changes: +$diff_lines -$del_lines ($total_diff lines)"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -639,23 +674,11 @@ cmd_improve() {
     }
 
     # Step 5: Check diff size (tracked changes + new untracked files, excludes KyZN artifacts)
-    local diff_lines=0 del_lines=0 binary_count=0
-    count_diff_size diff_lines del_lines binary_count
-    local total_diff=$(( diff_lines + del_lines ))
-
-    if (( binary_count > 0 )); then
-        log_warn "Claude added $binary_count binary file(s)"
-        total_diff=$(( total_diff + binary_count * 500 )) # penalize binaries
-    fi
-
-    if (( total_diff > diff_limit )); then
-        log_warn "Diff exceeds limit ($total_diff > $diff_limit lines). Aborting."
+    if ! _kyzn_diff_within_limit "$diff_limit"; then
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         return 1
     fi
-
-    log_info "Changes: +$diff_lines -$del_lines ($total_diff lines)"
 
     # Step 6: Verify (with reflexion retry on failure)
     local verify_errors_file
@@ -754,6 +777,16 @@ ${retry_baseline_context}
             elif (( retry_rc == 0 )); then
                 log_ok "Self-repair succeeded -- build and tests pass after retry!"
                 rm -f "$verify_errors_file"
+
+                # Step 5 ran BEFORE verification, so it never saw the repair
+                # diff. Re-apply the same policy now — before anything is
+                # measured, committed, pushed or PR'd — using the same abort
+                # path Step 5 uses.
+                if ! _kyzn_diff_within_limit "$diff_limit"; then
+                    safe_checkout_back
+                    safe_git branch -D "$branch_name" 2>/dev/null || true
+                    return 1
+                fi
             else
                 log_error "Self-repair failed -- verification is still not green."
                 if ! $baseline_verify_ok; then

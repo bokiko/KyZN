@@ -4721,6 +4721,207 @@ SH
     PATH="$saved_path"
     unset HEAL_MARK BREAK_MARK QMODE PROMPT_DIR
 }
+# The diff-size limit must survive self-repair.
+#
+# The Step 5 gate runs BEFORE verification, so it never sees the repair diff. A
+# self-repair could therefore add an arbitrarily large change — or a binary —
+# and go straight to measurement, commit, push and PR. Widening the retry to red
+# baselines widened that hole, so the same policy now runs again after a
+# successful repair.
+#
+# Both callers share ONE checker. It reports and returns; the caller owns the
+# existing Step 5 abort path, so no new cleanup machinery is introduced.
+_dlimit_sandbox() { # _dlimit_sandbox <mode>
+    local mode="$1"
+    create_sandbox node
+    rm -f tsconfig.json
+    echo '{"name":"fx","scripts":{"build":"x","test":"x"}}' > package.json
+    mkdir -p src; echo 'console.log(1)' > src/index.js
+    git add -A && git commit -q -m scaffold
+    detect_project_type
+    _workflow_setup report
+
+    # A small limit keeps the fixtures readable. One binary alone (500-line
+    # penalty) exceeds it, which is the point.
+    #
+    # Written with yq, like every other config mutation in this project. NOT via
+    # config_set: that wraps the value in strenv() to block expression injection
+    # from untrusted input, which stores it as the STRING "50". The limit is a
+    # hardcoded literal here, and it must land as a number.
+    yq eval -i '.preferences.diff_limit = 50' "$KYZN_CONFIG"
+
+    # Prove the edit landed, and landed numeric. A silently failed edit would
+    # leave the default 10000 limit in place and let every over-limit scenario
+    # below "pass" for entirely the wrong reason.
+    if [[ "$(yq eval '.preferences.diff_limit' "$KYZN_CONFIG" 2>/dev/null)" == "50" ]] \
+        && grep -qE '^[[:space:]]*diff_limit: 50[[:space:]]*$' "$KYZN_CONFIG"; then
+        pass "dlimit fixture ($mode): config carries numeric diff_limit: 50"
+    else
+        fail "dlimit fixture ($mode): config carries numeric diff_limit: 50" \
+            "got '$(grep -E 'diff_limit' "$KYZN_CONFIG" 2>&1 | tr -d '\n')'"
+    fi
+
+    git add -A >/dev/null 2>&1 || true
+    git commit -q -m "tighten diff limit" >/dev/null 2>&1 || true
+
+    HEAL_MARK="$WORKFLOW_TMP/healed"; export HEAL_MARK
+    DMODE="$mode"; export DMODE
+    rm -f "$HEAL_MARK"
+
+    rm -f "$WORKFLOW_TMP/clean-bin/npm"
+    cat > "$WORKFLOW_TMP/clean-bin/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then exit 0; fi
+if [[ "${1:-}" == "test" ]]; then
+    # dlimit_initial starts green: Step 5 must block before verification.
+    [[ "${DMODE:-}" == "dlimit_initial" ]] && exit 0
+    [[ -f "$HEAL_MARK" ]] && exit 0
+    echo "FAIL src/a.test.js"
+    exit 1
+fi
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/npm"
+
+    rm -f "$WORKFLOW_TMP/clean-bin/claude"
+    cat > "$WORKFLOW_TMP/clean-bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo "CLAUDE-INVOKED" >> "$WORKFLOW_LOG"
+n=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
+
+# Builtins only: the sandboxed PATH has no seq/sed.
+_big_text() { local i; : > src/big.txt; for ((i=0;i<200;i++)); do printf 'line %d\n' "$i" >> src/big.txt; done; }
+_binary()   { printf '\x00\x01\x02\xff\xfe blob \x00 data' > src/blob.bin; }
+
+case "${DMODE:-}" in
+    dlimit_initial)
+        _big_text ;;
+    dlimit_retry_text)
+        if (( n == 1 )); then echo "// small" >> src/index.js
+        else touch "$HEAL_MARK"; _big_text; fi ;;
+    dlimit_retry_bin)
+        if (( n == 1 )); then echo "// small" >> src/index.js
+        else touch "$HEAL_MARK"; _binary; fi ;;
+    dlimit_retry_ok)
+        if (( n == 1 )); then echo "// small" >> src/index.js
+        else touch "$HEAL_MARK"; printf '# Test Project\n\nUsage documentation.\n' > README.md; fi ;;
+esac
+
+echo '{"total_cost_usd":0.01,"result":"mock change"}'
+exit 0
+SH
+    chmod +x "$WORKFLOW_TMP/clean-bin/claude"
+}
+
+test_diff_limit_survives_self_repair() {
+    log_header "84. the diff-size limit applies after self-repair too"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+
+    local saved_path="$PATH" rc out log
+
+    # --- 1. count_diff_size must classify a NEW UNTRACKED BINARY as binary --
+    # `wc -l` reports 0 lines for a binary, so it used to contribute nothing at
+    # all and never incremented binary_count.
+    create_sandbox node
+    # create_sandbox already committed the scaffold; tolerate "nothing to commit".
+    git add -A >/dev/null 2>&1 || true
+    git commit -q -m base >/dev/null 2>&1 || true
+    printf '\x00\x01\x02\xff\xfe blob \x00 data' > blob.bin
+    local a=0 d=0 b=0
+    count_diff_size a d b
+    assert_eq "count_diff_size: new untracked binary increments binary_count" "1" "$b"
+    assert_eq "count_diff_size: binary contributes no phantom added lines" "0" "$a"
+
+    # A new untracked TEXT file must still be counted by line, unchanged.
+    rm -f blob.bin
+    printf 'l1\nl2\nl3\n' > new.txt
+    a=0; d=0; b=0
+    count_diff_size a d b
+    assert_eq "count_diff_size: untracked text still counted by line" "3" "$a"
+    assert_eq "count_diff_size: text file is not misread as binary" "0" "$b"
+    cleanup_sandbox
+
+    # --- 2. Oversized on the FIRST attempt still blocks, exactly as before --
+    _dlimit_sandbox dlimit_initial
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/di.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/di.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "initial-oversize: reports the limit" "$out" "Diff exceeds limit"
+    assert_not_contains "initial-oversize: nothing committed, pushed or PR'd" "$log" "FORBIDDEN"
+    # The BASELINE measurement (Step 2) prints the same header, so presence
+    # proves nothing — the discriminator is whether Step 7 ran a SECOND one.
+    assert_eq "initial-oversize: never reached the Step 7 re-measure" "1" \
+        "$(grep -c 'analyzing project health' "$WORKFLOW_TMP/di.out" || true)"
+    assert_exit_code "initial-oversize: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 3 + 5 + 7 + 8. A repair that grows the TEXT diff past the limit ----
+    # Red baseline, so this also covers the retry path this PR widened.
+    _dlimit_sandbox dlimit_retry_text
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/dt.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/dt.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "repair-oversize/text: the repair itself verified green" \
+        "$out" "Self-repair succeeded"
+    assert_contains "repair-oversize/text: blocked by the diff limit" \
+        "$out" "Diff exceeds limit"
+    # Ordering proof: the gate runs after retry verification and before Step 7.
+    assert_eq "repair-oversize/text: gate ran BEFORE the Step 7 re-measure" "1" \
+        "$(grep -c 'analyzing project health' "$WORKFLOW_TMP/dt.out" || true)"
+    assert_not_contains "repair-oversize/text: nothing committed, pushed or PR'd" \
+        "$log" "FORBIDDEN"
+    assert_exit_code "repair-oversize/text: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 4 + 5. A repair that adds an untracked BINARY ---------------------
+    _dlimit_sandbox dlimit_retry_bin
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/db.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/db.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "repair-oversize/binary: the repair itself verified green" \
+        "$out" "Self-repair succeeded"
+    assert_contains "repair-oversize/binary: the binary was seen" \
+        "$out" "binary file(s)"
+    assert_contains "repair-oversize/binary: blocked by the weighted limit" \
+        "$out" "Diff exceeds limit"
+    assert_eq "repair-oversize/binary: gate ran BEFORE the Step 7 re-measure" "1" \
+        "$(grep -c 'analyzing project health' "$WORKFLOW_TMP/db.out" || true)"
+    assert_not_contains "repair-oversize/binary: nothing committed, pushed or PR'd" \
+        "$log" "FORBIDDEN"
+    assert_exit_code "repair-oversize/binary: aborts non-zero" 1 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- 6. An UNDER-limit repair must still reach the success path --------
+    _dlimit_sandbox dlimit_retry_ok
+    rc=0
+    cmd_improve --auto > "$WORKFLOW_TMP/dok.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/dok.out"); log=$(cat "$WORKFLOW_LOG")
+    assert_contains "repair-under-limit: repair verified green" "$out" "Self-repair succeeded"
+    assert_not_contains "repair-under-limit: not blocked by the diff limit" \
+        "$out" "Diff exceeds limit"
+    assert_eq "repair-under-limit: reached the Step 7 re-measure" "2" \
+        "$(grep -c 'analyzing project health' "$WORKFLOW_TMP/dok.out" || true)"
+    assert_contains "repair-under-limit: reached push" "$log" "FORBIDDEN git push"
+    assert_contains "repair-under-limit: reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "repair-under-limit: succeeds" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    PATH="$saved_path"
+    unset HEAL_MARK DMODE
+}
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -4826,6 +5027,7 @@ main() {
     test_red_final_verification_never_ships
     test_fix_prompts_permit_reaching_green
     test_quick_prompts_permit_reaching_green
+    test_diff_limit_survives_self_repair
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
