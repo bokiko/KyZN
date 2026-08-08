@@ -107,8 +107,16 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 
 Authorization reads the **final** code and nothing else — there is no comparison of failure
 output, and no "these were already failing" exemption. Baseline rc 1 still earns an
-improvement attempt and one repair attempt; only a final rc 0 enters the success path, and a
-final rc 1 always routes to the configured failure strategy.
+improvement attempt and one repair attempt; only a verified rc 0 result is ever kept.
+
+What a red result *does* differs by workflow — do not state it as one rule:
+
+- **`cmd_improve` (quick):** final rc 1 → `handle_build_failure "$on_fail"` (report / discard /
+  draft-pr), and the run returns non-zero.
+- **`run_fix_phase` (analyze --fix):** the unit is the severity batch. A red batch is reverted
+  with `git reset --hard "$pre_batch_head"` and the loop **continues**; `handle_build_failure`
+  is never called from `lib/analyze.sh` and `on_build_fail` is not consulted. A run whose
+  other tiers passed still pushes and opens a normal PR; only `batches_applied == 0` aborts.
 
 "Not executed" outranks "failed" for authorization: if an applicable required check could
 not run, the run is ineligible for commit/push/PR regardless of what else happened. Callers use

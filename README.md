@@ -238,7 +238,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
-| **Verification gate** | Authorization depends only on the **final** `verify_build` exit code. `0` → normal success path; `1` → always configured failure handling (a marked draft PR stays available); `2` → unconditional abort. A red baseline still gets an improvement attempt plus one repair attempt, but only a green final result ships. Note `0` also means "no applicable check applied" — it does not by itself prove checks ran. |
+| **Verification gate** | Authorization depends only on the **final** `verify_build` exit code — a red result is never certified as verified. In `quick` / `improve`: `0` → success path, `1` → the configured `on_build_fail` strategy (marked draft PR available), `2` → unconditional abort. In `analyze --fix` the unit is the severity batch: a red batch is reverted (`git reset --hard`) and the run continues, so a partially failed run can still open a normal PR of the batches that passed — `on_build_fail` does not apply there. Either way a red baseline still earns an improvement attempt plus one repair attempt. Note `0` also means "no applicable check applied" — it does not by itself prove checks ran. |
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |

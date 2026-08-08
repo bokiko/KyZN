@@ -22,22 +22,42 @@ All notable changes to KyZN are documented here.
 > **Compatibility break, read this first.** KyZN used to continue to commit, push and PR when
 > a run ended red as long as every failing test had already been failing at baseline.
 > **That no longer happens.** A repository whose tests are permanently red will stop receiving
-> normal "verified" pull requests. Its runs route to the configured failure strategy instead —
-> `report`, `discard`, or a **clearly marked draft PR** — so the work is still surfaced, just
-> never certified as verified. If you rely on KyZN opening PRs against a persistently failing
-> suite, set `on_build_fail: draft-pr` to keep receiving them, clearly labelled.
+> normal "verified" pull requests — the work is still surfaced, just never certified as
+> verified. For `kyzn quick` / `improve`, such runs route to the configured failure strategy
+> (`report`, `discard`, or a **clearly marked draft PR**); if you rely on KyZN opening PRs
+> against a persistently failing suite, **`on_build_fail: draft-pr` keeps them coming, clearly
+> labelled — that setting applies to the quick/improve path only.** `analyze --fix` behaves
+> differently; see below.
 
-Authorization now depends **only on the final `verify_build` exit code**:
+Authorization now depends **only on the final `verify_build` exit code**. What a red result
+*does* differs by workflow, because the two have different rollback models.
+
+**`kyzn quick` / `improve`** — one run, one outcome:
 
 | Final code | Outcome |
 |------------|---------|
 | `0` | normal success path — commit, push, PR |
-| `1` | **always** the configured failure strategy, never success |
+| `1` | **always** the configured `on_build_fail` strategy, never success |
 | `2` | unconditional abort — nothing is committed, pushed or opened |
 
-- A red baseline is still worked on: Claude receives the baseline failures and an explicit
-  requirement that final verification must be green, plus **one** repair attempt. Only the
-  final result decides whether anything ships.
+**`analyze --fix`** — fixes are applied as one batch per severity tier, and each batch is
+verified and committed on its own, so the outcome is per batch rather than per run:
+
+| Batch result | Outcome |
+|--------------|---------|
+| `0` | batch is committed immediately and the run continues to the next tier |
+| `1` (after its one repair attempt) | **that batch is discarded** — `git reset --hard` back to the pre-batch commit — and the run **continues** to the next tier |
+| `2` | the whole run aborts immediately; nothing further is committed, pushed or opened |
+
+- **`on_build_fail` is never consulted by `analyze --fix`.** A failed batch is reverted, not
+  handed to `report` / `discard` / `draft-pr`.
+- **A partially failed `analyze --fix` run still pushes and opens a normal PR**, containing
+  the tiers that passed. Only when *every* batch fails does the run open nothing, restore the
+  original branch and exit non-zero. The PR body reports how many batches applied, failed and
+  were skipped.
+- A red baseline is still worked on in both workflows: Claude receives the baseline failures
+  and an explicit requirement that final verification must be green, plus **one** repair
+  attempt. Only the verified result is kept.
 - Exit `0` continues to mean *either* every applicable required check passed *or* no required
   check applied. **It does not by itself prove that checks executed** — a project with no
   applicable checks still returns `0`. Use exit `2` to detect "could not verify".
@@ -110,8 +130,11 @@ as "the build passed". `verify_build` now returns:
 
 ### Changed — safe abort for unverifiable runs
 
-When a run aborts because verification could not be executed, KyZN commits nothing, pushes
-nothing and opens no PR. If Claude had already modified the worktree, **nothing is deleted**:
+When a run aborts because verification could not be executed, **no further changes are
+committed, and nothing is pushed or opened**. For `analyze --fix`, severity batches that were
+already verified and committed before the abort **remain on the KyZN branch** — preserving
+them in place is deliberate, and the branch is left for inspection rather than unwound.
+If Claude had already modified the worktree, **nothing is deleted**:
 the working tree and the KyZN branch are preserved and stay checked out, with
 inspection-only guidance
 (`git status`, `git diff`, `git diff --cached`). No one-line discard command is offered,
