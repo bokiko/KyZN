@@ -12,13 +12,13 @@
   <img src="https://img.shields.io/badge/Bash-4.3+-2ecc71?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   <img src="https://img.shields.io/badge/Claude_Code-Powered-2ecc71?style=flat-square" alt="Claude Code">
   <img src="https://img.shields.io/badge/version-1.3.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/tests-499%20passing-2ecc71?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-660%20passing-2ecc71?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-2ecc71?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/last-commit/bokiko/KyZN?style=flat-square&color=2ecc71" alt="Last Commit">
 </p>
 
 <p align="center">
-  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;499+tests+%7C+CI-hardened;6+languages+%2B+real-toolchain+CI" alt="Typing SVG"></a>
+  <a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=500&lines=Measure+%E2%86%92+Analyze+%E2%86%92+Fix+%E2%86%92+Verify+%E2%86%92+Ship;4+Opus+specialists+%2B+consensus;660+tests+%7C+CI-hardened;6+languages+%2B+real-toolchain+CI" alt="Typing SVG"></a>
 </p>
 
 ## Contents
@@ -187,8 +187,8 @@ kyzn schedule daily             # Cron at 3am daily
 kyzn schedule off               # Remove schedule
 kyzn status                     # Health score dashboard
 kyzn dashboard                  # Machine-wide activity summary
-kyzn selftest                   # Run 488 quick tests
-kyzn selftest --full            # Run 499 tests (incl. stress)
+kyzn selftest                   # Run 649 quick tests
+kyzn selftest --full            # Run 660 tests (incl. stress)
 ```
 
 ---
@@ -238,7 +238,7 @@ KyZN runs AI with real tool access on your code. Every layer has safety constrai
 | **File restrictions** | Claude cannot read `~/.ssh`, `~/.aws`, `.env`, key files, Terraform state |
 | **Symlink detection** | Rejects repos with symlinks escaping the repo root |
 | **Budget cap** | Hard ceiling: $25/run, 100 turns, 10000 diff lines |
-| **Verification gate** | Unavailable required checks block shipping. Newly introduced build/test failures block; projects with no applicable checks and unchanged pre-existing failures retain their existing behavior. |
+| **Verification gate** | Authorization depends only on the **final** `verify_build` exit code. `0` → normal success path; `1` → always configured failure handling (a marked draft PR stays available); `2` → unconditional abort. A red baseline still gets an improvement attempt plus one repair attempt, but only a green final result ships. Note `0` also means "no applicable check applied" — it does not by itself prove checks ran. |
 | **Score gate** | Aborts if health score drops |
 | **Secret detection** | Unstages files matching `.env`, `.pem`, `.key`, credentials patterns |
 | **CI blocking** | Workflow files unstaged by default |
@@ -275,7 +275,7 @@ kyzn/
 │   ├── generic.sh, node.sh, python.sh, rust.sh, go.sh, csharp.sh, java.sh
 ├── templates/              # System prompts + analysis templates
 ├── profiles/               # Focus-specific prompts
-├── tests/selftest.sh       # 488 quick / 499 full (incl. stress)
+├── tests/selftest.sh       # 649 quick / 660 full (incl. stress)
 ├── tests/toolchain/
 │   └── run-matrix.sh       # Real-toolchain integration matrix
 ├── SECURITY.md             # Threat model + published audit
@@ -294,8 +294,8 @@ KyZN is early-stage and actively developed. Contributions are welcome — whethe
 ```bash
 git clone https://github.com/bokiko/KyZN.git
 cd KyZN
-bash tests/selftest.sh          # 488 quick tests
-bash tests/selftest.sh --full   # 499 tests (incl. stress)
+bash tests/selftest.sh          # 649 quick tests
+bash tests/selftest.sh --full   # 660 tests (incl. stress)
 shellcheck -S warning kyzn lib/*.sh measurers/*.sh tests/selftest.sh tests/toolchain/run-matrix.sh
 ```
 
