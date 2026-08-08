@@ -180,8 +180,11 @@ in `node_modules/.bin/tsc` — not every Node project that lacks `node_modules`.
 Two distinct kinds of missing dependency are involved, and only one of them KyZN can
 install for you:
 
-- **System toolchains** — `cargo`, `go`, `dotnet`, `mvn`, `gradle` and `npm` must be
-  installed externally. KyZN never installs them.
+- **System toolchains** — `cargo`, `go`, `dotnet`, `mvn` and `npm` must be installed
+  externally. KyZN never installs them. `gradle` is required *only* when the project has
+  no executable `./gradlew`: the wrapper is detected and preferred when present, so a
+  wrapper-based Gradle project needs no system Gradle. There is no equivalent `./mvnw`
+  handling — Maven always requires a system `mvn`.
 - **Project dependencies** — `kyzn doctor --install`, `verification.install_deps: true`
   and `KYZN_VERIFY_INSTALL_DEPS=true` cover Node and Python *project* dependencies only
   (populating `node_modules` / `.venv`). They do not install system toolchains.
