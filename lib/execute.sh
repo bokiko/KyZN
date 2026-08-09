@@ -42,16 +42,44 @@ _kyzn_filter_paths_z() {
     return 0
 }
 
-# Read a NUL stream of paths and pass them to `git <args> -- <paths>` in
+# Read a NUL stream of paths and pass them to `git <args> -- <paths>` in bounded
 # batches. Empty input is a no-op, matching `xargs -r`.
+#
+# The bound is the point. Collecting the whole stream into one argument list is
+# what `xargs` exists to avoid: on a large tree it can exceed the platform
+# argument limit, and the resulting failure lands on safety cleanups such as
+# unstaging generated files. Flushing every _KYZN_GIT_PATH_BATCH paths keeps
+# argv bounded, and one failing batch no longer decides the fate of the rest.
+_KYZN_GIT_PATH_BATCH="${_KYZN_GIT_PATH_BATCH:-256}"
+
 _kyzn_git_apply_paths_z() {
     local -a paths=()
     local path
+    local failed=0 processed=0
+
     while IFS= read -r -d '' path; do
-        [[ -n "$path" ]] && paths+=("$path")
+        [[ -n "$path" ]] || continue
+        paths+=("$path")
+        if (( ${#paths[@]} >= _KYZN_GIT_PATH_BATCH )); then
+            processed=$(( processed + ${#paths[@]} ))
+            git -c core.hooksPath=/dev/null "$@" -- "${paths[@]}" 2>/dev/null || failed=$(( failed + 1 ))
+            paths=()
+        fi
     done
-    (( ${#paths[@]} == 0 )) && return 0
-    git -c core.hooksPath=/dev/null "$@" -- "${paths[@]}" 2>/dev/null || true
+
+    if (( ${#paths[@]} > 0 )); then
+        processed=$(( processed + ${#paths[@]} ))
+        git -c core.hooksPath=/dev/null "$@" -- "${paths[@]}" 2>/dev/null || failed=$(( failed + 1 ))
+    fi
+
+    # Deliberately not propagated. Every caller runs this as the tail of a
+    # pipeline inside a `set -e` shell, where returning non-zero would abort the
+    # whole run over a best-effort staging cleanup. Silence was the real defect,
+    # so the failure is named instead of swallowed.
+    if (( failed > 0 )); then
+        log_warn "git $* failed on $failed path batch(es) covering $processed path(s) — some paths were left unprocessed"
+    fi
+    return 0
 }
 
 # Read `git diff --numstat -z` and emit "<added>\t<deleted>" for each entry
@@ -219,20 +247,32 @@ check_test_deletions() {
     # Parsed record by record from the -z stream so a path containing a newline
     # cannot escape the check by splitting into two unparseable lines.
     local -a deleted_tests=()
-    local record add del path f
+    local record add del path src f
     while IFS= read -r -d '' record; do
         add="${record%%$'\t'*}"
         record="${record#*$'\t'}"
         del="${record%%$'\t'*}"
         path="${record#*$'\t'}"
+        src=""
         if [[ -z "$path" ]]; then
-            # Rename: discard the source record, attribute to the destination.
-            IFS= read -r -d '' _ || break
+            # Rename: the two following records are the source and destination.
+            # Both are kept. Attributing a rename to its destination alone let a
+            # test file be gutted and moved out of the test tree in one staged
+            # change — `tests/test_big.py` -> `src/helper.py` minus half its
+            # body reads as a non-test path and walked straight past the guard.
+            IFS= read -r -d '' src || break
             IFS= read -r -d '' path || break
         fi
         [[ "$add" == "-" || "$del" == "-" ]] && continue
-        [[ "$path" == *test* ]] || continue
-        (( del > add * 2 && del > 20 )) && deleted_tests+=("$path")
+        # Either side qualifying is enough — the protection is owed to the file
+        # that was a test before this change, not only after it.
+        [[ "$path" == *test* || "$src" == *test* ]] || continue
+        if (( del > add * 2 && del > 20 )); then
+            # Unstaging a rename needs both halves: resetting the destination
+            # alone would leave the source's deletion staged.
+            [[ -n "$src" ]] && deleted_tests+=("$src")
+            deleted_tests+=("$path")
+        fi
     done < <(git diff --cached --numstat -z HEAD 2>/dev/null)
 
     if (( ${#deleted_tests[@]} > 0 )); then

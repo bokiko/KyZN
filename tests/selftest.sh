@@ -5873,6 +5873,117 @@ test_repository_facts_survive_oversized_indexed_blobs() {
     rm -rf "$fixture"
 }
 
+test_test_deletion_guard_sees_both_rename_sides() {
+    log_header "89. gutting a test file and renaming it out of the test tree is caught"
+
+    # `git diff --numstat -z` attributes a rename to its destination. Judging
+    # only that side let `tests/test_big.py` -> `src/helper.py` walk past the
+    # guard: the destination is not a test path, so half the body could be
+    # deleted in the same staged change without tripping the safeguard.
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    local out staged name_status
+
+    create_sandbox generic
+    mkdir -p tests src
+    awk 'BEGIN { for (i = 1; i <= 100; i++) print "def test_case_" i "(): assert True" }' \
+        > tests/test_big.py
+    git add -A
+    git commit -q -m "add a large test file"
+
+    git mv tests/test_big.py src/helper.py
+    awk 'NR <= 55' src/helper.py > src/helper.trimmed
+    mv src/helper.trimmed src/helper.py
+    git add -A
+
+    # Precondition. A delete+add pair was already caught, so a fixture that
+    # failed to produce a real rename record would pass against the old code
+    # too and prove nothing.
+    name_status=$(git diff --cached --name-status HEAD)
+    assert_eq "fixture stages a detected rename, not delete+add" "R" "${name_status:0:1}"
+
+    out=$(check_test_deletions 2>&1)
+    staged=$(git diff --cached --name-only HEAD)
+
+    assert_contains "guard names the test file it protected" "$out" "tests/test_big.py"
+    assert_contains "guard names the destination it also unstaged" "$out" "src/helper.py"
+    assert_eq "both halves of the rename are unstaged" "" "$staged"
+
+    cleanup_sandbox
+}
+
+test_git_path_batches_flush_and_surface_failure() {
+    log_header "90. NUL path batches flush bounded, and a Git failure stays visible"
+
+    # The helper used to accumulate the entire stream into a single argument
+    # list — the exact thing `xargs` exists to bound — and then discard Git's
+    # exit status with `|| true`.
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    local tmp fake_bin saved_path saved_batch out rc logged
+
+    # Defaulted, not required: if the batch bound ever disappears this test must
+    # report that as failed assertions, not abort the whole suite under `set -u`.
+    saved_batch="${_KYZN_GIT_PATH_BATCH:-256}"
+    saved_path="$PATH"
+    tmp=$(mktemp -d)
+    fake_bin="$tmp/bin"
+    mkdir -p "$fake_bin"
+    export KYZN_TEST_GIT_LOG="$tmp/git-invocations"
+
+    _kyzn_fake_git() {
+        cat > "$fake_bin/git" <<FAKE_GIT
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$KYZN_TEST_GIT_LOG"
+exit $1
+FAKE_GIT
+        chmod +x "$fake_bin/git"
+        : > "$KYZN_TEST_GIT_LOG"
+    }
+
+    # 1. Bounded flushing — seven paths at a batch size of three must reach Git
+    #    as three invocations that between them carry all seven paths.
+    _KYZN_GIT_PATH_BATCH=3
+    _kyzn_fake_git 0
+    PATH="$fake_bin:$PATH"
+    printf 'zz%s\0' 1 2 3 4 5 6 7 | _kyzn_git_apply_paths_z reset HEAD
+    PATH="$saved_path"
+
+    logged=$(cat "$KYZN_TEST_GIT_LOG")
+    assert_eq "seven paths at batch size three reach Git in three invocations" "3" \
+        "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
+    assert_eq "every path survives the flushes" "7" \
+        "$(grep -o 'zz[0-9]' <<< "$logged" | wc -l | tr -d ' ')"
+
+    # 2. Empty input stays a no-op, matching `xargs -r`.
+    _kyzn_fake_git 0
+    PATH="$fake_bin:$PATH"
+    printf '' | _kyzn_git_apply_paths_z reset HEAD
+    PATH="$saved_path"
+    assert_eq "empty input never invokes Git" "0" "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
+
+    # 3. A failing batch is reported rather than swallowed, and still does not
+    #    abort the caller — these run as the tail of a pipeline under `set -e`.
+    _KYZN_GIT_PATH_BATCH=3
+    _kyzn_fake_git 1
+    PATH="$fake_bin:$PATH"
+    rc=0
+    out=$(printf 'zz%s\0' 1 2 3 4 | _kyzn_git_apply_paths_z reset HEAD 2>&1) || rc=$?
+    PATH="$saved_path"
+
+    assert_exit_code "a failing batch does not abort the caller" "0" "$rc"
+    assert_contains "a failing Git batch is reported, not swallowed" "$out" "failed on"
+    assert_contains "the report names the Git operation" "$out" "reset"
+    assert_eq "remaining batches still run after a failure" "2" \
+        "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
+
+    unset -f _kyzn_fake_git
+    unset KYZN_TEST_GIT_LOG
+    _KYZN_GIT_PATH_BATCH="$saved_batch"
+    PATH="$saved_path"
+    rm -rf "$tmp"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -5990,6 +6101,8 @@ main() {
     test_maven_only_detection_is_bash32_portable
     test_ci_selftest_guard_rejects_a_truncated_suite
     test_repository_facts_survive_oversized_indexed_blobs
+    test_test_deletion_guard_sees_both_rename_sides
+    test_git_path_batches_flush_and_surface_failure
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
