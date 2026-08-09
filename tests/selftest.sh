@@ -5920,11 +5920,12 @@ test_git_path_batches_flush_and_surface_failure() {
     # exit status with `|| true`.
     source "$KYZN_ROOT/lib/execute.sh"
 
-    local tmp fake_bin saved_path saved_batch out rc logged
+    local tmp fake_bin saved_path saved_batch saved_bytes out rc logged
 
-    # Defaulted, not required: if the batch bound ever disappears this test must
+    # Defaulted, not required: if either bound ever disappears this test must
     # report that as failed assertions, not abort the whole suite under `set -u`.
     saved_batch="${_KYZN_GIT_PATH_BATCH:-256}"
+    saved_bytes="${_KYZN_GIT_PATH_BATCH_BYTES:-131072}"
     saved_path="$PATH"
     tmp=$(mktemp -d)
     fake_bin="$tmp/bin"
@@ -5941,9 +5942,10 @@ FAKE_GIT
         : > "$KYZN_TEST_GIT_LOG"
     }
 
-    # 1. Bounded flushing — seven paths at a batch size of three must reach Git
-    #    as three invocations that between them carry all seven paths.
+    # 1. Count-bounded flushing — seven paths at a batch size of three must
+    #    reach Git as three invocations that between them carry all seven.
     _KYZN_GIT_PATH_BATCH=3
+    _KYZN_GIT_PATH_BATCH_BYTES=131072
     _kyzn_fake_git 0
     PATH="$fake_bin:$PATH"
     printf 'zz%s\0' 1 2 3 4 5 6 7 | _kyzn_git_apply_paths_z reset HEAD
@@ -5955,14 +5957,44 @@ FAKE_GIT
     assert_eq "every path survives the flushes" "7" \
         "$(grep -o 'zz[0-9]' <<< "$logged" | wc -l | tr -d ' ')"
 
-    # 2. Empty input stays a no-op, matching `xargs -r`.
+    # 2. Byte-bounded flushing — ARG_MAX is a byte budget, so a count cap alone
+    #    does not bound argv. With the count cap far out of reach, eight
+    #    seven-byte paths against a 24-byte budget must still flush three times
+    #    (3 + 3 + 2), and lose nothing doing it.
+    _KYZN_GIT_PATH_BATCH=1000
+    _KYZN_GIT_PATH_BATCH_BYTES=24
+    _kyzn_fake_git 0
+    PATH="$fake_bin:$PATH"
+    printf 'zzz%04d\0' 1 2 3 4 5 6 7 8 | _kyzn_git_apply_paths_z reset HEAD
+    PATH="$saved_path"
+
+    logged=$(cat "$KYZN_TEST_GIT_LOG")
+    assert_eq "the byte budget flushes even when the count cap is untouched" "3" \
+        "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
+    assert_eq "no path is lost to a byte-triggered flush" "8" \
+        "$(grep -o 'zzz[0-9]\{4\}' <<< "$logged" | wc -l | tr -d ' ')"
+
+    # 3. A single path larger than the entire budget still goes through, alone —
+    #    there is nothing smaller to split it into.
+    _KYZN_GIT_PATH_BATCH_BYTES=8
+    _kyzn_fake_git 0
+    PATH="$fake_bin:$PATH"
+    printf 'zzzz-a-path-longer-than-the-budget\0' | _kyzn_git_apply_paths_z reset HEAD
+    PATH="$saved_path"
+    assert_eq "an oversized single path is still passed to Git" "1" \
+        "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
+    assert_contains "the oversized path reaches Git intact" \
+        "$(cat "$KYZN_TEST_GIT_LOG")" "zzzz-a-path-longer-than-the-budget"
+
+    # 4. Empty input stays a no-op, matching `xargs -r`.
+    _KYZN_GIT_PATH_BATCH_BYTES=131072
     _kyzn_fake_git 0
     PATH="$fake_bin:$PATH"
     printf '' | _kyzn_git_apply_paths_z reset HEAD
     PATH="$saved_path"
     assert_eq "empty input never invokes Git" "0" "$(grep -c . "$KYZN_TEST_GIT_LOG" || true)"
 
-    # 3. A failing batch is reported rather than swallowed, and still does not
+    # 5. A failing batch is reported rather than swallowed, and still does not
     #    abort the caller — these run as the tail of a pipeline under `set -e`.
     _KYZN_GIT_PATH_BATCH=3
     _kyzn_fake_git 1
@@ -5980,6 +6012,7 @@ FAKE_GIT
     unset -f _kyzn_fake_git
     unset KYZN_TEST_GIT_LOG
     _KYZN_GIT_PATH_BATCH="$saved_batch"
+    _KYZN_GIT_PATH_BATCH_BYTES="$saved_bytes"
     PATH="$saved_path"
     rm -rf "$tmp"
 }
