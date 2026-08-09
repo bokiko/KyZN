@@ -3297,9 +3297,19 @@ _clean_path() {
     local dir="$1"; shift
     mkdir -p "$dir"
     local u src
+    # `timeout` is GNU coreutils and is simply absent on stock macOS, so KyZN
+    # falls back to its own portable controller — which requires perl or
+    # python3, the prerequisite this project documents. `od` backs
+    # generate_run_id. A sanitized PATH is meant to hide LANGUAGE TOOLCHAINS
+    # from verification, not the interpreters KyZN itself runs on; omitting
+    # them made every mutating fixture fail on macOS while passing on Linux CI,
+    # where /usr/bin/timeout exists and the fallback never engages.
+    #
+    # The fail-closed tests are unaffected: they assert on absent dotnet/cargo/
+    # go, and the "no controller runtime" test builds its own isolated PATH.
     for u in bash sh env cat head tail grep sed awk sort uniq wc find tr cut \
              date mktemp rm mkdir chmod ln touch git jq timeout xargs \
-             basename dirname "$@"; do
+             basename dirname perl python3 od "$@"; do
         src=$(command -v "$u" 2>/dev/null) || continue
         ln -sf "$src" "$dir/$u" 2>/dev/null || true
     done
