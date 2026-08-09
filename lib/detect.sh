@@ -48,7 +48,10 @@ detect_project_type() {
         KYZN_JAVA_BUILD="gradle"
     fi
     if [[ -f "$root/pom.xml" ]]; then
-        if [[ ! " ${KYZN_PROJECT_TYPES[*]} " == *" java "* ]]; then
+        # Bash 3.2 (stock macOS) treats `${arr[*]}` on an empty array as an
+        # unbound variable under `set -u`, so a Maven-only project — the one
+        # case where nothing has been appended yet — would abort the shell.
+        if [[ ! " ${KYZN_PROJECT_TYPES[*]:-} " == *" java "* ]]; then
             KYZN_PROJECT_TYPES+=("java")
         fi
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="java"
