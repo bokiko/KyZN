@@ -48,23 +48,46 @@ _kyzn_filter_paths_z() {
 # The bound is the point. Collecting the whole stream into one argument list is
 # what `xargs` exists to avoid: on a large tree it can exceed the platform
 # argument limit, and the resulting failure lands on safety cleanups such as
-# unstaging generated files. Flushing every _KYZN_GIT_PATH_BATCH paths keeps
-# argv bounded, and one failing batch no longer decides the fate of the rest.
+# unstaging generated files.
+#
+# The limit that actually applies is ARG_MAX, which is a byte budget, not a path
+# count — measured on macOS arm64 (ARG_MAX 1048576), 256 paths of 1024 bytes go
+# through while 256 of 4096 bytes fail with E2BIG. So a count cap alone only
+# holds under an assumption about path length that nothing here enforces. Both
+# bounds are applied: whichever is reached first flushes the batch.
+#
+# 128 KiB leaves roughly 8x headroom against the smallest limit either supported
+# platform reports, which absorbs the environment, git's own command words, and
+# the argv pointer array without needing to model any of them.
 _KYZN_GIT_PATH_BATCH="${_KYZN_GIT_PATH_BATCH:-256}"
+_KYZN_GIT_PATH_BATCH_BYTES="${_KYZN_GIT_PATH_BATCH_BYTES:-131072}"
 
 _kyzn_git_apply_paths_z() {
+    # `${#path}` counts characters, and a byte budget needs bytes — a UTF-8 path
+    # would otherwise be undercounted by up to 4x. Localised, so it is restored
+    # on return and cannot leak into anything else.
+    local LC_ALL=C
     local -a paths=()
     local path
-    local failed=0 processed=0
+    local failed=0 processed=0 bytes=0 size
 
     while IFS= read -r -d '' path; do
         [[ -n "$path" ]] || continue
-        paths+=("$path")
-        if (( ${#paths[@]} >= _KYZN_GIT_PATH_BATCH )); then
+        size=$(( ${#path} + 1 ))
+
+        # Flush *before* appending, so a batch never exceeds either bound. A
+        # single path bigger than the whole budget still goes on its own; there
+        # is nothing smaller to split it into.
+        if (( ${#paths[@]} > 0 )) &&
+           (( ${#paths[@]} >= _KYZN_GIT_PATH_BATCH || bytes + size > _KYZN_GIT_PATH_BATCH_BYTES )); then
             processed=$(( processed + ${#paths[@]} ))
             git -c core.hooksPath=/dev/null "$@" -- "${paths[@]}" 2>/dev/null || failed=$(( failed + 1 ))
             paths=()
+            bytes=0
         fi
+
+        paths+=("$path")
+        bytes=$(( bytes + size ))
     done
 
     if (( ${#paths[@]} > 0 )); then
