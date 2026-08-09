@@ -32,10 +32,13 @@ moment it is taken rather than once in a file somebody else can edit. See
 
 What remains available with no flag at all:
 
-- `kyzn analyze` — read-only analysis, unchanged.
-- `kyzn measure` — static repository signals. Only the language-specific
-  package/build measurers require the flag, and skipping them degrades the score
-  rather than failing the run.
+- `kyzn analyze` — still runs, and still makes no changes. Its measurements
+  default to static: the language-specific package/build measurers are skipped
+  with a warning, so the health score and the analysis context differ from 2.0.0
+  unless the flag is passed.
+- `kyzn measure` — the same, and for the same reason. Both commands share one
+  measurement path, so skipping those measurers degrades the score rather than
+  failing the run.
 
 Authorization is held in a shell variable that is reset to `false` every time
 KyZN loads, so a pre-set environment variable cannot pre-authorize a run; the
@@ -76,9 +79,11 @@ mutation is exactly the case where the missing isolation matters most.
   the child in its own process group, forwards signals, detects the death of its
   caller, and reaps the whole group. The system binary is still used when
   present, so behaviour is unchanged where GNU `timeout` exists.
-- **Every Git path pipeline is NUL-safe end to end**, so paths containing
-  newlines or other separator characters can no longer split into records the
-  safety checks fail to parse.
+- **The Git path pipelines the safety checks depend on are NUL-safe end to end**,
+  so a path containing a newline or other separator character can no longer split
+  into records those checks fail to parse. Two aggregate call sites that count
+  rather than act on paths are unchanged (`lib/report.sh:46`,
+  `lib/analyze.sh:1732`).
 - **The repository-facts checker no longer dies of `SIGPIPE`** on a large indexed
   blob. `git show :file | grep -q` orphans Git once the reader stops early, and
   under `pipefail` the resulting 141 aborted the script with no diagnostic.
