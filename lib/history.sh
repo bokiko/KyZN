@@ -82,8 +82,13 @@ relative_time() {
     [[ -z "$ts" || "$ts" == "null" ]] && { echo "-"; return; }
 
     local then_epoch now_epoch
+    # Timestamps are recorded in UTC with a trailing Z. GNU `date -d` honours
+    # that; BSD `date -jf` does NOT — it parses the input in the local zone and
+    # silently ignores the Z, so every history timestamp was off by the local
+    # UTC offset on macOS. `-u` makes the BSD parse UTC to match. CI runs in
+    # UTC, which is why the offset never showed up there.
     if then_epoch=$(date -d "$ts" +%s 2>/dev/null); then :
-    elif then_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null); then :
+    elif then_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" -u "$ts" +%s 2>/dev/null); then :
     else echo "-"; return
     fi
 

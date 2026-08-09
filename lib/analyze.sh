@@ -1584,8 +1584,6 @@ run_fix_phase() {
 
         # Gate new test files before verification (exclude broken imports)
         # shellcheck disable=SC2034 # Read by verify.sh after gate_new_test_files mutates it.
-        KYZN_PYTEST_EXTRA_ARGS=""
-        # shellcheck disable=SC2034 # Same, for the whitespace-safe array form.
         KYZN_PYTEST_IGNORE_ARGS=()
         gate_new_test_files 2>/dev/null || true
 

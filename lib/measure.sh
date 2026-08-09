@@ -7,7 +7,6 @@
 run_measurements() {
     local project_type="${1:-$KYZN_PROJECT_TYPE}"
     local output_dir="${2:-}"
-    KYZN_DYNAMIC_MEASUREMENTS_SKIPPED=false
 
     if [[ -z "$output_dir" ]]; then
         output_dir=$(mktemp -d)
@@ -88,7 +87,6 @@ run_measurer() {
     # host execution, but dynamic scripts require the explicit per-run flag.
     if [[ "$execution_class" == "dynamic" ]]; then
         if [[ "$_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED" != "true" ]]; then
-            KYZN_DYNAMIC_MEASUREMENTS_SKIPPED=true
             log_warn "Dynamic measurements skipped: $(basename "$measurer") requires --allow-unsafe-host-execution."
             return 0
         fi
