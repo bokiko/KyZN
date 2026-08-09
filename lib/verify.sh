@@ -168,6 +168,9 @@ capture_failing_tests() {
 # Usage: gate_new_test_files MY_VAR  →  MY_VAR="--ignore=bad1.py --ignore=bad2.py"
 # ---------------------------------------------------------------------------
 KYZN_PYTEST_EXTRA_ARGS=""
+# Array form of the same ignore flags. One element per argument, so a path
+# containing whitespace or a newline reaches pytest as a single argument.
+declare -ga KYZN_PYTEST_IGNORE_ARGS=()
 
 verify_install_deps_enabled() {
     if [[ "${KYZN_VERIFY_INSTALL_DEPS:-false}" == "true" ]]; then
@@ -227,25 +230,40 @@ gate_new_test_files() {
     local _var_flags="${1:-}"
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
     KYZN_PYTEST_EXTRA_ARGS=""  # reset between calls
+    KYZN_PYTEST_IGNORE_ARGS=()  # must reset before the early returns below
 
     [[ "$project_type" != "python" ]] && return 0
     local _pytest
     _pytest=$(_kyzn_python_tool pytest) || return 0
 
-    local new_tests ignore_list=""
-    new_tests=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -E '(test_.*\.py$|.*_test\.py$)') || true
-    [[ -z "$new_tests" ]] && return 0
-
-    while IFS= read -r tf; do
-        [[ -z "$tf" ]] && continue
-        if ! "$_pytest" --collect-only "$tf" &>/dev/null; then
+    # Discovery is NUL-delimited end to end. Default `git ls-files` output is
+    # newline-delimited and C-quotes any path containing a newline, quote or
+    # backslash, so a test file named $'weird\ntest_x.py' arrives as two lines,
+    # neither of which is a real path. `-z` emits the literal bytes instead.
+    #
+    # Newly ADDED tracked files are included too: a run that stages a broken
+    # test file before this gate is no longer untracked, and used to skip the
+    # collection check entirely.
+    local ignore_list="" tf
+    while IFS= read -r -d '' tf; do
+        [[ -n "$tf" ]] || continue
+        [[ "$tf" =~ (^|/)(test_[^/]*\.py|[^/]*_test\.py)$ ]] || continue
+        # `--` stops pytest parsing a leading-dash filename as an option.
+        if ! "$_pytest" --collect-only -- "$tf" &>/dev/null; then
             log_warn "New test file has import errors: $tf (excluding from test run)"
+            KYZN_PYTEST_IGNORE_ARGS+=("--ignore=$tf")
             ignore_list+=" --ignore=$tf"
         fi
-    done <<< "$new_tests"
+    done < <({
+        git ls-files -z --others --exclude-standard 2>/dev/null
+        git diff --name-only -z --diff-filter=A HEAD -- 2>/dev/null
+    })
 
-    if [[ -n "$ignore_list" ]]; then
+    if (( ${#KYZN_PYTEST_IGNORE_ARGS[@]} > 0 )); then
+        # The string form is retained for the optional out-parameter and for
+        # callers that only test it for emptiness. verify_build consumes the
+        # array, because word-splitting this string would break any path
+        # containing whitespace.
         KYZN_PYTEST_EXTRA_ARGS="$ignore_list"
         [[ -n "$_var_flags" ]] && printf -v "$_var_flags" '%s' "$ignore_list"
     fi
@@ -440,10 +458,12 @@ verify_python() {
     if _kyzn_python_has_tests; then
         if pytest_bin=$(_kyzn_python_tool pytest); then
             log_step "Running pytest ($pytest_bin)..."
-            local -a pytest_args=()
-            if [[ -n "${KYZN_PYTEST_EXTRA_ARGS:-}" ]]; then
-                read -ra pytest_args <<< "$KYZN_PYTEST_EXTRA_ARGS"
-            fi
+            # Read the array, never the string: `read -ra` splits on IFS, which
+            # includes newline, so a gated path containing whitespace would be
+            # torn into several bogus arguments.
+            # The `[@]+` guard keeps this safe under `set -u` on Bash 4.3,
+            # where expanding an empty array counts as unset.
+            local -a pytest_args=("${KYZN_PYTEST_IGNORE_ARGS[@]+"${KYZN_PYTEST_IGNORE_ARGS[@]}"}")
 
             # Keep the output streamed and bounded by `tail`, but recover the
             # RUNNER's own status via PIPESTATUS. Testing the pipeline with `!`

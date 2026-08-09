@@ -2239,6 +2239,177 @@ test_unstage_secrets_nested_dotenv() {
     cleanup_sandbox
 }
 
+test_newline_paths_staging_and_accounting() {
+    log_header "70b. Staging, accounting and safety filters survive newline-containing paths"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # Default `git ls-files` / `--name-only` output is newline-delimited and
+    # C-quotes any path containing a newline. Consuming it as a pathname turns
+    # one adversarial filename into a path that does not exist, which used to
+    # make `git add` fail and abandon staging for the entire batch — including
+    # every innocent file beside it.
+    local weird=$'evil\nname.txt'
+    local weird_secret=$'oops\ncreds.env'
+    local weird_ci=$'.github/workflows/we\nird.yml'
+
+    printf 'a\nb\nc\n' > "$weird"          # 3 added lines
+    printf 'plain\n'   > normal.txt        # 1 added line
+    printf 'SECRET=1\n' > "$weird_secret"  # 1 added line
+    mkdir -p .github/workflows
+    printf 'on: push\n' > "$weird_ci"      # 1 added line
+
+    # --- accounting: every new file must be counted, not silently skipped ---
+    # Out-parameter names must not collide with count_diff_size's own locals.
+    local nl_added=0 nl_deleted=0 nl_binary=0
+    count_diff_size nl_added nl_deleted nl_binary
+    assert_eq "count_diff_size counts lines behind a newline-named file" "6" "$nl_added"
+    assert_eq "count_diff_size reports no phantom deletions" "0" "$nl_deleted"
+
+    # --- staging: the newline path AND its innocent neighbours must stage ---
+    local stage_rc=0
+    _stage_for_count || stage_rc=$?
+    assert_eq "_stage_for_count succeeds with a newline-named untracked file" "0" "$stage_rc"
+
+    local -a staged=()
+    local p
+    while IFS= read -r -d '' p; do staged+=("$p"); done \
+        < <(git diff --cached --name-only -z 2>/dev/null)
+
+    local found_weird=false found_normal=false
+    for p in ${staged[@]+"${staged[@]}"}; do
+        [[ "$p" == "$weird" ]] && found_weird=true
+        [[ "$p" == "normal.txt" ]] && found_normal=true
+    done
+    if $found_weird; then
+        pass "newline-named file is staged with its real name"
+    else
+        fail "newline-named file is staged with its real name" "not present in the index"
+    fi
+    if $found_normal; then
+        pass "innocent file beside a newline-named file still stages"
+    else
+        fail "innocent file beside a newline-named file still stages" \
+            "staging aborted for the whole batch"
+    fi
+
+    # --- safety filters must still see through the quoting ---
+    # Stage the two adversarial paths explicitly. Without this the assertions
+    # below would pass vacuously on any tree where _stage_for_count already
+    # failed to stage anything at all.
+    git add -- "$weird_secret" "$weird_ci" >/dev/null 2>&1
+    unstage_secrets 2>/dev/null
+    KYZN_ALLOW_CI=false check_dangerous_files 2>/dev/null
+
+    local secret_staged=false ci_staged=false
+    while IFS= read -r -d '' p; do
+        [[ "$p" == "$weird_secret" ]] && secret_staged=true
+        [[ "$p" == "$weird_ci" ]] && ci_staged=true
+    done < <(git diff --cached --name-only -z 2>/dev/null)
+
+    if $secret_staged; then
+        fail "unstage_secrets catches a newline-named .env" "still staged"
+    else
+        pass "unstage_secrets catches a newline-named .env"
+    fi
+    if $ci_staged; then
+        fail "check_dangerous_files catches a newline-named workflow" "still staged"
+    else
+        pass "check_dangerous_files catches a newline-named workflow"
+    fi
+
+    cleanup_sandbox
+}
+
+test_newline_paths_test_deletion_guard() {
+    log_header "70c. check_test_deletions sees a newline-named test file"
+
+    source "$KYZN_ROOT/lib/execute.sh"
+
+    create_sandbox generic
+
+    # A committed test file, large enough that removing it trips the
+    # >50%-deleted guard (deletions > 2x additions and > 20 lines).
+    local weird_test=$'tests/gu\nard_test.py'
+    mkdir -p tests
+    local i
+    for ((i = 0; i < 40; i++)); do echo "assert $i == $i"; done > "$weird_test"
+    git add -A >/dev/null 2>&1
+    git -c user.email=t@t -c user.name=t commit -qm "add test" >/dev/null 2>&1
+
+    rm -f "$weird_test"
+    git add -A >/dev/null 2>&1
+
+    check_test_deletions 2>/dev/null
+
+    # Unstaging restores the deletion to the worktree-only state, so the file
+    # is no longer part of the pending commit.
+    local deletion_staged=false p
+    while IFS= read -r -d '' p; do
+        [[ "$p" == "$weird_test" ]] && deletion_staged=true
+    done < <(git diff --cached --name-only -z 2>/dev/null)
+
+    if $deletion_staged; then
+        fail "check_test_deletions unstages a newline-named test deletion" "still staged"
+    else
+        pass "check_test_deletions unstages a newline-named test deletion"
+    fi
+
+    cleanup_sandbox
+}
+
+test_newline_paths_pytest_gate() {
+    log_header "70d. gate_new_test_files discovers newline-named Python tests"
+
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    create_sandbox generic
+    KYZN_PROJECT_TYPE=python
+
+    local fake_bin="$PWD/.fakebin"
+    mkdir -p "$fake_bin"
+    # A stub pytest that resolves (--version must exit 0 for _kyzn_python_tool
+    # to accept it) but fails collection for any path it is given. Each argv
+    # element is logged on its own line so argument splitting is observable.
+    cat > "$fake_bin/pytest" <<'FAKE_PYTEST'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+    echo "pytest 0.0.0-fake"
+    exit 0
+fi
+printf '%s\n' "$@" >> "$PYTEST_ARGV_LOG"
+exit 1
+FAKE_PYTEST
+    chmod +x "$fake_bin/pytest"
+    export PYTEST_ARGV_LOG="$PWD/argv.log"
+    : > "$PYTEST_ARGV_LOG"
+
+    local weird_test=$'we\nird_test.py'
+    printf 'import nonexistent_module\n' > "$weird_test"
+
+    PATH="$fake_bin:$PATH" gate_new_test_files >/dev/null 2>&1 || true
+
+    local ignored=false a
+    for a in ${KYZN_PYTEST_IGNORE_ARGS[@]+"${KYZN_PYTEST_IGNORE_ARGS[@]}"}; do
+        [[ "$a" == "--ignore=$weird_test" ]] && ignored=true
+    done
+    if $ignored; then
+        pass "gate_new_test_files ignores a newline-named uncollectable test"
+    else
+        fail "gate_new_test_files ignores a newline-named uncollectable test" \
+            "flag not produced (discovery lost the path)"
+    fi
+
+    assert_eq "ignore flags are held as one array element per argument" \
+        "1" "${#KYZN_PYTEST_IGNORE_ARGS[@]}"
+
+    unset PYTEST_ARGV_LOG
+    unset KYZN_PROJECT_TYPE
+    cleanup_sandbox
+}
+
 test_path_traversal_reject_diff() {
     log_header "50. Path traversal rejected in reject and diff commands"
 
@@ -5556,6 +5727,9 @@ main() {
     test_enforce_config_ceilings
     test_unstage_secrets
     test_unstage_secrets_nested_dotenv
+    test_newline_paths_staging_and_accounting
+    test_newline_paths_test_deletion_guard
+    test_newline_paths_pytest_gate
     test_path_traversal_reject_diff
     test_report_discovery_and_clean_handoff
     test_repository_facts_are_index_deterministic
