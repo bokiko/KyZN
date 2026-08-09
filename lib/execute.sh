@@ -7,17 +7,93 @@
 # ---------------------------------------------------------------------------
 _KYZN_GENERATED_DIRS='(^|/)(\.(next|nuxt|output|cache|parcel-cache)|node_modules|dist|build|out|__pycache__|\.pytest_cache|target/(debug|release)|vendor)/'
 
+# KyZN's own artifacts, excluded from staging and from diff accounting.
+_KYZN_ARTIFACT_PATHS='^\.kyzn/|^kyzn-report\.md$|^\.claude/'
+
+# ---------------------------------------------------------------------------
+# NUL-safe path plumbing
+#
+# Every `git` command that lists paths must use `-z`. Default output is
+# newline-delimited AND C-quotes any path containing a newline, quote or
+# backslash — so `a/b` inside $'log\nfile.txt' arrives as two lines, neither of
+# which is a real path, and the quoted form no longer matches a `^\.kyzn/`
+# exclusion either. The observable failures are a safety filter that silently
+# skips the file it was meant to catch, and `git add` rejecting a path that
+# does not exist, which aborts staging for the whole batch.
+#
+# Filtering is done with Bash's own `=~` rather than `grep`: `grep -z` is a GNU
+# extension and is not available in the BSD grep macOS ships.
+#
+# Usage: <producer -z> | _kyzn_filter_paths_z keep|drop <ERE> [-i]
+# ---------------------------------------------------------------------------
+_kyzn_filter_paths_z() {
+    local mode="$1" pattern="$2" fold="${3:-}" path matched
+    [[ "$fold" == "-i" ]] && shopt -s nocasematch
+    while IFS= read -r -d '' path; do
+        matched=false
+        [[ "$path" =~ $pattern ]] && matched=true
+        if [[ "$mode" == "keep" ]]; then
+            $matched && printf '%s\0' "$path"
+        else
+            $matched || printf '%s\0' "$path"
+        fi
+    done
+    [[ "$fold" == "-i" ]] && shopt -u nocasematch
+    return 0
+}
+
+# Read a NUL stream of paths and pass them to `git <args> -- <paths>` in
+# batches. Empty input is a no-op, matching `xargs -r`.
+_kyzn_git_apply_paths_z() {
+    local -a paths=()
+    local path
+    while IFS= read -r -d '' path; do
+        [[ -n "$path" ]] && paths+=("$path")
+    done
+    (( ${#paths[@]} == 0 )) && return 0
+    git -c core.hooksPath=/dev/null "$@" -- "${paths[@]}" 2>/dev/null || true
+}
+
+# Read `git diff --numstat -z` and emit "<added>\t<deleted>" for each entry
+# whose path survives the drop-pattern. The -z record format is
+# "<add>\t<del>\t<path>" per NUL record, except renames, which emit an entry
+# ending in a tab followed by two further records (source, destination).
+_kyzn_numstat_z_filtered() {
+    local drop_pattern="$1" record add del path src
+    while IFS= read -r -d '' record; do
+        add="${record%%$'\t'*}"
+        record="${record#*$'\t'}"
+        del="${record%%$'\t'*}"
+        path="${record#*$'\t'}"
+        if [[ -z "$path" ]]; then
+            # Rename: consume the source path, then use the destination.
+            IFS= read -r -d '' src || break
+            IFS= read -r -d '' path || break
+        fi
+        [[ "$path" =~ $drop_pattern ]] && continue
+        printf '%s\t%s\n' "$add" "$del"
+    done
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Safety: unstage files matching secret patterns (works with actual globs)
 # ---------------------------------------------------------------------------
+_KYZN_SECRET_PATHS='\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|(^|/)\.env(\.[^/]+)?$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json'
+
 unstage_secrets() {
-    local staged_secrets
-    staged_secrets=$(git diff --cached --name-only 2>/dev/null | grep -iE '\.(env|pem|key|p12|pfx|jks|p8|tfvars)$|(^|/)\.env(\.[^/]+)?$|^\.env|credentials|kubeconfig|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|authorized_keys|\.htpasswd|\.docker/config\.json' || true)
-    if [[ -n "$staged_secrets" ]]; then
-        echo "$staged_secrets" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+    local -a staged_secrets=()
+    local f
+    while IFS= read -r -d '' f; do
+        staged_secrets+=("$f")
+    done < <(git diff --cached --name-only -z 2>/dev/null \
+        | _kyzn_filter_paths_z keep "$_KYZN_SECRET_PATHS" -i)
+
+    if (( ${#staged_secrets[@]} > 0 )); then
+        git -c core.hooksPath=/dev/null reset HEAD -- "${staged_secrets[@]}" 2>/dev/null || true
         log_warn "Unstaged potential secrets from commit:"
-        echo "$staged_secrets" | while IFS= read -r f; do
-            [[ -n "$f" ]] && log_dim "  - $f"
+        for f in "${staged_secrets[@]}"; do
+            log_dim "  - $f"
         done
     fi
 }
@@ -30,18 +106,15 @@ _stage_for_count() {
     safe_git add -u 2>/dev/null
 
     # Unstage any generated directories that add -u may have picked up
-    git diff --cached --name-only 2>/dev/null \
-        | grep -E "$_KYZN_GENERATED_DIRS" \
-        | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+    git diff --cached --name-only -z 2>/dev/null \
+        | _kyzn_filter_paths_z keep "$_KYZN_GENERATED_DIRS" \
+        | _kyzn_git_apply_paths_z reset HEAD
 
     # Stage new files Claude created, excluding KyZN artifacts and generated dirs
-    local new_files
-    new_files=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_KYZN_GENERATED_DIRS" || true)
-    if [[ -n "$new_files" ]]; then
-        echo "$new_files" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null add -- 2>/dev/null
-    fi
+    git ls-files -z --others --exclude-standard 2>/dev/null \
+        | _kyzn_filter_paths_z drop "$_KYZN_ARTIFACT_PATHS" \
+        | _kyzn_filter_paths_z drop "$_KYZN_GENERATED_DIRS" \
+        | _kyzn_git_apply_paths_z add
 }
 
 # ---------------------------------------------------------------------------
@@ -64,9 +137,8 @@ count_diff_size() {
 
     # Count tracked changes without touching the index (avoids expensive add+reset cycle)
     local numstat
-    numstat=$(git diff HEAD --numstat 2>/dev/null | \
-        grep -vE "$_KYZN_GENERATED_DIRS" | \
-        grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' || true)
+    numstat=$(git diff HEAD --numstat -z 2>/dev/null \
+        | _kyzn_numstat_z_filtered "$_KYZN_GENERATED_DIRS|$_KYZN_ARTIFACT_PATHS") || true
 
     # Also count new untracked files (excluding KyZN artifacts and generated dirs).
     #
@@ -76,16 +148,20 @@ count_diff_size() {
     # content — the same marker already counted for tracked changes — so no
     # extension guessing or `file` output parsing is needed. `--no-index` exits
     # non-zero whenever the two paths differ, which is always here.
-    local _nf_list _nf_file _nf_stat
+    local _nf_file _nf_stat
     local new_files_stat=""
-    _nf_list=$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -vE '^\.kyzn/|^kyzn-report\.md$|^\.claude/' \
-        | grep -vE "$_KYZN_GENERATED_DIRS" || true)
-    local _nf_arr=()
-    [[ -n "$_nf_list" ]] && mapfile -t _nf_arr <<< "$_nf_list"
-    for _nf_file in "${_nf_arr[@]}"; do
+    local -a _nf_arr=()
+    while IFS= read -r -d '' _nf_file; do
+        _nf_arr+=("$_nf_file")
+    done < <(git ls-files -z --others --exclude-standard 2>/dev/null \
+        | _kyzn_filter_paths_z drop "$_KYZN_ARTIFACT_PATHS" \
+        | _kyzn_filter_paths_z drop "$_KYZN_GENERATED_DIRS")
+    for _nf_file in ${_nf_arr[@]+"${_nf_arr[@]}"}; do
         [[ -z "$_nf_file" || ! -f "$_nf_file" ]] && continue
-        _nf_stat=$(git diff --no-index --numstat -- /dev/null "$_nf_file" 2>/dev/null) || true
+        # Take only the counts: the path field is irrelevant here and would
+        # otherwise need unquoting.
+        _nf_stat=$(git diff --no-index --numstat -z -- /dev/null "$_nf_file" 2>/dev/null \
+            | _kyzn_numstat_z_filtered '^$') || true
         [[ -n "$_nf_stat" ]] && new_files_stat+="${_nf_stat}"$'\n'
     done
 
@@ -138,16 +214,31 @@ _kyzn_diff_within_limit() {
 # Safety: flag and unstage test files with large deletions (>50% removed)
 # ---------------------------------------------------------------------------
 check_test_deletions() {
-    local deleted_tests
-    # Find test files where deletions exceed twice the additions (net loss >50%)
-    deleted_tests=$(git diff --cached --numstat HEAD 2>/dev/null \
-        | awk '$1 != "-" && $2 != "-" { if ($2 > $1 * 2 && $2 > 20 && $3 ~ /test/) print $3 }' || true)
-    if [[ -n "$deleted_tests" ]]; then
+    # Find test files where deletions exceed twice the additions (net loss >50%).
+    # Parsed record by record from the -z stream so a path containing a newline
+    # cannot escape the check by splitting into two unparseable lines.
+    local -a deleted_tests=()
+    local record add del path src f
+    while IFS= read -r -d '' record; do
+        add="${record%%$'\t'*}"
+        record="${record#*$'\t'}"
+        del="${record%%$'\t'*}"
+        path="${record#*$'\t'}"
+        if [[ -z "$path" ]]; then
+            IFS= read -r -d '' src || break
+            IFS= read -r -d '' path || break
+        fi
+        [[ "$add" == "-" || "$del" == "-" ]] && continue
+        [[ "$path" == *test* ]] || continue
+        (( del > add * 2 && del > 20 )) && deleted_tests+=("$path")
+    done < <(git diff --cached --numstat -z HEAD 2>/dev/null)
+
+    if (( ${#deleted_tests[@]} > 0 )); then
         log_warn "Large test deletions detected — unstaging to protect test coverage:"
-        echo "$deleted_tests" | while IFS= read -r f; do
-            [[ -n "$f" ]] && log_dim "  - $f"
+        for f in "${deleted_tests[@]}"; do
+            log_dim "  - $f"
         done
-        echo "$deleted_tests" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+        git -c core.hooksPath=/dev/null reset HEAD -- "${deleted_tests[@]}" 2>/dev/null || true
     fi
 }
 
@@ -156,20 +247,24 @@ check_test_deletions() {
 # ---------------------------------------------------------------------------
 check_dangerous_files() {
     local allow_ci="${KYZN_ALLOW_CI:-false}"
-    local dangerous
-    dangerous=$(git diff --cached --name-only 2>/dev/null | grep -E '\.github/workflows/|\.git/hooks/|\.gitlab-ci\.yml|Jenkinsfile|\.circleci/' || true)
-    if [[ -n "$dangerous" ]]; then
+    local -a dangerous=()
+    local f
+    while IFS= read -r -d '' f; do
+        dangerous+=("$f")
+    done < <(git diff --cached --name-only -z 2>/dev/null \
+        | _kyzn_filter_paths_z keep '\.github/workflows/|\.git/hooks/|\.gitlab-ci\.yml|Jenkinsfile|\.circleci/')
+
+    if (( ${#dangerous[@]} > 0 )); then
         if [[ "$allow_ci" == "true" ]]; then
             log_warn "Claude created CI/pipeline files (--allow-ci enabled):"
-            echo "$dangerous" | while IFS= read -r f; do
-                [[ -n "$f" ]] && log_warn "  - $f"
-            done
         else
             log_warn "Claude created CI/pipeline files — unstaging (use --allow-ci to override):"
-            echo "$dangerous" | while IFS= read -r f; do
-                [[ -n "$f" ]] && log_warn "  - $f"
-            done
-            echo "$dangerous" | tr '\n' '\0' | xargs -0 -r git -c core.hooksPath=/dev/null reset HEAD -- 2>/dev/null || true
+        fi
+        for f in "${dangerous[@]}"; do
+            log_warn "  - $f"
+        done
+        if [[ "$allow_ci" != "true" ]]; then
+            git -c core.hooksPath=/dev/null reset HEAD -- "${dangerous[@]}" 2>/dev/null || true
         fi
     fi
 }
