@@ -24,10 +24,15 @@ export HOME="$SELFTEST_HOME"
 trap 'rm -rf "$SELFTEST_HOME"' EXIT
 
 # Fixture repositories sometimes commit directly instead of using
-# create_sandbox. Configure the identity inside the isolated HOME so those
-# commits never depend on the operator or CI runner's global Git config.
-git config --global user.email "selftest@kyzn.local"
-git config --global user.name "KyZN Selftest"
+# create_sandbox. Process-scoped identity keeps those commits deterministic,
+# while the isolated global-config path prevents HOME or XDG config leakage.
+export GIT_AUTHOR_NAME="KyZN Selftest"
+export GIT_AUTHOR_EMAIL="selftest@kyzn.local"
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+export GIT_CONFIG_GLOBAL="$SELFTEST_HOME/gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+: > "$GIT_CONFIG_GLOBAL"
 
 source "$KYZN_ROOT/lib/core.sh"
 
@@ -191,6 +196,32 @@ test_core() {
     else
         fail "selftest never targets operator KyZN state" "global directory still points at the original HOME"
     fi
+
+    # Git also consults XDG_CONFIG_HOME/git/config. Prove the selftest's
+    # explicit global-config boundary neither reads nor writes an existing
+    # XDG config while direct fixture commits still receive a valid identity.
+    local git_isolation_tmp xdg_config config_before config_after global_name_status=0 global_name author
+    git_isolation_tmp=$(mktemp -d)
+    mkdir -p "$git_isolation_tmp/xdg/git" "$git_isolation_tmp/repo"
+    xdg_config="$git_isolation_tmp/xdg/git/config"
+    printf '[user]\n\tname = External XDG Identity\n\temail = external@example.invalid\n' > "$xdg_config"
+    config_before=$(shasum -a 256 "$xdg_config" | awk '{print $1}')
+    global_name=$(XDG_CONFIG_HOME="$git_isolation_tmp/xdg" git config --global --get user.name 2>/dev/null) || global_name_status=$?
+    assert_exit_code "selftest does not read existing XDG Git config" "1" "$global_name_status"
+    assert_eq "selftest XDG Git identity stays hidden" "" "$global_name"
+    (
+        cd "$git_isolation_tmp/repo"
+        XDG_CONFIG_HOME="$git_isolation_tmp/xdg" git init -q
+        printf 'fixture\n' > fixture.txt
+        git add fixture.txt
+        XDG_CONFIG_HOME="$git_isolation_tmp/xdg" git commit -q -m "fixture commit"
+    )
+    author=$(git -C "$git_isolation_tmp/repo" log -1 --format='%an <%ae>|%cn <%ce>')
+    assert_eq "process-scoped Git identity supports fixture commits" \
+        "KyZN Selftest <selftest@kyzn.local>|KyZN Selftest <selftest@kyzn.local>" "$author"
+    config_after=$(shasum -a 256 "$xdg_config" | awk '{print $1}')
+    assert_eq "selftest does not write existing XDG Git config" "$config_before" "$config_after"
+    rm -rf "$git_isolation_tmp"
 
     # generate_run_id
     local rid
