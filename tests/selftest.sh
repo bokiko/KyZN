@@ -5825,6 +5825,54 @@ test_ci_selftest_guard_rejects_a_truncated_suite() {
     rm -rf "$fixture"
 }
 
+test_repository_facts_survive_oversized_indexed_blobs() {
+    log_header "88. the facts checker never dies of SIGPIPE on a large blob"
+
+    # `git show :file | grep -q pattern` orphans Git the moment grep matches.
+    # Once the blob outgrows the pipe buffer Git is still writing, takes
+    # SIGPIPE, and `pipefail` + `set -e` abort the script with a bare 141 and no
+    # diagnostic — which is how a macOS job failed with nothing but an exit
+    # code. The trigger is blob size against the platform's pipe buffer, so it
+    # hides on any host whose pipes are large enough.
+    local fixture rc out piped_greps
+
+    # Code only — the comment above the fix names the bad pattern on purpose.
+    piped_greps=$(grep -c '^[^#]*| *grep -q' "$KYZN_ROOT/scripts/check-repository-facts.sh" || true)
+    assert_eq "facts checker keeps no early-exit grep pipeline" "0" "$piped_greps"
+
+    fixture=$(mktemp -d)
+    mkdir -p "$fixture/scripts" "$fixture/lib" "$fixture/measurers" \
+             "$fixture/templates/conventions" "$fixture/tests" "$fixture/.github/workflows"
+    cp "$KYZN_ROOT/scripts/check-repository-facts.sh" "$fixture/scripts/"
+    cp "$KYZN_ROOT/kyzn" "$fixture/"
+    cp "$KYZN_ROOT/tests/selftest.sh" "$fixture/tests/"
+    cp "$KYZN_ROOT/.github/workflows/ci.yml" "$fixture/.github/workflows/"
+    cp "$KYZN_ROOT/lib/detect.sh" "$KYZN_ROOT/lib/measure.sh" \
+       "$KYZN_ROOT/lib/allowlist.sh" "$KYZN_ROOT/lib/verify.sh" "$fixture/lib/"
+    cp "$KYZN_ROOT"/measurers/*.sh "$fixture/measurers/"
+    cp "$KYZN_ROOT"/templates/conventions/*.md "$fixture/templates/conventions/"
+
+    # Push one inspected blob well past any pipe buffer, leaving its language
+    # cases near the top so the reader still quits early.
+    awk 'BEGIN { for (i = 0; i < 20000; i++) print "# pipe-buffer padding" }' \
+        >> "$fixture/lib/verify.sh"
+
+    cd "$fixture"
+    git init -q
+    git config user.email "selftest@kyzn.local"
+    git config user.name "KyZN Selftest"
+    git add .
+    git commit -q -m "oversized blob fixture"
+
+    rc=0
+    out=$(bash scripts/check-repository-facts.sh --print 2>/dev/null) || rc=$?
+    assert_exit_code "facts checker completes over an oversized indexed blob" "0" "$rc"
+    assert_contains "facts checker still emitted the generated block" "$out" "Repository files"
+
+    cd "$KYZN_ROOT"
+    rm -rf "$fixture"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -5941,6 +5989,7 @@ main() {
     test_update_check_tolerates_missing_update_ref
     test_maven_only_detection_is_bash32_portable
     test_ci_selftest_guard_rejects_a_truncated_suite
+    test_repository_facts_survive_oversized_indexed_blobs
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

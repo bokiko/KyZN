@@ -5,6 +5,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# `git show :path | grep -q pattern` is not safe here. `grep -q` stops reading at
+# its first match, and once the blob outgrows the pipe buffer Git is still
+# writing when the reader goes away — so Git dies of SIGPIPE. `set -o pipefail`
+# promotes that 141 to the pipeline's status and `set -e` aborts the script with
+# no diagnostic at all, which is exactly how a macOS job failed with a bare
+# "Process completed with exit code 141". Read the blob first, then match it.
+index_blob_matches() {
+    local path="$1" pattern="$2" blob
+    blob=$(git show ":$path")
+    grep -q "$pattern" <<< "$blob"
+}
+
 all_files=$(git ls-files --cached | LC_ALL=C sort -u)
 tracked_files=$(printf '%s\n' "$all_files" | awk 'NF { count++ } END { print count + 0 }')
 shell_files=$(printf '%s\n' "$all_files" | awk '/\.sh$/ || $0 == "kyzn" { count++ } END { print count + 0 }')
@@ -24,10 +36,10 @@ for language in node python rust go csharp java; do
         echo "missing measurer or convention profile for $language" >&2
         exit 1
     }
-    git show :lib/detect.sh | grep -q "$language)"
-    git show :lib/measure.sh | grep -q "$language)"
-    git show :lib/allowlist.sh | grep -q "$language)"
-    git show :lib/verify.sh | grep -q "$language)"
+    index_blob_matches lib/detect.sh "$language)"
+    index_blob_matches lib/measure.sh "$language)"
+    index_blob_matches lib/allowlist.sh "$language)"
+    index_blob_matches lib/verify.sh "$language)"
 done
 ci_yaml=$(git show :.github/workflows/ci.yml)
 grep -q 'runs-on: ubuntu-latest' <<< "$ci_yaml"
