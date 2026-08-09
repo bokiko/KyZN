@@ -37,9 +37,9 @@ What remains available with no flag at all:
   package/build measurers require the flag, and skipping them degrades the score
   rather than failing the run.
 
-The gate is deliberately hard to defeat. The authorization variable is never
-exported, so it cannot reach a subprocess, and it is reset to `false` at source
-time, so a pre-set environment variable cannot pre-authorize a run.
+Authorization is held in a shell variable that is reset to `false` every time
+KyZN loads, so a pre-set environment variable cannot pre-authorize a run; the
+acknowledgement must be given per invocation.
 
 ### Changed — scheduling and autopilot are disabled (BREAKING)
 
