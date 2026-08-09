@@ -59,15 +59,16 @@ _kyzn_git_apply_paths_z() {
 # "<add>\t<del>\t<path>" per NUL record, except renames, which emit an entry
 # ending in a tab followed by two further records (source, destination).
 _kyzn_numstat_z_filtered() {
-    local drop_pattern="$1" record add del path src
+    local drop_pattern="$1" record add del path
     while IFS= read -r -d '' record; do
         add="${record%%$'\t'*}"
         record="${record#*$'\t'}"
         del="${record%%$'\t'*}"
         path="${record#*$'\t'}"
         if [[ -z "$path" ]]; then
-            # Rename: consume the source path, then use the destination.
-            IFS= read -r -d '' src || break
+            # Rename: the source path record is consumed and discarded, then
+            # the destination becomes the path this entry is attributed to.
+            IFS= read -r -d '' _ || break
             IFS= read -r -d '' path || break
         fi
         [[ "$path" =~ $drop_pattern ]] && continue
@@ -218,14 +219,15 @@ check_test_deletions() {
     # Parsed record by record from the -z stream so a path containing a newline
     # cannot escape the check by splitting into two unparseable lines.
     local -a deleted_tests=()
-    local record add del path src f
+    local record add del path f
     while IFS= read -r -d '' record; do
         add="${record%%$'\t'*}"
         record="${record#*$'\t'}"
         del="${record%%$'\t'*}"
         path="${record#*$'\t'}"
         if [[ -z "$path" ]]; then
-            IFS= read -r -d '' src || break
+            # Rename: discard the source record, attribute to the destination.
+            IFS= read -r -d '' _ || break
             IFS= read -r -d '' path || break
         fi
         [[ "$add" == "-" || "$del" == "-" ]] && continue

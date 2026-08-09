@@ -181,6 +181,11 @@ cleanup_sandbox() {
         rm -rf "$SANDBOX"
     fi
     SANDBOX=""
+    # The unsafe-host gate is per-run state. Restore the closed default so an
+    # opt-in from one test can never silently satisfy the gate in the next —
+    # which would turn "defaults closed" into an assertion about test order.
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
 }
 
 # ---------------------------------------------------------------------------
@@ -1096,7 +1101,7 @@ _test_timeout_lifecycle() {
     local caller_pid=$!
 
     local attempt
-    for attempt in {1..80}; do
+    for ((attempt = 0; attempt < 80; attempt++)); do
         [[ -s "$caller_file" && -s "$controller_file" && -s "$leaf_file" ]] && break
         sleep 0.05
     done
@@ -1120,7 +1125,7 @@ _test_timeout_lifecycle() {
     fi
     wait "$caller_pid" 2>/dev/null || lifecycle_status=$?
 
-    for attempt in {1..80}; do
+    for ((attempt = 0; attempt < 80; attempt++)); do
         if ! kill -0 "$controller_pid" 2>/dev/null && ! kill -0 "$leaf_pid" 2>/dev/null; then
             break
         fi
@@ -1532,8 +1537,7 @@ FAKE_NPX
     assert_contains "legacy autopilot is visibly disabled" "$autopilot_output" "autopilot mode is disabled"
     assert_contains "legacy autopilot requires manual review" "$autopilot_output" "manual review"
 
-    local report_src execute_src analyze_src interview_src schedule_src measure_src kyzn_src
-    report_src=$(cat "$KYZN_ROOT/lib/report.sh")
+    local execute_src analyze_src interview_src schedule_src measure_src kyzn_src
     execute_src=$(cat "$KYZN_ROOT/lib/execute.sh")
     analyze_src=$(cat "$KYZN_ROOT/lib/analyze.sh")
     interview_src=$(cat "$KYZN_ROOT/lib/interview.sh")
@@ -2267,6 +2271,7 @@ test_newline_paths_staging_and_accounting() {
     count_diff_size nl_added nl_deleted nl_binary
     assert_eq "count_diff_size counts lines behind a newline-named file" "6" "$nl_added"
     assert_eq "count_diff_size reports no phantom deletions" "0" "$nl_deleted"
+    assert_eq "count_diff_size finds no binaries among the text fixtures" "0" "$nl_binary"
 
     # --- staging: the newline path AND its innocent neighbours must stage ---
     local stage_rc=0
@@ -2404,6 +2409,25 @@ FAKE_PYTEST
 
     assert_eq "ignore flags are held as one array element per argument" \
         "1" "${#KYZN_PYTEST_IGNORE_ARGS[@]}"
+
+    # A path containing SPACES is the case the old flat-string form broke on:
+    # verify_build re-split it with `read -ra`, which splits on IFS, turning
+    # one --ignore flag into several bogus arguments. Drive the real consumer
+    # and assert pytest received exactly one argv element for the flag.
+    local spaced_test='a test file_test.py'
+    printf 'import nonexistent_module\n' > "$spaced_test"
+    : > "$PYTEST_ARGV_LOG"
+    PATH="$fake_bin:$PATH" gate_new_test_files >/dev/null 2>&1 || true
+    : > "$PYTEST_ARGV_LOG"
+    PATH="$fake_bin:$PATH" _kyzn_python_has_tests >/dev/null 2>&1 && \
+        PATH="$fake_bin:$PATH" verify_build >/dev/null 2>&1 || true
+
+    if grep -Fxq -- "--ignore=$spaced_test" "$PYTEST_ARGV_LOG" 2>/dev/null; then
+        pass "pytest receives a spaced ignore path as one argv element"
+    else
+        fail "pytest receives a spaced ignore path as one argv element" \
+            "argv log: $(tr '\n' '|' < "$PYTEST_ARGV_LOG" 2>/dev/null)"
+    fi
 
     unset PYTEST_ARGV_LOG
     unset KYZN_PROJECT_TYPE
@@ -3762,6 +3786,15 @@ YAML
     WORKFLOW_LOG="$WORKFLOW_TMP/workflow.log"
     export WORKFLOW_LOG
     : > "$WORKFLOW_LOG"
+    # These fixtures call cmd_improve / run_fix_phase directly rather than
+    # through the CLI, so they bypass the flag parser that sets the unsafe-host
+    # gate. Opt in the way an operator does with --allow-unsafe-host-execution:
+    # the gate is a deliberate per-run acknowledgement, and these tests are
+    # about what a mutating run does AFTER that acknowledgement. The gate's own
+    # behaviour is covered separately by the "requires unsafe host gate" tests,
+    # which run against the closed default that cleanup_sandbox restores.
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
     PATH="$cb"
 }
 

@@ -164,12 +164,15 @@ capture_failing_tests() {
 
 # ---------------------------------------------------------------------------
 # Gate: check new test files for import errors (Python only)
-# Populates a variable with --ignore flags for broken test files
-# Usage: gate_new_test_files MY_VAR  →  MY_VAR="--ignore=bad1.py --ignore=bad2.py"
+#
+# The ignore flags are held as an array — one element per argument — so a path
+# containing whitespace or a newline reaches pytest as a single argument. The
+# previous flat-string global was write-only once verify_build started reading
+# the array, and re-splitting it with `read -ra` had torn such paths apart.
+#
+# Usage: gate_new_test_files [MY_VAR]
+#   MY_VAR, when given, receives the same flags joined for display purposes.
 # ---------------------------------------------------------------------------
-KYZN_PYTEST_EXTRA_ARGS=""
-# Array form of the same ignore flags. One element per argument, so a path
-# containing whitespace or a newline reaches pytest as a single argument.
 declare -ga KYZN_PYTEST_IGNORE_ARGS=()
 
 verify_install_deps_enabled() {
@@ -229,7 +232,6 @@ install_project_dependencies() {
 gate_new_test_files() {
     local _var_flags="${1:-}"
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
-    KYZN_PYTEST_EXTRA_ARGS=""  # reset between calls
     KYZN_PYTEST_IGNORE_ARGS=()  # must reset before the early returns below
 
     [[ "$project_type" != "python" ]] && return 0
@@ -259,14 +261,10 @@ gate_new_test_files() {
         git diff --name-only -z --diff-filter=A HEAD -- 2>/dev/null
     })
 
-    if (( ${#KYZN_PYTEST_IGNORE_ARGS[@]} > 0 )); then
-        # The string form is retained for the optional out-parameter and for
-        # callers that only test it for emptiness. verify_build consumes the
-        # array, because word-splitting this string would break any path
-        # containing whitespace.
-        KYZN_PYTEST_EXTRA_ARGS="$ignore_list"
-        [[ -n "$_var_flags" ]] && printf -v "$_var_flags" '%s' "$ignore_list"
+    if (( ${#KYZN_PYTEST_IGNORE_ARGS[@]} > 0 )) && [[ -n "$_var_flags" ]]; then
+        printf -v "$_var_flags" '%s' "$ignore_list"
     fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
