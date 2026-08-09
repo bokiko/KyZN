@@ -23,6 +23,12 @@ SELFTEST_HOME=$(mktemp -d)
 export HOME="$SELFTEST_HOME"
 trap 'rm -rf "$SELFTEST_HOME"' EXIT
 
+# Fixture repositories sometimes commit directly instead of using
+# create_sandbox. Configure the identity inside the isolated HOME so those
+# commits never depend on the operator or CI runner's global Git config.
+git config --global user.email "selftest@kyzn.local"
+git config --global user.name "KyZN Selftest"
+
 source "$KYZN_ROOT/lib/core.sh"
 
 # ---------------------------------------------------------------------------
