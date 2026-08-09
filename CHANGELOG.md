@@ -4,19 +4,6 @@ All notable changes to KyZN are documented here.
 
 ## [2.0.0] — 2026-08-08
 
-### Added — C# / .NET and Java / JVM support
-
-- Project detection for `.csproj` / `.sln`, and for Maven (`pom.xml`) and Gradle
-  (`build.gradle[.kts]`, `settings.gradle[.kts]`), including the Gradle-wins precedence
-  when both build systems are present.
-- `measurers/csharp.sh` (dotnet build warnings/errors, `dotnet list package --vulnerable`,
-  test-file ratio) and `measurers/java.sh` (mvn/gradle compile output, OWASP
-  dependency-check, test-file ratio).
-- Build/test verification for both: `dotnet build` + `dotnet test`, `mvn compile` +
-  `mvn test`, and `gradle build -x test` + `gradle test` with `./gradlew` taking
-  precedence over a system Gradle.
-- Convention templates for C# and Java.
-
 ### Changed — only a green final verification ships (BREAKING for red-baseline projects)
 
 > **Compatibility break, read this first.** KyZN used to continue to commit, push and PR when
@@ -88,6 +75,19 @@ Alongside this, so the gate is actually reachable:
 - The diff-size limit is enforced after a successful self-repair as well as before
   verification, and newly added untracked binaries are now classified by Git rather than
   `wc -l` (a binary previously counted as zero lines and slipped past the limit).
+
+### Added — C# / .NET and Java / JVM support
+
+- Project detection for `.csproj` / `.sln`, and for Maven (`pom.xml`) and Gradle
+  (`build.gradle[.kts]`, `settings.gradle[.kts]`), including the Gradle-wins precedence
+  when both build systems are present.
+- `measurers/csharp.sh` (dotnet build warnings/errors, `dotnet list package --vulnerable`,
+  test-file ratio) and `measurers/java.sh` (mvn/gradle compile output, OWASP
+  dependency-check, test-file ratio).
+- Build/test verification for both: `dotnet build` + `dotnet test`, `mvn compile` +
+  `mvn test`, and `gradle build -x test` + `gradle test` with `./gradlew` taking
+  precedence over a system Gradle.
+- Convention templates for C# and Java.
 
 ### Changed — verification is now tri-state (behavior change)
 
