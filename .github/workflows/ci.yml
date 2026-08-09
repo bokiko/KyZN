@@ -35,9 +35,9 @@ jobs:
       - name: Check generated repository facts
         run: bash scripts/check-repository-facts.sh
       - name: Run quick tests
-        run: bash tests/selftest.sh
+        run: bash scripts/ci-selftest.sh
       - name: Run full tests
-        run: bash tests/selftest.sh --full
+        run: bash scripts/ci-selftest.sh --full
 
   macos-tests:
     runs-on: macos-latest
@@ -50,7 +50,9 @@ jobs:
           git config --global user.name "KyZN CI"
       - name: Install dependencies
         run: |
-          brew install jq
+          # Stock macOS ships Bash 3.2; KyZN requires 4.3+ for namerefs, so the
+          # self-tests need a supported interpreter to run at all.
+          brew install jq bash
           # Pin yq version + checksum (matches install.sh)
           YQ_VERSION="v4.52.4"
           case "$(uname -m)" in
@@ -67,6 +69,6 @@ jobs:
       - name: Check generated repository facts
         run: bash scripts/check-repository-facts.sh
       - name: Run quick tests
-        run: bash tests/selftest.sh
+        run: bash scripts/ci-selftest.sh
       - name: Run full tests
-        run: bash tests/selftest.sh --full
+        run: bash scripts/ci-selftest.sh --full

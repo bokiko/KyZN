@@ -5702,6 +5702,129 @@ test_diff_limit_survives_self_repair() {
     PATH="$saved_path"
     unset HEAL_MARK DMODE
 }
+
+test_update_check_tolerates_missing_update_ref() {
+    log_header "85. an unresolvable update ref never aborts the requested command"
+
+    # GitHub Actions checks out only the PR merge ref, so `origin/main` does not
+    # exist in the CI worktree. check_for_updates runs before command dispatch
+    # under `set -e`, so handing Git's 128 back from there killed every nested
+    # CLI test before its handler ever ran.
+    local fixture home_dir out rc
+
+    fixture=$(mktemp -d)
+    mkdir -p "$fixture/lib"
+    cp "$KYZN_ROOT/kyzn" "$fixture/"
+    cp "$KYZN_ROOT"/lib/*.sh "$fixture/lib/"
+    git -C "$fixture" init -q
+    git -C "$fixture" add -A
+    git -C "$fixture" commit -q -m "merge-ref checkout fixture"
+
+    # The fixture must reproduce the CI shape exactly: a real repository whose
+    # HEAD resolves, with no origin/main to compare against.
+    rc=0
+    git -C "$fixture" rev-parse HEAD >/dev/null 2>&1 || rc=$?
+    assert_exit_code "fixture HEAD resolves" "0" "$rc"
+    rc=0
+    git -C "$fixture" rev-parse origin/main >/dev/null 2>&1 || rc=$?
+    assert_exit_code "fixture reproduces an absent origin/main" "128" "$rc"
+
+    create_sandbox generic
+    home_dir="$SANDBOX/update-check-home"
+    mkdir -p "$home_dir/.kyzn"
+    # A fresh stamp keeps the daily fetch — and its network access — out of the
+    # test; the ref comparison this covers runs either way.
+    date +%s > "$home_dir/.kyzn/last-update-check"
+
+    rc=0
+    out=$(HOME="$home_dir" "$BASH" "$fixture/kyzn" history 2>&1) || rc=$?
+    assert_exit_code "CLI reaches its handler when origin/main is absent" "0" "$rc"
+    assert_contains "CLI ran the requested command, not the update check" "$out" "No runs yet"
+    assert_not_contains "no update notice without a resolvable update ref" "$out" "update available"
+
+    cleanup_sandbox
+    rm -rf "$fixture"
+}
+
+test_maven_only_detection_is_bash32_portable() {
+    log_header "86. Maven-only detection survives Bash 3.2's empty-array rule"
+
+    # Stock macOS Bash 3.2 treats `${arr[*]}` on an empty array as an unbound
+    # variable under `set -u`. Maven-only is the one project shape that reaches
+    # the duplicate-java check with nothing appended to the type array yet.
+    local detect_src legacy_bash out rc
+
+    detect_src=$(cat "$KYZN_ROOT/lib/detect.sh")
+    assert_contains "duplicate-java check defaults the empty type array" \
+        "$detect_src" 'KYZN_PROJECT_TYPES[*]:-'
+
+    legacy_bash=""
+    if [[ -x /bin/bash ]] && (( $(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 9) < 4 )); then
+        legacy_bash=/bin/bash
+    fi
+
+    create_sandbox java
+    if [[ -n "$legacy_bash" ]]; then
+        rc=0
+        out=$("$legacy_bash" -c '
+            set -euo pipefail
+            source "$1/lib/core.sh"
+            source "$1/lib/detect.sh"
+            cd "$2"
+            detect_project_type
+            printf "%s %s %s\n" "$KYZN_PROJECT_TYPE" "$KYZN_JAVA_BUILD" "${KYZN_PROJECT_TYPES[*]}"
+        ' _ "$KYZN_ROOT" "$SANDBOX" 2>&1) || rc=$?
+        assert_exit_code "Bash 3.2 detects a Maven-only project without aborting" "0" "$rc"
+        assert_eq "Bash 3.2 detection agrees with Bash 4.3+" "java maven java" "$out"
+    else
+        skip "Bash 3.2 Maven-only detection" "no Bash 3.x interpreter at /bin/bash"
+    fi
+    cleanup_sandbox
+}
+
+test_ci_selftest_guard_rejects_a_truncated_suite() {
+    log_header "87. CI treats a suite that never finished as a failure"
+
+    # A macOS job once reported green in 13s: the suite aborted on a `set -u`
+    # violation and Bash 3.2 ran the EXIT trap with `$?` already cleared, so the
+    # step saw 0. Exit status alone cannot distinguish "passed" from "died"; the
+    # canonical summary banner can.
+    local guard fixture rc out ci_yaml
+
+    ci_yaml=$(cat "$KYZN_ROOT/.github/workflows/ci.yml")
+    assert_eq "both CI jobs run the self-tests through the guard" "4" \
+        "$(grep -c 'scripts/ci-selftest.sh' <<< "$ci_yaml")"
+    assert_not_contains "no CI job runs the suite unguarded" "$ci_yaml" "run: bash tests/selftest.sh"
+
+    guard="$KYZN_ROOT/scripts/ci-selftest.sh"
+    fixture=$(mktemp -d)
+    mkdir -p "$fixture/scripts" "$fixture/tests"
+    cp "$guard" "$fixture/scripts/"
+
+    # Truncated: plausible output, no banner, and a lying exit status.
+    printf '#!/usr/bin/env bash\necho "  x a test"\nexit 0\n' > "$fixture/tests/selftest.sh"
+    rc=0
+    out=$("$BASH" "$fixture/scripts/ci-selftest.sh" 2>&1) || rc=$?
+    assert_exit_code "truncated suite fails even when it exits 0" "1" "$rc"
+    assert_contains "truncated suite is named as such" "$out" "did not run to completion"
+
+    # Complete and green.
+    printf '#!/usr/bin/env bash\necho "  x 774 passed  x 0 failed  x 2 skipped  x 131s"\nexit 0\n' \
+        > "$fixture/tests/selftest.sh"
+    rc=0
+    out=$("$BASH" "$fixture/scripts/ci-selftest.sh" 2>&1) || rc=$?
+    assert_exit_code "complete green suite passes the guard" "0" "$rc"
+
+    # Complete and red — the banner must not launder a real failure.
+    printf '#!/usr/bin/env bash\necho "  x 700 passed  x 3 failed  x 2 skipped  x 131s"\nexit 1\n' \
+        > "$fixture/tests/selftest.sh"
+    rc=0
+    out=$("$BASH" "$fixture/scripts/ci-selftest.sh" 2>&1) || rc=$?
+    assert_exit_code "banner never rescues a suite that exited non-zero" "1" "$rc"
+
+    rm -rf "$fixture"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -5815,6 +5938,9 @@ main() {
     test_fix_prompts_permit_reaching_green
     test_quick_prompts_permit_reaching_green
     test_diff_limit_survives_self_repair
+    test_update_check_tolerates_missing_update_ref
+    test_maven_only_detection_is_bash32_portable
+    test_ci_selftest_guard_rejects_a_truncated_suite
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

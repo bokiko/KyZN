@@ -137,9 +137,9 @@ remain on the branch; preserving them is deliberate, and the branch is left for 
 `tests/selftest.sh` is a self-contained Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos. Runtime assertion totals come from the suite output; repository-size facts below are generated and checked in CI.
 
 <!-- BEGIN GENERATED REPOSITORY FACTS -->
-- Repository files: **76**
-- Bash entrypoints/modules/scripts: **25** files, **14284** lines
-- Self-test harness: **102** test functions, **5856** lines (runtime assertion totals are reported by the suite, not hardcoded)
+- Repository files: **77**
+- Bash entrypoints/modules/scripts: **26** files, **14488** lines
+- Self-test harness: **105** test functions, **5982** lines (runtime assertion totals are reported by the suite, not hardcoded)
 - Project profiles: **6** languages plus the generic fallback
 - CI matrix: **Linux and macOS**, each running quick and full self-tests
 <!-- END GENERATED REPOSITORY FACTS -->
