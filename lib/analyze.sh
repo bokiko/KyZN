@@ -702,7 +702,7 @@ cmd_analyze() {
             --export)       [[ $# -ge 2 ]] || { log_error "--export requires a value"; return 1; }; export_path="$2"; shift 2 ;;
             --auto)         auto=true; shift ;;
             --allow-dirty)  allow_dirty=true; shift ;;
-            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
+            --allow-unsafe-host-execution) allow_unsafe_host_execution; shift ;;
             *)              log_error "Unknown option: $1"; return 1 ;;
         esac
     done

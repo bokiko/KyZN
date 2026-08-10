@@ -1414,6 +1414,129 @@ test_phase0_execution_and_autopilot_gates() {
     assert_exit_code "inherited environment cannot authorize host execution" "1" "$inherited_status"
     assert_contains "inherited authorization still names explicit CLI flag" "$inherited_output" "--allow-unsafe-host-execution"
 
+    # Regression: authorization state must not reach a child process.
+    #
+    # Bash preserves the export attribute of an inherited variable across a
+    # plain assignment, and under `set -a` it re-marks every *modified*
+    # variable for export -- so a one-time unexport is undone by the parser's
+    # own assignment. This drives the real `cmd_measure` flag parser from a
+    # pre-exported environment and inspects the environment of the child that
+    # production `run_measurer` spawns, across four scenarios:
+    #
+    #   * normal shell and `-a` (allexport), because only the latter can
+    #     re-export at assignment time;
+    #   * a dynamic run, which reaches require_unsafe_host_execution, and a
+    #     static-only run, which never does -- proving the opt-in helper alone
+    #     keeps authorization process-local, without relying on the gate.
+    #
+    # Detection, display and history helpers are stubbed for isolation; the
+    # flag parser, `run_measurements` and `run_measurer` all stay production.
+    local leak_tmp leak_root leak_capture
+    leak_tmp=$(mktemp -d)
+    leak_root="$leak_tmp/root"
+    leak_capture="$leak_tmp/child-env"
+    mkdir -p "$leak_root/measurers"
+    # Each measurer captures ONLY the three names under test -- never the whole
+    # environment -- to its own stage file, then emits the JSON run_measurer
+    # expects. The static measurer runs for every project type and is never
+    # gated, so it is the child for the static-only scenario.
+    cat > "$leak_root/measurers/generic.sh" <<'LEAK_STATIC'
+#!/usr/bin/env bash
+env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
+    > "${KYZN_TEST_ENV_DUMP}.static" || true
+printf '[]\n'
+LEAK_STATIC
+    cat > "$leak_root/measurers/node.sh" <<'LEAK_DYNAMIC'
+#!/usr/bin/env bash
+env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
+    > "${KYZN_TEST_ENV_DUMP}.dynamic" || true
+printf '[]\n'
+LEAK_DYNAMIC
+    chmod +x "$leak_root/measurers/generic.sh" "$leak_root/measurers/node.sh"
+
+    local leak_scenario
+    # label : expected allexport mode : project type : capture stage
+    for leak_scenario in \
+        "normal shell, dynamic:off:node:dynamic" \
+        "allexport shell, dynamic:on:node:dynamic" \
+        "normal shell, static-only:off:generic:static" \
+        "allexport shell, static-only:on:generic:static"
+    do
+        local leak_label leak_mode leak_type leak_stage
+        local leak_status=0 leak_output="" leak_child_env=""
+        IFS=':' read -r leak_label leak_mode leak_type leak_stage <<< "$leak_scenario"
+        rm -f "$leak_capture.static" "$leak_capture.dynamic"
+
+        # The nested shell establishes its own allexport mode with set -a/+a
+        # before sourcing any production code, rather than relying on an
+        # invocation flag. Setting it here also overrides an inherited
+        # SHELLOPTS=allexport, so the "normal" rows cannot silently become
+        # allexport rows -- and it then reports the mode it actually ended up
+        # in, which the caller asserts.
+        # Pre-export the authorization state exactly as a caller's environment
+        # would, then let the production parser take the opt-in path.
+        leak_output=$(_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true \
+            _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true \
+            KYZN_TEST_ENV_DUMP="$leak_capture" \
+            KYZN_LEAK_ROOT="$leak_root" \
+            KYZN_LEAK_TYPE="$leak_type" \
+            KYZN_LEAK_MODE="$leak_mode" \
+            "$BASH" --noprofile --norc -c '
+                if [[ "$KYZN_LEAK_MODE" == "on" ]]; then set -a; else set +a; fi
+                if shopt -qo allexport; then
+                    printf "LEAK_MODE_OBSERVED=on\n"
+                else
+                    printf "LEAK_MODE_OBSERVED=off\n"
+                fi
+                source "$1"
+                source "$2"
+                KYZN_ROOT="$KYZN_LEAK_ROOT"
+                require_git_repo() { :; }
+                detect_project_type() { KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"; }
+                detect_project_features() { :; }
+                print_detection() { :; }
+                display_health_dashboard() { :; }
+                ensure_kyzn_dirs() { :; }
+                write_history() { :; }
+                cmd_measure --allow-unsafe-host-execution
+            ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh" 2>&1) || leak_status=$?
+
+        # Anti-vacuity control 1: the run completed.
+        assert_exit_code "$leak_label: cmd_measure --allow-unsafe-host-execution completes" "0" "$leak_status"
+
+        # Anti-vacuity control 4: the scenario ran in the shell mode it claims.
+        # Without this, dropping the mode setup would silently turn both
+        # allexport rows into duplicates of the normal rows while every leak
+        # assertion below still passed.
+        assert_contains "$leak_label: nested shell allexport is $leak_mode" \
+            "$leak_output" "LEAK_MODE_OBSERVED=$leak_mode"
+
+        [[ -f "$leak_capture.$leak_stage" ]] && leak_child_env=$(cat "$leak_capture.$leak_stage")
+
+        # Anti-vacuity control 2: absence below proves nothing unless the child
+        # genuinely ran and wrote its marker. For the dynamic scenarios this
+        # also proves the parser authorized -- without the flag, run_measurer
+        # skips the dynamic measurer and no marker is ever written.
+        assert_contains "$leak_label: measurer child ran (control)" "$leak_child_env" "KYZN_TEST_ENV_DUMP="
+
+        # Anti-vacuity control 3: the scenario is what it claims to be. The
+        # isolation warning is emitted only by require_unsafe_host_execution,
+        # so its presence/absence proves which path actually ran.
+        if [[ "$leak_stage" == "static" ]]; then
+            assert_not_contains "$leak_label: require_unsafe_host_execution never reached" \
+                "$leak_output" "no container/VM isolation"
+        else
+            assert_contains "$leak_label: require_unsafe_host_execution was reached" \
+                "$leak_output" "no container/VM isolation"
+        fi
+
+        assert_not_contains "$leak_label: authorization does not reach a child process" \
+            "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED"
+        assert_not_contains "$leak_label: warning state does not reach a child process" \
+            "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_WARNED"
+    done
+    rm -rf "$leak_tmp"
+
     source "$KYZN_ROOT/lib/measure.sh"
     local measurement_tmp measurement_script measurement_results measurement_marker
     measurement_tmp=$(mktemp -d)
