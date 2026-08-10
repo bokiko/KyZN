@@ -1455,35 +1455,24 @@ LEAK_DYNAMIC
     chmod +x "$leak_root/measurers/generic.sh" "$leak_root/measurers/node.sh"
 
     local leak_scenario
-    # label : extra bash flag : project type : capture stage
+    # label : expected allexport mode : project type : capture stage
     for leak_scenario in \
-        "normal shell, dynamic::node:dynamic" \
-        "allexport shell, dynamic:-a:node:dynamic" \
-        "normal shell, static-only::generic:static" \
-        "allexport shell, static-only:-a:generic:static"
+        "normal shell, dynamic:off:node:dynamic" \
+        "allexport shell, dynamic:on:node:dynamic" \
+        "normal shell, static-only:off:generic:static" \
+        "allexport shell, static-only:on:generic:static"
     do
-        local leak_label leak_flag leak_type leak_stage
+        local leak_label leak_mode leak_type leak_stage
         local leak_status=0 leak_output="" leak_child_env=""
-        IFS=':' read -r leak_label leak_flag leak_type leak_stage <<< "$leak_scenario"
+        IFS=':' read -r leak_label leak_mode leak_type leak_stage <<< "$leak_scenario"
         rm -f "$leak_capture.static" "$leak_capture.dynamic"
 
-        # Bash requires GNU long options before short ones, so -a goes last.
-        local -a leak_cmd=("$BASH" --noprofile --norc)
-        [[ -n "$leak_flag" ]] && leak_cmd+=("$leak_flag")
-        leak_cmd+=(-c '
-            source "$1"
-            source "$2"
-            KYZN_ROOT="$KYZN_LEAK_ROOT"
-            require_git_repo() { :; }
-            detect_project_type() { KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"; }
-            detect_project_features() { :; }
-            print_detection() { :; }
-            display_health_dashboard() { :; }
-            ensure_kyzn_dirs() { :; }
-            write_history() { :; }
-            cmd_measure --allow-unsafe-host-execution
-        ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh")
-
+        # The nested shell establishes its own allexport mode with set -a/+a
+        # before sourcing any production code, rather than relying on an
+        # invocation flag. Setting it here also overrides an inherited
+        # SHELLOPTS=allexport, so the "normal" rows cannot silently become
+        # allexport rows -- and it then reports the mode it actually ended up
+        # in, which the caller asserts.
         # Pre-export the authorization state exactly as a caller's environment
         # would, then let the production parser take the opt-in path.
         leak_output=$(_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true \
@@ -1491,10 +1480,36 @@ LEAK_DYNAMIC
             KYZN_TEST_ENV_DUMP="$leak_capture" \
             KYZN_LEAK_ROOT="$leak_root" \
             KYZN_LEAK_TYPE="$leak_type" \
-            "${leak_cmd[@]}" 2>&1) || leak_status=$?
+            KYZN_LEAK_MODE="$leak_mode" \
+            "$BASH" --noprofile --norc -c '
+                if [[ "$KYZN_LEAK_MODE" == "on" ]]; then set -a; else set +a; fi
+                if shopt -qo allexport; then
+                    printf "LEAK_MODE_OBSERVED=on\n"
+                else
+                    printf "LEAK_MODE_OBSERVED=off\n"
+                fi
+                source "$1"
+                source "$2"
+                KYZN_ROOT="$KYZN_LEAK_ROOT"
+                require_git_repo() { :; }
+                detect_project_type() { KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"; }
+                detect_project_features() { :; }
+                print_detection() { :; }
+                display_health_dashboard() { :; }
+                ensure_kyzn_dirs() { :; }
+                write_history() { :; }
+                cmd_measure --allow-unsafe-host-execution
+            ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh" 2>&1) || leak_status=$?
 
         # Anti-vacuity control 1: the run completed.
         assert_exit_code "$leak_label: cmd_measure --allow-unsafe-host-execution completes" "0" "$leak_status"
+
+        # Anti-vacuity control 4: the scenario ran in the shell mode it claims.
+        # Without this, dropping the mode setup would silently turn both
+        # allexport rows into duplicates of the normal rows while every leak
+        # assertion below still passed.
+        assert_contains "$leak_label: nested shell allexport is $leak_mode" \
+            "$leak_output" "LEAK_MODE_OBSERVED=$leak_mode"
 
         [[ -f "$leak_capture.$leak_stage" ]] && leak_child_env=$(cat "$leak_capture.$leak_stage")
 
