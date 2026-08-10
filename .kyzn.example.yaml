@@ -3,7 +3,11 @@
 
 project:
   name: my-project
-  type: node  # auto-detected: node, python, rust, go
+  type: node  # auto-detected: node, python, rust, go, csharp, java
+  # root: web  # optional: set when the manifest lives in a subdirectory
+              # (monorepo layouts) and auto-detection can't pick one
+              # unambiguously. Detection, verification and measurers all
+              # run from project_root()/root instead of the repo root.
 
 preferences:
   mode: deep          # deep (real improvements) | clean (cleanup) | full (everything)

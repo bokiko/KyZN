@@ -1,53 +1,67 @@
 #!/usr/bin/env bash
 # kyzn/lib/detect.sh — Project type detection
 
-# Detect the primary project type based on manifest files.
-# Sets KYZN_PROJECT_TYPE and KYZN_PROJECT_TYPES (array of all detected types).
-detect_project_type() {
-    KYZN_PROJECT_TYPE=""
-    KYZN_PROJECT_TYPES=()
-    KYZN_JAVA_BUILD=""
+# True when DIR directly contains a manifest for any supported language.
+# Pure — mutates nothing. Used to find candidate subdirectories, so it must
+# recognize exactly the same files _kyzn_detect_manifests_at() does.
+_kyzn_dir_has_manifest() {
+    local dir="$1"
 
-    local root
-    root="$(project_root)"
+    [[ -f "$dir/package.json" ]] && return 0
+    [[ -f "$dir/pyproject.toml" || -f "$dir/setup.py" || -f "$dir/setup.cfg" || -f "$dir/requirements.txt" ]] && return 0
+    [[ -f "$dir/Cargo.toml" ]] && return 0
+    [[ -f "$dir/go.mod" ]] && return 0
+    [[ -f "$dir/global.json" ]] && return 0
+    compgen -G "$dir/*.csproj" >/dev/null 2>&1 && return 0
+    compgen -G "$dir/*.sln" >/dev/null 2>&1 && return 0
+    [[ -f "$dir/build.gradle" || -f "$dir/build.gradle.kts" || \
+       -f "$dir/settings.gradle" || -f "$dir/settings.gradle.kts" || -f "$dir/pom.xml" ]] && return 0
+
+    return 1
+}
+
+# Populate KYZN_PROJECT_TYPE / KYZN_PROJECT_TYPES / KYZN_JAVA_BUILD from
+# manifests found directly inside DIR (no fallback to "generic" — the caller
+# decides what an empty result means).
+_kyzn_detect_manifests_at() {
+    local dir="$1"
 
     # Check each type — order matters (first match = primary)
-    if [[ -f "$root/package.json" ]]; then
+    if [[ -f "$dir/package.json" ]]; then
         KYZN_PROJECT_TYPES+=("node")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="node"
     fi
 
-    if [[ -f "$root/pyproject.toml" || -f "$root/setup.py" || -f "$root/setup.cfg" || -f "$root/requirements.txt" ]]; then
+    if [[ -f "$dir/pyproject.toml" || -f "$dir/setup.py" || -f "$dir/setup.cfg" || -f "$dir/requirements.txt" ]]; then
         KYZN_PROJECT_TYPES+=("python")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="python"
     fi
 
-    if [[ -f "$root/Cargo.toml" ]] || compgen -G "$root/*/Cargo.toml" >/dev/null 2>&1; then
+    if [[ -f "$dir/Cargo.toml" ]]; then
         KYZN_PROJECT_TYPES+=("rust")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="rust"
     fi
 
-    if [[ -f "$root/go.mod" ]]; then
+    if [[ -f "$dir/go.mod" ]]; then
         KYZN_PROJECT_TYPES+=("go")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="go"
     fi
 
-    if [[ -f "$root/global.json" ]] || \
-       compgen -G "$root/*.csproj" >/dev/null 2>&1 || \
-       compgen -G "$root/*.sln" >/dev/null 2>&1 || \
-       compgen -G "$root/*/*.csproj" >/dev/null 2>&1; then
+    if [[ -f "$dir/global.json" ]] || \
+       compgen -G "$dir/*.csproj" >/dev/null 2>&1 || \
+       compgen -G "$dir/*.sln" >/dev/null 2>&1; then
         KYZN_PROJECT_TYPES+=("csharp")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="csharp"
     fi
 
     # Java / JVM — gradle wins if both Maven and Gradle present (real-world precedence)
-    if [[ -f "$root/build.gradle" || -f "$root/build.gradle.kts" || \
-          -f "$root/settings.gradle" || -f "$root/settings.gradle.kts" ]]; then
+    if [[ -f "$dir/build.gradle" || -f "$dir/build.gradle.kts" || \
+          -f "$dir/settings.gradle" || -f "$dir/settings.gradle.kts" ]]; then
         KYZN_PROJECT_TYPES+=("java")
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="java"
         KYZN_JAVA_BUILD="gradle"
     fi
-    if [[ -f "$root/pom.xml" ]]; then
+    if [[ -f "$dir/pom.xml" ]]; then
         # Bash 3.2 (stock macOS) treats `${arr[*]}` on an empty array as an
         # unbound variable under `set -u`, so a Maven-only project — the one
         # case where nothing has been appended yet — would abort the shell.
@@ -57,18 +71,78 @@ detect_project_type() {
         [[ -z "$KYZN_PROJECT_TYPE" ]] && KYZN_PROJECT_TYPE="java"
         [[ -z "$KYZN_JAVA_BUILD" ]] && KYZN_JAVA_BUILD="maven"
     fi
+}
+
+# Detect the primary project type based on manifest files.
+# Sets KYZN_PROJECT_TYPE, KYZN_PROJECT_TYPES (array of all detected types),
+# and KYZN_PROJECT_SUBDIR (relative path from project_root() where the
+# manifest actually lives — "" when it lives at project_root() itself).
+detect_project_type() {
+    KYZN_PROJECT_TYPE=""
+    KYZN_PROJECT_TYPES=()
+    KYZN_JAVA_BUILD=""
+    KYZN_PROJECT_SUBDIR=""
+
+    local root
+    root="$(project_root)"
+
+    # Explicit escape hatch: project.root in .kyzn/config.yaml. Needed for
+    # monorepo/subdir layouts (e.g. a Next.js app in web/, backend config in
+    # supabase/, nothing at the repo root) where auto-detection is ambiguous
+    # or the manifest lives more than one level down.
+    local configured_root explicit_root_valid=false
+    configured_root=$(config_get '.project.root' '')
+    if [[ -n "$configured_root" ]]; then
+        if [[ "$configured_root" == /* || "$configured_root" == *..* ]]; then
+            log_warn "Ignoring project.root '$configured_root' — must be a relative path within the repo"
+        elif [[ ! -d "$root/$configured_root" ]]; then
+            log_warn "project.root '$configured_root' not found under $root — falling back to auto-detection"
+        else
+            KYZN_PROJECT_SUBDIR="$configured_root"
+            explicit_root_valid=true
+        fi
+    fi
+
+    local detect_root="$root"
+    [[ -n "$KYZN_PROJECT_SUBDIR" ]] && detect_root="$root/$KYZN_PROJECT_SUBDIR"
+
+    _kyzn_detect_manifests_at "$detect_root"
+
+    # Nothing at the root, and no VALID explicit project.root pinning it there
+    # — check one level down, generalizing the old Cargo-workspace-only glob
+    # to every language. An invalid project.root (typo'd or missing directory)
+    # still falls through to this, same as if it had never been set. Ambiguous
+    # (manifests in more than one subdirectory) stays generic: guessing wrong
+    # here means running the wrong build/test tooling.
+    if [[ "$explicit_root_valid" == false && -z "$KYZN_PROJECT_TYPE" ]]; then
+        local -a candidates=()
+        local d
+        for d in "$root"/*/; do
+            [[ -d "$d" ]] || continue
+            d="${d%/}"
+            _kyzn_dir_has_manifest "$d" && candidates+=("$(basename "$d")")
+        done
+
+        if (( ${#candidates[@]} == 1 )); then
+            KYZN_PROJECT_SUBDIR="${candidates[0]}"
+            _kyzn_detect_manifests_at "$root/$KYZN_PROJECT_SUBDIR"
+        elif (( ${#candidates[@]} > 1 )); then
+            log_warn "Multiple candidate project directories one level down (${candidates[*]}) — set project.root in .kyzn/config.yaml to pick one."
+        fi
+    fi
 
     # Fallback
     if [[ -z "$KYZN_PROJECT_TYPE" ]]; then
         KYZN_PROJECT_TYPE="generic"
         KYZN_PROJECT_TYPES+=("generic")
+        KYZN_PROJECT_SUBDIR=""
     fi
 }
 
 # Detect additional project characteristics
 detect_project_features() {
     local root
-    root="$(project_root)"
+    root="$(project_workdir)"
 
     KYZN_HAS_TYPESCRIPT=false
     KYZN_HAS_TESTS=false
@@ -89,13 +163,14 @@ detect_project_features() {
         KYZN_HAS_TESTS=true
     fi
 
-    # CI
-    if [[ -d "$root/.github/workflows" || -f "$root/.gitlab-ci.yml" || -f "$root/.circleci/config.yml" ]]; then
+    # CI and Docker are checked at the true repo root — pipeline and container
+    # config is conventionally repo-wide even when the manifest lives in a subdir.
+    local repo_root
+    repo_root="$(project_root)"
+    if [[ -d "$repo_root/.github/workflows" || -f "$repo_root/.gitlab-ci.yml" || -f "$repo_root/.circleci/config.yml" ]]; then
         KYZN_HAS_CI=true
     fi
-
-    # Docker
-    if [[ -f "$root/Dockerfile" || -f "$root/docker-compose.yml" || -f "$root/docker-compose.yaml" ]]; then
+    if [[ -f "$repo_root/Dockerfile" || -f "$repo_root/docker-compose.yml" || -f "$repo_root/docker-compose.yaml" ]]; then
         KYZN_HAS_DOCKER=true
     fi
 
@@ -111,6 +186,10 @@ detect_project_features() {
 # Print detection results
 print_detection() {
     log_step "Project type: ${BOLD}${KYZN_PROJECT_TYPE}${RESET}"
+
+    if [[ -n "${KYZN_PROJECT_SUBDIR:-}" ]]; then
+        log_dim "Project root: $KYZN_PROJECT_SUBDIR/"
+    fi
 
     if (( ${#KYZN_PROJECT_TYPES[@]} > 1 )); then
         log_dim "Also detected: ${KYZN_PROJECT_TYPES[*]}"
@@ -132,6 +211,8 @@ print_detection() {
 # Python: uses pip list (accurate, handles name divergence).
 # Node/Rust/Go: parses manifests (import names match package names).
 detect_installed_packages() {
+    (
+    cd "$(project_workdir)" 2>/dev/null || exit 0
     case "${KYZN_PROJECT_TYPE:-generic}" in
         python)
             if command -v pip &>/dev/null; then
@@ -180,6 +261,7 @@ detect_installed_packages() {
             fi
             ;;
     esac
+    )
 }
 
 # Get a friendly name for the project type

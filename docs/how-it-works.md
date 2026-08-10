@@ -84,6 +84,7 @@ If verification fails on a previously clean build, KyZN attempts **self-repair**
 project:
   name: my-project
   type: node
+  # root: web    # optional — set when the manifest lives in a subdirectory
 
 preferences:
   mode: deep            # deep | clean | full
@@ -118,3 +119,14 @@ scoring:
 | **Rust** | `Cargo.toml` (incl. workspaces) | cargo clippy, cargo audit | cargo check, cargo test |
 | **Go** | `go.mod` | go vet, govulncheck | go build, go test, go vet |
 | **Generic** | (fallback) | TODOs, git health, secrets, docs | — |
+
+### Monorepo / subdirectory layouts
+
+If the repo root has no manifest but exactly one first-level subdirectory does
+(e.g. a Next.js app in `web/` with nothing at the root), KyZN auto-detects it
+and treats that subdirectory as the project — detection, measurers, and
+build/test verification all run there instead of the repo root. If more than
+one subdirectory has a manifest, detection stays `generic` and logs a warning;
+set `project.root` in `.kyzn/config.yaml` to pick one explicitly. `kyzn init`
+persists whichever directory was used (auto-detected or configured) back into
+`project.root` so later runs don't have to re-guess it.

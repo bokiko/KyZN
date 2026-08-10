@@ -622,6 +622,75 @@ test_rust_workspace_detection() {
     cleanup_sandbox
 }
 
+test_subdir_project_detection() {
+    log_header "16b. Monorepo/subdir detection and project.root"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    # One unambiguous manifest one level down (generalizes the Rust-workspace
+    # case above to every language) is auto-detected and recorded as the
+    # project subdirectory; verification/measurers use project_workdir() to
+    # find it.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+    detect_project_type
+    assert_eq "single subdir manifest detected" "node" "$KYZN_PROJECT_TYPE"
+    assert_eq "single subdir recorded as project subdir" "web" "$KYZN_PROJECT_SUBDIR"
+    assert_eq "project_workdir resolves into the subdir" "$SANDBOX/web" "$(project_workdir)"
+    cleanup_sandbox
+
+    # Two first-level subdirs both have manifests — ambiguous, stays generic
+    # rather than guessing (running the wrong build/test tooling is worse
+    # than not verifying at all).
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    echo '[package]' > api/Cargo.toml
+    detect_project_type
+    assert_eq "ambiguous subdirs stay generic" "generic" "$KYZN_PROJECT_TYPE"
+    assert_eq "ambiguous subdirs set no project subdir" "" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+
+    # project.root disambiguates explicitly, overriding auto-detection.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    echo '[package]' > api/Cargo.toml
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'api'
+    detect_project_type
+    assert_eq "project.root picks the configured subdir" "rust" "$KYZN_PROJECT_TYPE"
+    assert_eq "project.root is recorded as the project subdir" "api" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+
+    # An invalid project.root (directory doesn't exist) is ignored, with a
+    # fallback to auto-detection rather than a hard failure.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'does-not-exist'
+    detect_project_type 2>/dev/null
+    assert_eq "invalid project.root falls back to auto-detect" "node" "$KYZN_PROJECT_TYPE"
+    assert_eq "invalid project.root still resolves the real subdir" "web" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+}
+
 test_configurable_model() {
     log_header "17. Configurable model in config"
 
@@ -774,6 +843,39 @@ test_verify_build_dispatch() {
     else
         fail "node verify_build dispatch" "should fail when test script exits 1"
     fi
+
+    cleanup_sandbox
+}
+
+test_verify_build_uses_project_workdir() {
+    log_header "22b. verify_build runs project tooling from project_workdir(), not the repo root"
+
+    if ! command -v make &>/dev/null; then
+        skip "verify_build uses project_workdir" "make unavailable"
+        return
+    fi
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    # Nothing at the repo root; a Makefile only one level down, selected via
+    # project.root. If verify_build ran from the repo root (the pre-fix
+    # behavior) it would report "no build system detected" instead.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p app
+    printf 'check:\n\t@echo MARKER_CHECK_RAN\n' > app/Makefile
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'app'
+    detect_project_type
+    assert_eq "configured subdir recorded" "app" "$KYZN_PROJECT_SUBDIR"
+
+    local out
+    out=$(verify_build 2>&1) || true
+    assert_contains "verify_build finds and runs the Makefile in the configured subdir" "$out" "MARKER_CHECK_RAN"
 
     cleanup_sandbox
 }
@@ -6048,12 +6150,14 @@ main() {
     test_help
     test_unknown_command
     test_rust_workspace_detection
+    test_subdir_project_detection
     test_configurable_model
     test_deep_mode_constraints
     test_score_regression_gate
     test_branch_cleanup_in_failure
     test_verify_build_generic
     test_verify_build_dispatch
+    test_verify_build_uses_project_workdir
     test_build_failure_report_strategy
     test_health_score_edge_cases
     test_prompt_yn

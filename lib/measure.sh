@@ -95,7 +95,10 @@ run_measurer() {
 
     local output stderr_tmp
     stderr_tmp=$(mktemp)
-    output=$(bash "$measurer" 2>"$stderr_tmp") || true
+    # Run from project_workdir() (project_root(), or its configured/detected
+    # subdir) so measurers that read relative paths (package.json, Cargo.toml,
+    # ...) see the actual project, not just whatever's at the repo root.
+    output=$(cd "$(project_workdir)" 2>/dev/null && bash "$measurer" 2>"$stderr_tmp") || true
 
     # Log stderr on failure (was previously discarded with 2>/dev/null)
     if [[ -s "$stderr_tmp" ]]; then

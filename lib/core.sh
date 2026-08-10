@@ -162,9 +162,20 @@ require_clean_worktree() {
     return 0
 }
 
+# Resolve the config file path against the repo root (not CWD): verify_build
+# and friends temporarily cd into a subdir project's own directory to run
+# project tooling, and $KYZN_CONFIG must still resolve correctly from there.
+_kyzn_config_path() {
+    printf '%s/%s\n' "$(project_root)" "$KYZN_CONFIG"
+}
+
+_kyzn_local_config_path() {
+    printf '%s/%s\n' "$(project_root)" "$KYZN_LOCAL_CONFIG"
+}
+
 # Check if config exists
 has_config() {
-    [[ -f "$KYZN_CONFIG" ]]
+    [[ -f "$(_kyzn_config_path)" ]]
 }
 
 # Read a config value via yq
@@ -175,7 +186,7 @@ config_get() {
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then echo "$default"; return; fi
     if has_config; then
         local val
-        val=$(yq eval "$key" "$KYZN_CONFIG" 2>/dev/null)
+        val=$(yq eval "$key" "$(_kyzn_config_path)" 2>/dev/null)
         if [[ "$val" == "null" || -z "$val" ]]; then
             echo "$default"
         else
@@ -192,9 +203,11 @@ local_config_get() {
     local default="${2:-}"
     # Validate key — same protection as config_get to prevent yq expression injection
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then echo "$default"; return; fi
-    if [[ -f "$KYZN_LOCAL_CONFIG" ]]; then
+    local local_config_file
+    local_config_file="$(_kyzn_local_config_path)"
+    if [[ -f "$local_config_file" ]]; then
         local val
-        val=$(yq eval "$key" "$KYZN_LOCAL_CONFIG" 2>/dev/null)
+        val=$(yq eval "$key" "$local_config_file" 2>/dev/null)
         if [[ "$val" == "null" || -z "$val" ]]; then
             echo "$default"
         else
@@ -212,10 +225,12 @@ config_set() {
     # Validate key to prevent arbitrary yq expression injection
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then log_error "Invalid config key: $key"; return 1; fi
     ensure_kyzn_dirs
-    if [[ ! -f "$KYZN_CONFIG" ]]; then
-        echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
+    local config_file
+    config_file="$(_kyzn_config_path)"
+    if [[ ! -f "$config_file" ]]; then
+        echo "# kyzn configuration — commit this file" > "$config_file"
     fi
-    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
+    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$config_file"
 }
 
 # Set a string config value (alias for backward compat)
@@ -253,6 +268,21 @@ project_root() {
         KYZN_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
     fi
     echo "$KYZN_PROJECT_ROOT"
+}
+
+# Directory where the actual project manifest lives — project_root(), or
+# project_root()/KYZN_PROJECT_SUBDIR when detect_project_type found (or
+# project.root configured) a manifest one level down. Detection itself still
+# runs from project_root(); this is only for callers (verify/measure) that
+# need to invoke project tooling in the right directory.
+project_workdir() {
+    local root
+    root="$(project_root)"
+    if [[ -n "${KYZN_PROJECT_SUBDIR:-}" ]]; then
+        echo "$root/$KYZN_PROJECT_SUBDIR"
+    else
+        echo "$root"
+    fi
 }
 
 # Get project name from directory — cached after first call
