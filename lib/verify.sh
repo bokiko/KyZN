@@ -282,38 +282,54 @@ verify_build() {
     KYZN_VERIFY_STATUS="passed"
     KYZN_VERIFY_UNAVAILABLE_REASON=""
 
-    case "$project_type" in
-        node)
-            verify_node || build_ok=false
-            ;;
-        python)
-            verify_python || build_ok=false
-            ;;
-        rust)
-            verify_rust || build_ok=false
-            ;;
-        go)
-            verify_go || build_ok=false
-            ;;
-        csharp)
-            verify_csharp || build_ok=false
-            ;;
-        java)
-            verify_java || build_ok=false
-            ;;
-        generic)
-            # Best-effort: check for common build systems
-            if [[ -f "Makefile" ]]; then
-                log_step "Running make check (Makefile detected)..."
-                make check 2>/dev/null || make test 2>/dev/null || {
-                    log_warn "make check/test failed — treating as verification failure"
-                    build_ok=false
-                }
-            else
-                log_warn "Generic project — no build system detected, skipping verification"
-            fi
-            ;;
-    esac
+    local target_dir
+    target_dir="$(project_root)"
+    if [[ -n "${KYZN_PROJECT_DIR:-}" ]]; then
+        target_dir="$target_dir/$KYZN_PROJECT_DIR"
+    fi
+
+    local sub_rc=0
+    (
+        cd "$target_dir" || return 2
+        case "$project_type" in
+            node)
+                verify_node || return 1
+                ;;
+            python)
+                verify_python || return 1
+                ;;
+            rust)
+                verify_rust || return 1
+                ;;
+            go)
+                verify_go || return 1
+                ;;
+            csharp)
+                verify_csharp || return 1
+                ;;
+            java)
+                verify_java || return 1
+                ;;
+            generic)
+                # Best-effort: check for common build systems
+                if [[ -f "Makefile" ]]; then
+                    log_step "Running make check (Makefile detected)..."
+                    make check 2>/dev/null || make test 2>/dev/null || {
+                        log_warn "make check/test failed — treating as verification failure"
+                        return 1
+                    }
+                else
+                    log_warn "Generic project — no build system detected, skipping verification"
+                fi
+                ;;
+        esac
+    )
+    sub_rc=$?
+    if [[ $sub_rc == 1 ]]; then
+        build_ok=false
+    elif [[ $sub_rc == 2 ]]; then
+        return $KYZN_VERIFY_RC_UNAVAILABLE
+    fi
 
     # "Could not check" OUTRANKS "check failed" for the authorization decision.
     # A failure is the more actionable message, but it must not downgrade the

@@ -93,9 +93,15 @@ run_measurer() {
         require_unsafe_host_execution "dynamic project measurement" || return 1
     fi
 
+    local target_dir
+    target_dir="$(project_root)"
+    if [[ -n "${KYZN_PROJECT_DIR:-}" ]]; then
+        target_dir="$target_dir/$KYZN_PROJECT_DIR"
+    fi
+
     local output stderr_tmp
     stderr_tmp=$(mktemp)
-    output=$(bash "$measurer" 2>"$stderr_tmp") || true
+    output=$((cd "$target_dir" && bash "$measurer") 2>"$stderr_tmp") || true
 
     # Log stderr on failure (was previously discarded with 2>/dev/null)
     if [[ -s "$stderr_tmp" ]]; then

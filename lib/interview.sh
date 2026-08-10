@@ -244,6 +244,7 @@ save_interview_config() {
 project:
   name: ""
   type: "$KYZN_PROJECT_TYPE"
+  dir: "$KYZN_PROJECT_DIR"
 
 preferences:
   mode: "$mode"
