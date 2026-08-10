@@ -9,105 +9,33 @@ CI.
 
 ## [3.0.0] — 2026-08-09
 
-2.0.0 shipped the verification gate — a run may no longer certify a red result.
-3.0.0 ships the host-execution hardening that belongs with it. The two are one
-arc, split across two releases only because they cleared review a day apart.
-
 ### Changed — mutating commands fail closed without an explicit per-run flag (BREAKING)
 
-> **Compatibility break, read this first.** Every mutating command now refuses to
-> run unless that specific invocation passes `--allow-unsafe-host-execution`.
-> This affects `kyzn quick`, `kyzn improve`, `kyzn fix` / `analyze --fix`,
-> `kyzn doctor --install`, and the dynamic half of `kyzn measure`. Existing
-> scripts and cron entries that call any of them **will stop working** until the
-> flag is added. There is no config setting and no environment variable that can
-> grant it: the acknowledgement is per run, by design.
+> **Read this first.** `kyzn quick`, `kyzn improve`, `kyzn fix` / `analyze --fix` and
+> `kyzn doctor --install` now refuse to run unless that invocation passes
+> `--allow-unsafe-host-execution`. Existing scripts and cron entries **will stop working**
+> until the flag is added. No config setting and no environment variable can grant it — the
+> acknowledgement is per invocation, by design.
 
-Why the flag exists rather than a config toggle: **KyZN still has no container or
-VM isolation.** A mutating run executes repository-controlled build and test
-commands, plus AI-generated changes, with your own user permissions. That is a
-real risk on a repository you do not trust, and it should be acknowledged at the
-moment it is taken rather than once in a file somebody else can edit. See
-[SECURITY.md](SECURITY.md) for the full threat model.
+KyZN still has no container or VM isolation: a mutating run executes repository-controlled
+build and test commands, and AI-generated changes, with your own user permissions. See
+[SECURITY.md](SECURITY.md) for the threat model.
 
-What remains available with no flag at all:
-
-- `kyzn analyze` — still runs, and still makes no changes. Its measurements
-  default to static: the language-specific package/build measurers are skipped
-  with a warning, so the health score and the analysis context differ from 2.0.0
-  unless the flag is passed.
-- `kyzn measure` — the same, and for the same reason. Both commands share one
-  measurement path, so skipping those measurers degrades the score rather than
-  failing the run.
-
-Authorization is held in a shell variable that is reset to `false` every time
-KyZN loads, so a pre-set environment variable cannot pre-authorize a run; the
-acknowledgement must be given per invocation.
+Without the flag, `kyzn analyze` and `kyzn measure` still run and still make no changes.
+Language-specific package/build measurers are skipped with a warning; static measurements are
+unaffected. Run `kyzn measure` to see what your own project scores either way.
 
 ### Changed — scheduling and autopilot are disabled (BREAKING)
 
-- **Creating a recurring mutating schedule is refused** until isolated execution
-  exists. `kyzn schedule off` still removes an existing schedule, so anyone
-  already running one can unwind it.
-- **Autopilot no longer auto-merges.** A saved `autopilot` trust level is
-  reported as disabled rather than silently honoured, and **every generated pull
-  request now waits for human review.**
+Creating a recurring mutating schedule is refused; `kyzn schedule off` still removes an
+existing one. **Autopilot no longer auto-merges — every generated pull request waits for
+human review.**
 
-Both follow from the same reasoning as the host-execution gate: unattended
-mutation is exactly the case where the missing isolation matters most.
+### Fixed and added
 
-### Fixed — staged-file safety holes
-
-- **A rename could defeat the test-deletion guard.** `check_test_deletions`
-  attributed a rename record to its destination alone, so gutting a test file and
-  moving it out of the test tree in one staged change — `tests/test_big.py` to
-  `src/helper.py`, minus half its body — read as a non-test path and walked past
-  the guard. Both sides of a rename are now checked, and both halves are unstaged
-  when the guard fires; resetting only the destination would have left the
-  source's deletion staged.
-- **Git path batching did not batch, and hid its own failure.** The staging
-  helper accumulated every path into a single `git` invocation and discarded the
-  result. Past the platform argument limit that fails with `E2BIG`, leaving an
-  incomplete index and no diagnostic. Batches are now bounded by both path count
-  and byte budget — a count cap alone is not enough, because the limit that
-  actually applies is `ARG_MAX`, measured in bytes — and a failed batch is
-  reported instead of swallowed.
-
-### Fixed — portability and correctness
-
-- **Portable `timeout()`.** macOS ships no GNU `timeout`. The replacement runs
-  the child in its own process group, forwards signals, detects the death of its
-  caller, and reaps the whole group. The system binary is still used when
-  present, so behaviour is unchanged where GNU `timeout` exists.
-- **The Git path pipelines the safety checks depend on are NUL-safe end to end**,
-  so a path containing a newline or other separator character can no longer split
-  into records those checks fail to parse. Two aggregate call sites that count
-  rather than act on paths are unchanged (`lib/report.sh:46`,
-  `lib/analyze.sh:1732`).
-- **The repository-facts checker no longer dies of `SIGPIPE`** on a large indexed
-  blob. `git show :file | grep -q` orphans Git once the reader stops early, and
-  under `pipefail` the resulting 141 aborted the script with no diagnostic.
-- `kyzn diff` now discovers quick/improve, analysis/fix, and failed-run report
-  filenames, with exact-run-ID compatibility for legacy root reports.
-- Analysis convenience reports now live at `.kyzn/kyzn-report.md`, keeping
-  report handoff output out of the target repository's dirty-file list.
-
-### Added — generated repository facts and macOS CI
-
-- `scripts/check-repository-facts.sh` regenerates the numeric claims in `README.md`
-  and `CLAUDE.md` — repository file count, Bash line counts, self-test harness
-  size, language profiles, CI matrix — and **fails CI when the committed block
-  goes stale.** Hand-maintained numbers in documentation are wrong the moment
-  they are written; these are not maintained by hand.
-- The CI matrix now runs quick and full self-tests on **Linux and macOS**, which
-  is what surfaced both the `SIGPIPE` failure and a clock-skew fixture bug.
-
-### Documentation
-
-- Replaced stale current test counts and source-line claims with generated facts.
-- Added one support matrix distinguishing profiles, CI fixtures, and the still-
-  missing isolated runner.
-- `SECURITY.md` states the threat model behind the host-execution gate.
+Staged-file safety fixes (a rename-aware test-deletion guard, bounded Git path batching), a
+portable `timeout()` for macOS, NUL-safe Git path handling in the safety checks, generated
+repository facts verified in CI, and self-tests now running on macOS as well as Linux.
 
 ## [2.0.0] — 2026-08-08
 
