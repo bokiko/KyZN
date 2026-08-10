@@ -1414,6 +1414,72 @@ test_phase0_execution_and_autopilot_gates() {
     assert_exit_code "inherited environment cannot authorize host execution" "1" "$inherited_status"
     assert_contains "inherited authorization still names explicit CLI flag" "$inherited_output" "--allow-unsafe-host-execution"
 
+    # Regression: authorization state must not reach a child process.
+    #
+    # Bash preserves the export attribute of an inherited variable across a
+    # plain assignment. A true authorization leak requires both a pre-exported
+    # variable and the parsed opt-in. A clean environment plus the flag would
+    # pass even before the fix, while pre-export without the flag never
+    # reaches the authorized dynamic child. So this drives the real
+    # `cmd_measure` flag parser from a pre-exported environment and inspects
+    # the environment of the child that production `run_measurer` spawns.
+    # Detection, display and history helpers are stubbed for isolation; the
+    # flag parser, `run_measurements` and `run_measurer` all stay production.
+    local leak_tmp leak_root leak_capture leak_status=0
+    leak_tmp=$(mktemp -d)
+    leak_root="$leak_tmp/root"
+    leak_capture="$leak_tmp/child-env.txt"
+    mkdir -p "$leak_root/measurers"
+    cat > "$leak_root/measurers/generic.sh" <<'LEAK_STATIC'
+#!/usr/bin/env bash
+printf '[]\n'
+LEAK_STATIC
+    # Capture ONLY the three names under test -- never the whole environment --
+    # then emit the JSON run_measurer expects on stdout.
+    cat > "$leak_root/measurers/node.sh" <<'LEAK_DYNAMIC'
+#!/usr/bin/env bash
+env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
+    > "$KYZN_TEST_ENV_DUMP" || true
+printf '[]\n'
+LEAK_DYNAMIC
+    chmod +x "$leak_root/measurers/generic.sh" "$leak_root/measurers/node.sh"
+
+    # Pre-export the authorization state exactly as a caller's environment
+    # would, then let the production parser take the opt-in path.
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true \
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true \
+    KYZN_TEST_ENV_DUMP="$leak_capture" \
+    KYZN_LEAK_ROOT="$leak_root" \
+    "$BASH" --noprofile --norc -c '
+        source "$1"
+        source "$2"
+        KYZN_ROOT="$KYZN_LEAK_ROOT"
+        require_git_repo() { :; }
+        detect_project_type() { KYZN_PROJECT_TYPE=node; }
+        detect_project_features() { :; }
+        print_detection() { :; }
+        display_health_dashboard() { :; }
+        ensure_kyzn_dirs() { :; }
+        write_history() { :; }
+        cmd_measure --allow-unsafe-host-execution
+    ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh" >/dev/null 2>&1 || leak_status=$?
+
+    # Anti-vacuity control 1: the authorized dynamic measurer completed.
+    assert_exit_code "cmd_measure --allow-unsafe-host-execution completes" "0" "$leak_status"
+
+    local leak_child_env=""
+    [[ -f "$leak_capture" ]] && leak_child_env=$(cat "$leak_capture")
+
+    # Anti-vacuity control 2: absence below proves nothing unless the child
+    # genuinely ran and wrote its marker. This also proves the parser
+    # authorized: without the flag, run_measurer skips the dynamic measurer.
+    assert_contains "flag-authorized measurer child ran (control)" "$leak_child_env" "KYZN_TEST_ENV_DUMP="
+    assert_not_contains "authorization does not reach a child process" \
+        "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED"
+    assert_not_contains "warning state does not reach a child process" \
+        "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_WARNED"
+    rm -rf "$leak_tmp"
+
     source "$KYZN_ROOT/lib/measure.sh"
     local measurement_tmp measurement_script measurement_results measurement_marker
     measurement_tmp=$(mktemp -d)

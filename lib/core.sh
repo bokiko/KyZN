@@ -336,6 +336,16 @@ has_cmd() {
 # repository-controlled build/test code or AI-generated changes on the host.
 _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
 _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
+# Bash preserves the export attribute of an inherited variable across a plain
+# assignment, so a caller that pre-exports these names would keep them exported
+# through the resets above and through the later --allow-unsafe-host-execution
+# assignment -- publishing the run's authorization state to every child process
+# (measurers, build/test commands, the Claude subprocess). Strip the attribute
+# once here, after the resets and before any flag parsing, so authorization
+# stays in-process. Dropping the attribute does not affect the gate: the resets
+# above already discard any inherited value, and a plain assignment never
+# re-adds export.
+export -n _KYZN_UNSAFE_HOST_EXECUTION_WARNED _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED
 require_unsafe_host_execution() {
     local context="${1:-mutating workflow}"
 
