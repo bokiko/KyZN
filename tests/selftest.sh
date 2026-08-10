@@ -1417,67 +1417,109 @@ test_phase0_execution_and_autopilot_gates() {
     # Regression: authorization state must not reach a child process.
     #
     # Bash preserves the export attribute of an inherited variable across a
-    # plain assignment. A true authorization leak requires both a pre-exported
-    # variable and the parsed opt-in. A clean environment plus the flag would
-    # pass even before the fix, while pre-export without the flag never
-    # reaches the authorized dynamic child. So this drives the real
-    # `cmd_measure` flag parser from a pre-exported environment and inspects
-    # the environment of the child that production `run_measurer` spawns.
+    # plain assignment, and under `set -a` it re-marks every *modified*
+    # variable for export -- so a one-time unexport is undone by the parser's
+    # own assignment. This drives the real `cmd_measure` flag parser from a
+    # pre-exported environment and inspects the environment of the child that
+    # production `run_measurer` spawns, across four scenarios:
+    #
+    #   * normal shell and `-a` (allexport), because only the latter can
+    #     re-export at assignment time;
+    #   * a dynamic run, which reaches require_unsafe_host_execution, and a
+    #     static-only run, which never does -- proving the opt-in helper alone
+    #     keeps authorization process-local, without relying on the gate.
+    #
     # Detection, display and history helpers are stubbed for isolation; the
     # flag parser, `run_measurements` and `run_measurer` all stay production.
-    local leak_tmp leak_root leak_capture leak_status=0
+    local leak_tmp leak_root leak_capture
     leak_tmp=$(mktemp -d)
     leak_root="$leak_tmp/root"
-    leak_capture="$leak_tmp/child-env.txt"
+    leak_capture="$leak_tmp/child-env"
     mkdir -p "$leak_root/measurers"
+    # Each measurer captures ONLY the three names under test -- never the whole
+    # environment -- to its own stage file, then emits the JSON run_measurer
+    # expects. The static measurer runs for every project type and is never
+    # gated, so it is the child for the static-only scenario.
     cat > "$leak_root/measurers/generic.sh" <<'LEAK_STATIC'
 #!/usr/bin/env bash
+env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
+    > "${KYZN_TEST_ENV_DUMP}.static" || true
 printf '[]\n'
 LEAK_STATIC
-    # Capture ONLY the three names under test -- never the whole environment --
-    # then emit the JSON run_measurer expects on stdout.
     cat > "$leak_root/measurers/node.sh" <<'LEAK_DYNAMIC'
 #!/usr/bin/env bash
 env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
-    > "$KYZN_TEST_ENV_DUMP" || true
+    > "${KYZN_TEST_ENV_DUMP}.dynamic" || true
 printf '[]\n'
 LEAK_DYNAMIC
     chmod +x "$leak_root/measurers/generic.sh" "$leak_root/measurers/node.sh"
 
-    # Pre-export the authorization state exactly as a caller's environment
-    # would, then let the production parser take the opt-in path.
-    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true \
-    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true \
-    KYZN_TEST_ENV_DUMP="$leak_capture" \
-    KYZN_LEAK_ROOT="$leak_root" \
-    "$BASH" --noprofile --norc -c '
-        source "$1"
-        source "$2"
-        KYZN_ROOT="$KYZN_LEAK_ROOT"
-        require_git_repo() { :; }
-        detect_project_type() { KYZN_PROJECT_TYPE=node; }
-        detect_project_features() { :; }
-        print_detection() { :; }
-        display_health_dashboard() { :; }
-        ensure_kyzn_dirs() { :; }
-        write_history() { :; }
-        cmd_measure --allow-unsafe-host-execution
-    ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh" >/dev/null 2>&1 || leak_status=$?
+    local leak_scenario
+    # label : extra bash flag : project type : capture stage
+    for leak_scenario in \
+        "normal shell, dynamic::node:dynamic" \
+        "allexport shell, dynamic:-a:node:dynamic" \
+        "normal shell, static-only::generic:static" \
+        "allexport shell, static-only:-a:generic:static"
+    do
+        local leak_label leak_flag leak_type leak_stage
+        local leak_status=0 leak_output="" leak_child_env=""
+        IFS=':' read -r leak_label leak_flag leak_type leak_stage <<< "$leak_scenario"
+        rm -f "$leak_capture.static" "$leak_capture.dynamic"
 
-    # Anti-vacuity control 1: the authorized dynamic measurer completed.
-    assert_exit_code "cmd_measure --allow-unsafe-host-execution completes" "0" "$leak_status"
+        # Bash requires GNU long options before short ones, so -a goes last.
+        local -a leak_cmd=("$BASH" --noprofile --norc)
+        [[ -n "$leak_flag" ]] && leak_cmd+=("$leak_flag")
+        leak_cmd+=(-c '
+            source "$1"
+            source "$2"
+            KYZN_ROOT="$KYZN_LEAK_ROOT"
+            require_git_repo() { :; }
+            detect_project_type() { KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"; }
+            detect_project_features() { :; }
+            print_detection() { :; }
+            display_health_dashboard() { :; }
+            ensure_kyzn_dirs() { :; }
+            write_history() { :; }
+            cmd_measure --allow-unsafe-host-execution
+        ' _ "$KYZN_ROOT/lib/core.sh" "$KYZN_ROOT/lib/measure.sh")
 
-    local leak_child_env=""
-    [[ -f "$leak_capture" ]] && leak_child_env=$(cat "$leak_capture")
+        # Pre-export the authorization state exactly as a caller's environment
+        # would, then let the production parser take the opt-in path.
+        leak_output=$(_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true \
+            _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true \
+            KYZN_TEST_ENV_DUMP="$leak_capture" \
+            KYZN_LEAK_ROOT="$leak_root" \
+            KYZN_LEAK_TYPE="$leak_type" \
+            "${leak_cmd[@]}" 2>&1) || leak_status=$?
 
-    # Anti-vacuity control 2: absence below proves nothing unless the child
-    # genuinely ran and wrote its marker. This also proves the parser
-    # authorized: without the flag, run_measurer skips the dynamic measurer.
-    assert_contains "flag-authorized measurer child ran (control)" "$leak_child_env" "KYZN_TEST_ENV_DUMP="
-    assert_not_contains "authorization does not reach a child process" \
-        "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED"
-    assert_not_contains "warning state does not reach a child process" \
-        "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_WARNED"
+        # Anti-vacuity control 1: the run completed.
+        assert_exit_code "$leak_label: cmd_measure --allow-unsafe-host-execution completes" "0" "$leak_status"
+
+        [[ -f "$leak_capture.$leak_stage" ]] && leak_child_env=$(cat "$leak_capture.$leak_stage")
+
+        # Anti-vacuity control 2: absence below proves nothing unless the child
+        # genuinely ran and wrote its marker. For the dynamic scenarios this
+        # also proves the parser authorized -- without the flag, run_measurer
+        # skips the dynamic measurer and no marker is ever written.
+        assert_contains "$leak_label: measurer child ran (control)" "$leak_child_env" "KYZN_TEST_ENV_DUMP="
+
+        # Anti-vacuity control 3: the scenario is what it claims to be. The
+        # isolation warning is emitted only by require_unsafe_host_execution,
+        # so its presence/absence proves which path actually ran.
+        if [[ "$leak_stage" == "static" ]]; then
+            assert_not_contains "$leak_label: require_unsafe_host_execution never reached" \
+                "$leak_output" "no container/VM isolation"
+        else
+            assert_contains "$leak_label: require_unsafe_host_execution was reached" \
+                "$leak_output" "no container/VM isolation"
+        fi
+
+        assert_not_contains "$leak_label: authorization does not reach a child process" \
+            "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED"
+        assert_not_contains "$leak_label: warning state does not reach a child process" \
+            "$leak_child_env" "_KYZN_UNSAFE_HOST_EXECUTION_WARNED"
+    done
     rm -rf "$leak_tmp"
 
     source "$KYZN_ROOT/lib/measure.sh"

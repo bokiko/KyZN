@@ -338,14 +338,25 @@ _KYZN_UNSAFE_HOST_EXECUTION_WARNED=false
 _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=false
 # Bash preserves the export attribute of an inherited variable across a plain
 # assignment, so a caller that pre-exports these names would keep them exported
-# through the resets above and through the later --allow-unsafe-host-execution
-# assignment -- publishing the run's authorization state to every child process
-# (measurers, build/test commands, the Claude subprocess). Strip the attribute
-# once here, after the resets and before any flag parsing, so authorization
-# stays in-process. Dropping the attribute does not affect the gate: the resets
-# above already discard any inherited value, and a plain assignment never
-# re-adds export.
+# through the resets above -- publishing the run's authorization state to every
+# child process (measurers, build/test commands, the Claude subprocess). Strip
+# the attribute here so an inherited value is discarded immediately, before any
+# flag parsing. This does not affect the gate: the resets above already discard
+# any inherited value.
 export -n _KYZN_UNSAFE_HOST_EXECUTION_WARNED _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED
+
+# Grant per-run authorization from the CLI flag. Assigning is not sufficient on
+# its own: under `set -a` (`bash -a kyzn ...`, or an exported
+# SHELLOPTS=allexport) Bash marks every *modified* variable for export, so a
+# plain assignment would silently undo the unexport above. Unexporting at the
+# point of assignment keeps authorization in-process however the shell was
+# invoked, and without depending on require_unsafe_host_execution being reached
+# -- static-only runs never call it.
+allow_unsafe_host_execution() {
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    export -n _KYZN_UNSAFE_HOST_EXECUTION_WARNED _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED
+}
+
 require_unsafe_host_execution() {
     local context="${1:-mutating workflow}"
 
@@ -361,6 +372,11 @@ require_unsafe_host_execution() {
         log_warn "KyZN has no container/VM isolation yet. Repository-controlled commands and AI-generated changes run with your user permissions."
         _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
     fi
+
+    # The _WARNED assignment above re-exports under allexport, so unexport again
+    # here -- after every assignment this function performs, and before any
+    # child process is spawned by the caller.
+    export -n _KYZN_UNSAFE_HOST_EXECUTION_WARNED _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED
 }
 
 # Portable timeout wrapper (macOS lacks GNU timeout). Keep input semantics the

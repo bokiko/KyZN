@@ -282,7 +282,7 @@ cmd_measure() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --allow-unsafe-host-execution) _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true; shift ;;
+            --allow-unsafe-host-execution) allow_unsafe_host_execution; shift ;;
             *) log_error "Unknown measure option: $1"; return 1 ;;
         esac
     done
