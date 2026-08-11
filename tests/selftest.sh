@@ -609,7 +609,7 @@ SH
         "$BASH" "$KYZN_ROOT/kyzn" doctor --install --allow-unsafe-host-execution &>/dev/null || rc=$?
     assert_exit_code "doctor subdir install completes" 0 "$rc"
     assert_file_exists "doctor subdir install invoked npm" "$marker"
-    assert_eq "doctor subdir install runs from project.root" "$SANDBOX/web" "$(cat "$marker" 2>/dev/null)"
+    assert_eq "doctor subdir install runs from project.root" "$(cd "$SANDBOX/web" && pwd -P)" "$(cat "$marker" 2>/dev/null)"
     if [[ -d "$SANDBOX/web/node_modules" ]]; then
         pass "doctor subdir install creates node_modules in project.root"
     else
@@ -694,7 +694,7 @@ test_subdir_project_detection() {
     detect_project_type
     assert_eq "single subdir manifest detected" "node" "$KYZN_PROJECT_TYPE"
     assert_eq "single subdir recorded as project subdir" "web" "$KYZN_PROJECT_SUBDIR"
-    assert_eq "project_workdir resolves into the subdir" "$SANDBOX/web" "$(project_workdir)"
+    assert_eq "project_workdir resolves into the subdir" "$(cd "$SANDBOX/web" && pwd -P)" "$(project_workdir)"
     cleanup_sandbox
 
     # Every supported manifest participates in the same one-level rule.
@@ -1784,8 +1784,8 @@ LEAK_DYNAMIC
         local leak_status=0 leak_output="" leak_child_env=""
         IFS=':' read -r leak_label leak_mode leak_type leak_stage leak_location <<< "$leak_scenario"
         rm -f "$leak_capture.static" "$leak_capture.dynamic"
-        leak_expected_cwd="$leak_project"
-        [[ "$leak_location" == "subdir" ]] && leak_expected_cwd="$leak_project/app"
+        leak_expected_cwd=$(cd "$leak_project" && pwd -P)
+        [[ "$leak_location" == "subdir" ]] && leak_expected_cwd=$(cd "$leak_project/app" && pwd -P)
 
         # The nested shell establishes its own allexport mode with set -a/+a
         # before sourcing any production code, rather than relying on an
