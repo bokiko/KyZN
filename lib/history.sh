@@ -23,7 +23,7 @@ cmd_history() {
     else
         require_git_repo
         ensure_kyzn_dirs
-        history_dir="$KYZN_HISTORY_DIR"
+        history_dir=$(_kyzn_history_dir_path)
         log_info "Project: $(project_name)"
     fi
 
@@ -271,7 +271,8 @@ cmd_diff() {
 
     # Prefer the exact branch recorded with this run. Never select a branch by
     # substring: run IDs can be prefixes/suffixes of unrelated branch names.
-    local branch="" recorded_branch="" history_file="$KYZN_HISTORY_DIR/$run_id.json"
+    local branch="" recorded_branch="" history_file
+    history_file="$(_kyzn_history_dir_path)/$run_id.json"
     if [[ -s "$history_file" ]]; then
         recorded_branch=$(jq -r '.branch // empty' "$history_file" 2>/dev/null) || recorded_branch=""
     fi
@@ -299,20 +300,22 @@ cmd_diff() {
         # Fall back to every current report shape. Analysis and fix share the
         # detailed -analysis report; quick/improve uses the plain report, and
         # failed quick runs may only have the -failed report.
-        local report="" candidate
+        local report="" candidate reports_dir legacy_report
+        reports_dir=$(_kyzn_reports_dir_path)
+        legacy_report=$(_kyzn_repo_path "kyzn-report.md")
         for candidate in \
-            "$KYZN_REPORTS_DIR/$run_id.md" \
-            "$KYZN_REPORTS_DIR/$run_id-analysis.md" \
-            "$KYZN_REPORTS_DIR/$run_id-failed.md"; do
+            "$reports_dir/$run_id.md" \
+            "$reports_dir/$run_id-analysis.md" \
+            "$reports_dir/$run_id-failed.md"; do
             if [[ -f "$candidate" ]]; then report="$candidate"; break; fi
         done
 
         # Backward compatibility for analysis reports created before the
         # convenience copy moved under .kyzn/. Only use it when its embedded
         # run ID exactly matches the requested validated ID.
-        if [[ -z "$report" && -f "kyzn-report.md" ]] && \
-           grep -Fq "**Run ID:** \`$run_id\`" "kyzn-report.md"; then
-            report="kyzn-report.md"
+        if [[ -z "$report" && -f "$legacy_report" ]] && \
+           grep -Fq "**Run ID:** \`$run_id\`" "$legacy_report"; then
+            report="$legacy_report"
         fi
 
         if [[ -n "$report" ]]; then
@@ -346,12 +349,14 @@ cmd_status() {
     KYZN_MEASUREMENTS_DIR=""
 
     # Show recent history
-    if [[ -d "$KYZN_HISTORY_DIR" ]] && [[ -n "$(ls -A "$KYZN_HISTORY_DIR" 2>/dev/null)" ]]; then
+    local history_dir
+    history_dir=$(_kyzn_history_dir_path)
+    if [[ -d "$history_dir" ]] && [[ -n "$(ls -A "$history_dir" 2>/dev/null)" ]]; then
         echo ""
         log_info "Recent runs:"
         # Batch: single jq -s call for all entries, limit to 5 most recent
         local _status_tsv
-        _status_tsv=$(ls -r "$KYZN_HISTORY_DIR"/*.json 2>/dev/null | head -5 | xargs cat 2>/dev/null | jq -s '
+        _status_tsv=$(ls -r "$history_dir"/*.json 2>/dev/null | head -5 | xargs cat 2>/dev/null | jq -s '
             [.[] | select(. != null and type == "object")]
             | .[] | [(.run_id // "unknown"), (.status // "pending")] | @tsv
         ' -r 2>/dev/null) || true

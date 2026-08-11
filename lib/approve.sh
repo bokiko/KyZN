@@ -22,9 +22,12 @@ cmd_approve() {
     fi
 
     # Find the report (improve creates $run_id.md, analyze creates $run_id-analysis.md)
-    local report="$KYZN_REPORTS_DIR/$run_id.md"
+    local reports_dir history_dir
+    reports_dir=$(_kyzn_reports_dir_path)
+    history_dir=$(_kyzn_history_dir_path)
+    local report="$reports_dir/$run_id.md"
     if [[ ! -f "$report" ]]; then
-        report="$KYZN_REPORTS_DIR/$run_id-analysis.md"
+        report="$reports_dir/$run_id-analysis.md"
     fi
     if [[ ! -f "$report" ]]; then
         log_error "No report found for run $run_id"
@@ -33,7 +36,7 @@ cmd_approve() {
     fi
 
     # Mark as approved in history
-    local history_file="$KYZN_HISTORY_DIR/$run_id.json"
+    local history_file="$history_dir/$run_id.json"
     if [[ -f "$history_file" ]]; then
         local updated
         updated=$(jq --arg ts "$(timestamp)" --arg proj "$(project_name)" \
@@ -87,7 +90,8 @@ cmd_reject() {
     fi
 
     # Mark as rejected in history
-    local history_file="$KYZN_HISTORY_DIR/$run_id.json"
+    local history_file
+    history_file="$(_kyzn_history_dir_path)/$run_id.json"
     if [[ -f "$history_file" ]]; then
         local updated
         updated=$(jq --arg r "$reason" --arg ts "$(timestamp)" --arg proj "$(project_name)" \

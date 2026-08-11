@@ -49,13 +49,17 @@ KYZN_SETTINGS_JSON="${KYZN_SETTINGS_JSON//\~/$HOME}"
 
 # Ensure .kyzn directories exist (restrictive permissions for global dirs)
 ensure_kyzn_dirs() {
-    mkdir -p "$KYZN_DIR" "$KYZN_HISTORY_DIR" "$KYZN_REPORTS_DIR"
+    local kyzn_dir history_dir reports_dir
+    kyzn_dir=$(_kyzn_dir_path)
+    history_dir=$(_kyzn_history_dir_path)
+    reports_dir=$(_kyzn_reports_dir_path)
+    mkdir -p "$kyzn_dir" "$history_dir" "$reports_dir"
     # shellcheck disable=SC2174 # Restrictive mode is desired on first creation; chmod below fixes pre-existing dirs.
     mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
     chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" 2>/dev/null || true
 
     # Always ensure .kyzn/.gitignore exists (protects target repos even without kyzn init)
-    local gi="$KYZN_DIR/.gitignore"
+    local gi="$kyzn_dir/.gitignore"
     if [[ ! -f "$gi" ]]; then
         cat > "$gi" <<'GITIGNORE'
 # kyzn — gitignored local data
@@ -79,7 +83,7 @@ GITIGNORE
 acquire_kyzn_lock() {
     local label="${1:-improve}"
     ensure_kyzn_dirs
-    KYZN_LOCKDIR="$KYZN_DIR/.improve.lock"
+    KYZN_LOCKDIR="$(_kyzn_dir_path)/.improve.lock"
 
     if mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
         echo $$ > "$KYZN_LOCKDIR/pid"
@@ -162,9 +166,45 @@ require_clean_worktree() {
     return 0
 }
 
+# Resolve every repository-owned KyZN path against the Git root, never CWD.
+# Project tooling temporarily runs from project_workdir(), and users may invoke
+# KyZN from any repository subdirectory; neither may create a second .kyzn tree.
+_kyzn_repo_path() {
+    local path="$1"
+    if [[ "$path" == /* ]]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s/%s\n' "$(project_root)" "$path"
+    fi
+}
+
+_kyzn_dir_path() {
+    _kyzn_repo_path "$KYZN_DIR"
+}
+
+_kyzn_config_path() {
+    _kyzn_repo_path "$KYZN_CONFIG"
+}
+
+_kyzn_local_config_path() {
+    _kyzn_repo_path "$KYZN_LOCAL_CONFIG"
+}
+
+_kyzn_history_dir_path() {
+    _kyzn_repo_path "$KYZN_HISTORY_DIR"
+}
+
+_kyzn_reports_dir_path() {
+    _kyzn_repo_path "$KYZN_REPORTS_DIR"
+}
+
+_kyzn_profile_cache_path() {
+    _kyzn_repo_path "$KYZN_PROFILE_CACHE"
+}
+
 # Check if config exists
 has_config() {
-    [[ -f "$KYZN_CONFIG" ]]
+    [[ -f "$(_kyzn_config_path)" ]]
 }
 
 # Read a config value via yq
@@ -175,7 +215,7 @@ config_get() {
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then echo "$default"; return; fi
     if has_config; then
         local val
-        val=$(yq eval "$key" "$KYZN_CONFIG" 2>/dev/null)
+        val=$(yq eval "$key" "$(_kyzn_config_path)" 2>/dev/null)
         if [[ "$val" == "null" || -z "$val" ]]; then
             echo "$default"
         else
@@ -192,9 +232,11 @@ local_config_get() {
     local default="${2:-}"
     # Validate key — same protection as config_get to prevent yq expression injection
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then echo "$default"; return; fi
-    if [[ -f "$KYZN_LOCAL_CONFIG" ]]; then
+    local local_config_file
+    local_config_file="$(_kyzn_local_config_path)"
+    if [[ -f "$local_config_file" ]]; then
         local val
-        val=$(yq eval "$key" "$KYZN_LOCAL_CONFIG" 2>/dev/null)
+        val=$(yq eval "$key" "$local_config_file" 2>/dev/null)
         if [[ "$val" == "null" || -z "$val" ]]; then
             echo "$default"
         else
@@ -212,10 +254,12 @@ config_set() {
     # Validate key to prevent arbitrary yq expression injection
     if [[ ! "$key" =~ ^[.a-zA-Z0-9_]+(\[[0-9]+\])?$ ]]; then log_error "Invalid config key: $key"; return 1; fi
     ensure_kyzn_dirs
-    if [[ ! -f "$KYZN_CONFIG" ]]; then
-        echo "# kyzn configuration — commit this file" > "$KYZN_CONFIG"
+    local config_file
+    config_file="$(_kyzn_config_path)"
+    if [[ ! -f "$config_file" ]]; then
+        echo "# kyzn configuration — commit this file" > "$config_file"
     fi
-    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$KYZN_CONFIG"
+    VALUE="$value" yq eval -i "$key = strenv(VALUE)" "$config_file"
 }
 
 # Set a string config value (alias for backward compat)
@@ -253,6 +297,50 @@ project_root() {
         KYZN_PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
     fi
     echo "$KYZN_PROJECT_ROOT"
+}
+
+# Directory where project-local tooling must run. detect_project_type stores a
+# physically resolved path after validating project.root or an auto-detected
+# subdirectory. Re-resolve on every use so a deleted directory or a symlink
+# swapped after detection fails closed instead of redirecting execution.
+project_workdir() {
+    [[ -z "${KYZN_PROJECT_WORKDIR_ERROR:-}" ]] || return 1
+
+    local _pw_output_var="${1:-}"
+    local _pw_root _pw_root_real _pw_requested _pw_requested_real
+    _pw_root="$(project_root)"
+    _pw_root_real=$(cd "$_pw_root" 2>/dev/null && pwd -P) || {
+        KYZN_PROJECT_WORKDIR_ERROR="repository root is no longer available"
+        return 1
+    }
+    _pw_requested="${KYZN_PROJECT_WORKDIR:-$_pw_root_real}"
+    _pw_requested_real=$(cd "$_pw_requested" 2>/dev/null && pwd -P) || {
+        KYZN_PROJECT_WORKDIR_ERROR="project directory is no longer available"
+        return 1
+    }
+
+    case "$_pw_requested_real" in
+        "$_pw_root_real"|"$_pw_root_real"/*) ;;
+        *)
+            KYZN_PROJECT_WORKDIR_ERROR="project directory resolves outside the repository"
+            return 1
+            ;;
+    esac
+
+    if [[ -n "${KYZN_PROJECT_WORKDIR:-}" && "$_pw_requested_real" != "$KYZN_PROJECT_WORKDIR" ]]; then
+        KYZN_PROJECT_WORKDIR_ERROR="project directory changed after detection"
+        return 1
+    fi
+
+    if [[ -n "$_pw_output_var" ]]; then
+        printf -v "$_pw_output_var" '%s' "$_pw_requested_real"
+    else
+        printf '%s\n' "$_pw_requested_real"
+    fi
+}
+
+project_workdir_error() {
+    printf '%s\n' "${KYZN_PROJECT_WORKDIR_ERROR:-project directory is missing or resolves outside the repository}"
 }
 
 # Get project name from directory — cached after first call
@@ -611,7 +699,7 @@ write_history() {
     json=$(jq -n "${jq_args[@]}" '$ARGS.named | with_entries(select(.value != ""))') || return 0
 
     # Write to local project history
-    echo "$json" > "$KYZN_HISTORY_DIR/$run_id.json" 2>/dev/null || true
+    echo "$json" > "$(_kyzn_history_dir_path)/$run_id.json" 2>/dev/null || true
 
     # Write to global history
     echo "$json" > "$KYZN_GLOBAL_HISTORY/$run_id.json" 2>/dev/null || true

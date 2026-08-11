@@ -15,7 +15,8 @@ generate_report() {
 
     ensure_kyzn_dirs
 
-    local report_file="$KYZN_REPORTS_DIR/$run_id.md"
+    local report_file
+    report_file="$(_kyzn_reports_dir_path)/$run_id.md"
     local before_score after_score
     # Use pre-computed scores when provided to avoid redundant compute_health_score calls
     if [[ -n "$before_score_param" ]]; then
