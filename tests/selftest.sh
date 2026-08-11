@@ -565,6 +565,60 @@ test_doctor() {
     assert_contains "doctor checks gh" "$output" "gh"
 }
 
+test_doctor_install_uses_project_workdir() {
+    log_header "12b. doctor --install runs inside project.root"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+    echo '{}' > web/package-lock.json
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'web'
+
+    local fake_bin="$SANDBOX/fake-bin"
+    local marker="$SANDBOX/install-cwd"
+    local saved_path="$PATH"
+    mkdir -p "$fake_bin"
+    cat > "$fake_bin/claude" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" ]]; then exit 0; fi
+echo "claude 1.0"
+SH
+    cat > "$fake_bin/gh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "auth" ]]; then exit 0; fi
+echo "gh version 2.0"
+SH
+    cat > "$fake_bin/npm" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "10.0.0"; exit 0; fi
+printf '%s\n' "$PWD" > "$KYZN_TEST_INSTALL_MARKER"
+mkdir -p node_modules
+exit 0
+SH
+    chmod +x "$fake_bin/claude" "$fake_bin/gh" "$fake_bin/npm"
+
+    local rc=0
+    KYZN_TEST_INSTALL_MARKER="$marker" PATH="$fake_bin:$saved_path" \
+        "$BASH" "$KYZN_ROOT/kyzn" doctor --install --allow-unsafe-host-execution &>/dev/null || rc=$?
+    assert_exit_code "doctor subdir install completes" 0 "$rc"
+    assert_file_exists "doctor subdir install invoked npm" "$marker"
+    assert_eq "doctor subdir install runs from project.root" "$SANDBOX/web" "$(cat "$marker" 2>/dev/null)"
+    if [[ -d "$SANDBOX/web/node_modules" ]]; then
+        pass "doctor subdir install creates node_modules in project.root"
+    else
+        fail "doctor subdir install creates node_modules in project.root" "directory missing"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+}
+
 test_version() {
     log_header "13. Version command"
 
@@ -619,6 +673,174 @@ test_rust_workspace_detection() {
     git add -A && git commit -q -m "rust workspace"
     detect_project_type
     assert_eq "detect workspace Cargo.toml" "rust" "$KYZN_PROJECT_TYPE"
+    cleanup_sandbox
+}
+
+test_subdir_project_detection() {
+    log_header "16b. Single-project subdir detection and project.root"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+
+    # One unambiguous manifest one level down (generalizes the Rust-workspace
+    # case above to every language) is auto-detected and recorded as the
+    # project subdirectory; verification/measurers use project_workdir() to
+    # find it.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+    detect_project_type
+    assert_eq "single subdir manifest detected" "node" "$KYZN_PROJECT_TYPE"
+    assert_eq "single subdir recorded as project subdir" "web" "$KYZN_PROJECT_SUBDIR"
+    assert_eq "project_workdir resolves into the subdir" "$SANDBOX/web" "$(project_workdir)"
+    cleanup_sandbox
+
+    # Every supported manifest participates in the same one-level rule.
+    local subdir_type
+    for subdir_type in python rust go csharp java; do
+        SANDBOX=$(mktemp -d)
+        cd "$SANDBOX"
+        git init -q
+        git commit --allow-empty -m "init" -q
+        mkdir -p app
+        case "$subdir_type" in
+            python) printf '[project]\nname="app"\n' > app/pyproject.toml ;;
+            rust) printf '[package]\nname="app"\nversion="0.1.0"\n' > app/Cargo.toml ;;
+            go) printf 'module app\ngo 1.21\n' > app/go.mod ;;
+            csharp) printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > app/app.csproj ;;
+            java) printf '<project />\n' > app/pom.xml ;;
+        esac
+        detect_project_type
+        assert_eq "$subdir_type subdir manifest detected" "$subdir_type" "$KYZN_PROJECT_TYPE"
+        assert_eq "$subdir_type subdir recorded" "app" "$KYZN_PROJECT_SUBDIR"
+        cleanup_sandbox
+    done
+
+    # A root manifest wins. Discovering additional projects would be monorepo
+    # support, which issue #15 explicitly excludes.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    echo '{"name":"root-app"}' > package.json
+    mkdir -p nested
+    printf 'module nested\ngo 1.21\n' > nested/go.mod
+    detect_project_type
+    assert_eq "root manifest takes precedence" "node" "$KYZN_PROJECT_TYPE"
+    assert_eq "root manifest keeps root workdir" "" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+
+    # Two first-level subdirs both have manifests — ambiguous, stays generic
+    # rather than guessing (running the wrong build/test tooling is worse
+    # than not verifying at all).
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    echo '[package]' > api/Cargo.toml
+    detect_project_type
+    assert_eq "ambiguous subdirs stay generic" "generic" "$KYZN_PROJECT_TYPE"
+    assert_eq "ambiguous subdirs set no project subdir" "" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+
+    # project.root disambiguates explicitly, overriding auto-detection.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    echo '[package]' > api/Cargo.toml
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'api'
+    detect_project_type
+    assert_eq "project.root picks the configured subdir" "rust" "$KYZN_PROJECT_TYPE"
+    assert_eq "project.root is recorded as the project subdir" "api" "$KYZN_PROJECT_SUBDIR"
+    cleanup_sandbox
+
+    # An invalid explicit project.root is authoritative too: fail closed rather
+    # than silently selecting a different auto-detected project.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'does-not-exist'
+    detect_project_type 2>/dev/null
+    assert_eq "invalid project.root does not auto-detect another project" "generic" "$KYZN_PROJECT_TYPE"
+    assert_contains "invalid project.root records why it is unavailable" \
+        "${KYZN_PROJECT_WORKDIR_ERROR:-}" "does not name an existing directory"
+    local invalid_rc=0
+    project_workdir >/dev/null || invalid_rc=$?
+    assert_exit_code "invalid project.root has no executable workdir" 1 "$invalid_rc"
+    source "$KYZN_ROOT/lib/verify.sh"
+    invalid_rc=0
+    verify_build &>/dev/null || invalid_rc=$?
+    assert_exit_code "invalid project.root makes verification unavailable" 2 "$invalid_rc"
+    assert_eq "invalid project.root sets unavailable status" "unavailable" "$KYZN_VERIFY_STATUS"
+    cleanup_sandbox
+
+    # Parent traversal is rejected even when it happens to resolve to an
+    # existing directory.
+    local traversal_parent
+    traversal_parent=$(mktemp -d)
+    SANDBOX="$traversal_parent/repo"
+    mkdir -p "$SANDBOX" "$traversal_parent/outside"
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' '../outside'
+    detect_project_type 2>/dev/null
+    assert_contains "project.root rejects parent traversal" \
+        "${KYZN_PROJECT_WORKDIR_ERROR:-}" "without '..' components"
+    cleanup_sandbox
+    rm -rf "$traversal_parent"
+
+    # A symlink inside the repo must not turn project.root into authority to run
+    # commands elsewhere on the host.
+    local symlink_outside
+    symlink_outside=$(mktemp -d)
+    echo '{"name":"outside"}' > "$symlink_outside/package.json"
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    ln -s "$symlink_outside" escape
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'escape'
+    detect_project_type 2>/dev/null
+    assert_contains "project.root rejects symlink escape" \
+        "${KYZN_PROJECT_WORKDIR_ERROR:-}" "resolves outside the repository"
+    cleanup_sandbox
+    rm -rf "$symlink_outside"
+}
+
+test_init_persists_auto_detected_project_root() {
+    log_header "16c. init persists an auto-detected project.root"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/interview.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web
+    echo '{"name":"web-app"}' > web/package.json
+
+    echo -e "1\n1\n2.50\n1\n1" | run_interview 2>/dev/null
+    assert_eq "init persists auto-detected project.root" "web" "$(config_get '.project.root' '')"
     cleanup_sandbox
 }
 
@@ -775,6 +997,95 @@ test_verify_build_dispatch() {
         fail "node verify_build dispatch" "should fail when test script exits 1"
     fi
 
+    cleanup_sandbox
+}
+
+test_verify_build_uses_project_workdir() {
+    log_header "22b. verify_build runs project tooling from project_workdir(), not the repo root"
+
+    if ! command -v make &>/dev/null; then
+        skip "verify_build uses project_workdir" "make unavailable"
+        return
+    fi
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    # Nothing at the repo root; a Makefile only one level down, selected via
+    # project.root. If verify_build ran from the repo root (the pre-fix
+    # behavior) it would report "no build system detected" instead.
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p app
+    printf 'check:\n\t@echo MARKER_CHECK_RAN\n' > app/Makefile
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'app'
+    detect_project_type
+    assert_eq "configured subdir recorded" "app" "$KYZN_PROJECT_SUBDIR"
+
+    local out
+    out=$(verify_build 2>&1) || true
+    assert_contains "verify_build finds and runs the Makefile in the configured subdir" "$out" "MARKER_CHECK_RAN"
+
+    cleanup_sandbox
+}
+
+test_project_workdir_disappearance_fails_closed() {
+    log_header "22c. project-local execution fails closed if the selected directory disappears"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p app
+    echo '{"name":"app"}' > app/package.json
+    ensure_kyzn_dirs
+    echo '{}' > "$KYZN_CONFIG"
+    config_set '.project.root' 'app'
+    detect_project_type
+
+    local measurer="$SANDBOX/probe-measurer.sh"
+    local results="$SANDBOX/results.json"
+    cat > "$measurer" <<'SH'
+#!/usr/bin/env bash
+printf '[]\n'
+SH
+    chmod +x "$measurer"
+    printf '[]\n' > "$results"
+    rm -rf app
+
+    allow_unsafe_host_execution
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
+    local rc=0
+    run_measurer "$measurer" "$results" dynamic &>/dev/null || rc=$?
+    assert_exit_code "missing project workdir blocks dynamic measurer execution" 1 "$rc"
+
+    KYZN_VERIFY_STATUS="passed"
+    KYZN_VERIFY_UNAVAILABLE_REASON=""
+    rc=0
+    install_project_dependencies &>/dev/null || rc=$?
+    assert_exit_code "missing project workdir makes dependency installation unavailable" 2 "$rc"
+    assert_eq "missing install workdir sets unavailable status" "unavailable" "$KYZN_VERIFY_STATUS"
+
+    KYZN_VERIFY_STATUS="passed"
+    KYZN_VERIFY_UNAVAILABLE_REASON=""
+    rc=0
+    gate_new_test_files &>/dev/null || rc=$?
+    assert_exit_code "missing project workdir makes new-test gate unavailable" 2 "$rc"
+
+    KYZN_VERIFY_STATUS="passed"
+    KYZN_VERIFY_UNAVAILABLE_REASON=""
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    assert_exit_code "missing project workdir makes verification unavailable" 2 "$rc"
+    assert_eq "missing verify workdir sets unavailable status" "unavailable" "$KYZN_VERIFY_STATUS"
     cleanup_sandbox
 }
 
@@ -1421,21 +1732,24 @@ test_phase0_execution_and_autopilot_gates() {
     # variable for export -- so a one-time unexport is undone by the parser's
     # own assignment. This drives the real `cmd_measure` flag parser from a
     # pre-exported environment and inspects the environment of the child that
-    # production `run_measurer` spawns, across four scenarios:
+    # production `run_measurer` spawns, across six scenarios:
     #
     #   * normal shell and `-a` (allexport), because only the latter can
     #     re-export at assignment time;
     #   * a dynamic run, which reaches require_unsafe_host_execution, and a
     #     static-only run, which never does -- proving the opt-in helper alone
-    #     keeps authorization process-local, without relying on the gate.
+    #     keeps authorization process-local, without relying on the gate;
+    #   * dynamic execution from the repository root and project_workdir(), so
+    #     selecting a subdirectory cannot regress the process-local guarantee.
     #
     # Detection, display and history helpers are stubbed for isolation; the
     # flag parser, `run_measurements` and `run_measurer` all stay production.
-    local leak_tmp leak_root leak_capture
+    local leak_tmp leak_root leak_project leak_capture
     leak_tmp=$(mktemp -d)
     leak_root="$leak_tmp/root"
+    leak_project="$leak_tmp/project"
     leak_capture="$leak_tmp/child-env"
-    mkdir -p "$leak_root/measurers"
+    mkdir -p "$leak_root/measurers" "$leak_project/app"
     # Each measurer captures ONLY the three names under test -- never the whole
     # environment -- to its own stage file, then emits the JSON run_measurer
     # expects. The static measurer runs for every project type and is never
@@ -1444,28 +1758,34 @@ test_phase0_execution_and_autopilot_gates() {
 #!/usr/bin/env bash
 env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
     > "${KYZN_TEST_ENV_DUMP}.static" || true
+printf 'KYZN_TEST_CWD=%s\n' "$PWD" >> "${KYZN_TEST_ENV_DUMP}.static"
 printf '[]\n'
 LEAK_STATIC
     cat > "$leak_root/measurers/node.sh" <<'LEAK_DYNAMIC'
 #!/usr/bin/env bash
 env | grep -E '^(KYZN_TEST_ENV_DUMP|_KYZN_UNSAFE_HOST_EXECUTION_ALLOWED|_KYZN_UNSAFE_HOST_EXECUTION_WARNED)=' \
     > "${KYZN_TEST_ENV_DUMP}.dynamic" || true
+printf 'KYZN_TEST_CWD=%s\n' "$PWD" >> "${KYZN_TEST_ENV_DUMP}.dynamic"
 printf '[]\n'
 LEAK_DYNAMIC
     chmod +x "$leak_root/measurers/generic.sh" "$leak_root/measurers/node.sh"
 
     local leak_scenario
-    # label : expected allexport mode : project type : capture stage
+    # label : expected allexport mode : project type : capture stage : subdir
     for leak_scenario in \
-        "normal shell, dynamic:off:node:dynamic" \
-        "allexport shell, dynamic:on:node:dynamic" \
-        "normal shell, static-only:off:generic:static" \
-        "allexport shell, static-only:on:generic:static"
+        "normal shell, dynamic:off:node:dynamic:root" \
+        "allexport shell, dynamic:on:node:dynamic:root" \
+        "normal shell, dynamic subdir:off:node:dynamic:subdir" \
+        "allexport shell, dynamic subdir:on:node:dynamic:subdir" \
+        "normal shell, static-only:off:generic:static:root" \
+        "allexport shell, static-only:on:generic:static:root"
     do
-        local leak_label leak_mode leak_type leak_stage
+        local leak_label leak_mode leak_type leak_stage leak_location leak_expected_cwd
         local leak_status=0 leak_output="" leak_child_env=""
-        IFS=':' read -r leak_label leak_mode leak_type leak_stage <<< "$leak_scenario"
+        IFS=':' read -r leak_label leak_mode leak_type leak_stage leak_location <<< "$leak_scenario"
         rm -f "$leak_capture.static" "$leak_capture.dynamic"
+        leak_expected_cwd="$leak_project"
+        [[ "$leak_location" == "subdir" ]] && leak_expected_cwd="$leak_project/app"
 
         # The nested shell establishes its own allexport mode with set -a/+a
         # before sourcing any production code, rather than relying on an
@@ -1479,8 +1799,10 @@ LEAK_DYNAMIC
             _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true \
             KYZN_TEST_ENV_DUMP="$leak_capture" \
             KYZN_LEAK_ROOT="$leak_root" \
+            KYZN_LEAK_PROJECT="$leak_project" \
             KYZN_LEAK_TYPE="$leak_type" \
             KYZN_LEAK_MODE="$leak_mode" \
+            KYZN_LEAK_LOCATION="$leak_location" \
             "$BASH" --noprofile --norc -c '
                 if [[ "$KYZN_LEAK_MODE" == "on" ]]; then set -a; else set +a; fi
                 if shopt -qo allexport; then
@@ -1491,8 +1813,18 @@ LEAK_DYNAMIC
                 source "$1"
                 source "$2"
                 KYZN_ROOT="$KYZN_LEAK_ROOT"
+                KYZN_PROJECT_ROOT="$KYZN_LEAK_PROJECT"
                 require_git_repo() { :; }
-                detect_project_type() { KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"; }
+                detect_project_type() {
+                    KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"
+                    KYZN_PROJECT_SUBDIR=""
+                    KYZN_PROJECT_WORKDIR="$KYZN_LEAK_PROJECT"
+                    KYZN_PROJECT_WORKDIR_ERROR=""
+                    if [[ "$KYZN_LEAK_LOCATION" == "subdir" ]]; then
+                        KYZN_PROJECT_SUBDIR="app"
+                        KYZN_PROJECT_WORKDIR="$KYZN_LEAK_PROJECT/app"
+                    fi
+                }
                 detect_project_features() { :; }
                 print_detection() { :; }
                 display_health_dashboard() { :; }
@@ -1518,6 +1850,8 @@ LEAK_DYNAMIC
         # also proves the parser authorized -- without the flag, run_measurer
         # skips the dynamic measurer and no marker is ever written.
         assert_contains "$leak_label: measurer child ran (control)" "$leak_child_env" "KYZN_TEST_ENV_DUMP="
+        assert_contains "$leak_label: measurer child uses project_workdir" \
+            "$leak_child_env" "KYZN_TEST_CWD=$leak_expected_cwd"
 
         # Anti-vacuity control 3: the scenario is what it claims to be. The
         # isolation warning is emitted only by require_unsafe_host_execution,
@@ -4003,6 +4337,38 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     PATH="$saved_path"
     cleanup_sandbox
 
+    # --- A2. The same fail-closed gate applies when the selected project is a
+    # subdirectory. Missing dotnet must stop before Claude, push, or PR.
+    create_sandbox csharp
+    mkdir -p app
+    git mv test-project.csproj Program.cs app/
+    git commit -q -m "move csharp project into app"
+    detect_project_type
+    assert_eq "improve/subdir baseline: csharp project auto-detected" "app" "$KYZN_PROJECT_SUBDIR"
+    _workflow_setup report
+    config_set '.project.root' 'app'
+    git add "$KYZN_CONFIG" >/dev/null 2>&1 || true
+    git commit -q -m "select app project root" >/dev/null 2>&1 || true
+    orig=$(git rev-parse --abbrev-ref HEAD)
+
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "improve/subdir baseline: aborts non-zero" 1 "$rc"
+    assert_not_contains "improve/subdir baseline: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "improve/subdir baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/subdir baseline: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "improve/subdir baseline: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
+    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+        pass "improve/subdir baseline: lock released"
+    else
+        fail "improve/subdir baseline: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+
     # --- B. cmd_improve, unavailable AFTER Claude ran (adds tsconfig.json) ---
     create_sandbox node
     rm -f tsconfig.json           # baseline must pass: no TS check at all
@@ -6167,16 +6533,21 @@ main() {
     test_claude_json_parsing
     test_symlink_resolution
     test_doctor
+    test_doctor_install_uses_project_workdir
     test_version
     test_help
     test_unknown_command
     test_rust_workspace_detection
+    test_subdir_project_detection
+    test_init_persists_auto_detected_project_root
     test_configurable_model
     test_deep_mode_constraints
     test_score_regression_gate
     test_branch_cleanup_in_failure
     test_verify_build_generic
     test_verify_build_dispatch
+    test_verify_build_uses_project_workdir
+    test_project_workdir_disappearance_fails_closed
     test_build_failure_report_strategy
     test_health_score_edge_cases
     test_prompt_yn

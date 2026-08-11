@@ -95,7 +95,21 @@ run_measurer() {
 
     local output stderr_tmp
     stderr_tmp=$(mktemp)
-    output=$(bash "$measurer" 2>"$stderr_tmp") || true
+    # Run from project_workdir() (project_root(), or its configured/detected
+    # subdir) so measurers that read relative paths (package.json, Cargo.toml,
+    # ...) see the actual project, not just whatever's at the repo root.
+    local workdir run_rc=0
+    if ! workdir=$(project_workdir); then
+        log_error "Measurement unavailable: $(project_workdir_error)"
+        rm -f "$stderr_tmp"
+        return 1
+    fi
+    output=$(cd "$workdir" 2>/dev/null || exit 125; bash "$measurer" 2>"$stderr_tmp") || run_rc=$?
+    if (( run_rc == 125 )); then
+        log_error "Measurement unavailable: project directory could not be entered"
+        rm -f "$stderr_tmp"
+        return 1
+    fi
 
     # Log stderr on failure (was previously discarded with 2>/dev/null)
     if [[ -s "$stderr_tmp" ]]; then

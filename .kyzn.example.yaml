@@ -3,7 +3,10 @@
 
 project:
   name: my-project
-  type: node  # auto-detected: node, python, rust, go
+  type: node  # auto-detected: node, python, rust, go, csharp, java
+  # root: web  # optional: select one project in a first-level subdirectory.
+              # Detection, verification and measurers run there instead of
+              # the repository root. Invalid paths fail closed.
 
 preferences:
   mode: deep          # deep (real improvements) | clean (cleanup) | full (everything)

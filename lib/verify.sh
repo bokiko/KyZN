@@ -107,6 +107,13 @@ _kyzn_python_has_tests() {
 # Returns newline-separated list of FAILED test identifiers.
 # ---------------------------------------------------------------------------
 capture_failing_tests() {
+    (
+    cd "$(project_workdir)" 2>/dev/null || exit 0
+    _kyzn_capture_failing_tests_impl
+    )
+}
+
+_kyzn_capture_failing_tests_impl() {
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
     local failures=""
 
@@ -222,14 +229,46 @@ install_python_dependencies() {
 }
 
 install_project_dependencies() {
+    local workdir rc=0
+    if ! workdir=$(project_workdir); then
+        verify_unavailable "$(project_workdir_error)"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+
+    (
+    cd "$workdir" 2>/dev/null || exit "$KYZN_VERIFY_RC_UNAVAILABLE"
     case "${KYZN_PROJECT_TYPE:-generic}" in
         node)   install_node_dependencies ;;
         python) install_python_dependencies ;;
         *)      log_info "No dependency installer for ${KYZN_PROJECT_TYPE:-generic} projects." ;;
     esac
+    ) || rc=$?
+
+    if (( rc == KYZN_VERIFY_RC_UNAVAILABLE )); then
+        verify_unavailable "project directory could not be entered"
+    fi
+    return "$rc"
 }
 
 gate_new_test_files() {
+    local _orig_pwd
+    _orig_pwd="$(pwd)"
+    local workdir
+    if ! workdir=$(project_workdir) || ! cd "$workdir" 2>/dev/null; then
+        KYZN_PYTEST_IGNORE_ARGS=()
+        verify_unavailable "$(project_workdir_error)"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+    local rc=0
+    _kyzn_gate_new_test_files_impl "$@" || rc=$?
+    if ! cd "$_orig_pwd" 2>/dev/null; then
+        verify_unavailable "could not restore working directory after checking new tests"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+    return "$rc"
+}
+
+_kyzn_gate_new_test_files_impl() {
     local _var_flags="${1:-}"
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
     KYZN_PYTEST_IGNORE_ARGS=()  # must reset before the early returns below
@@ -270,7 +309,31 @@ gate_new_test_files() {
 # ---------------------------------------------------------------------------
 # Verify build and tests pass
 # ---------------------------------------------------------------------------
+# Thin wrapper: runs the actual verification with CWD set to project_workdir()
+# (project_root(), or its configured/detected single-project subdirectory),
+# then restores the caller's CWD. Not a subshell — _kyzn_verify_build_impl
+# sets KYZN_VERIFY_STATUS / KYZN_VERIFY_UNAVAILABLE_REASON, which callers read
+# after this returns, so those writes must land in this process.
 verify_build() {
+    local _orig_pwd
+    _orig_pwd="$(pwd)"
+    KYZN_VERIFY_STATUS="passed"
+    KYZN_VERIFY_UNAVAILABLE_REASON=""
+    local workdir
+    if ! workdir=$(project_workdir) || ! cd "$workdir" 2>/dev/null; then
+        verify_unavailable "$(project_workdir_error)"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+    local rc=0
+    _kyzn_verify_build_impl || rc=$?
+    if ! cd "$_orig_pwd" 2>/dev/null; then
+        verify_unavailable "could not restore working directory after verification"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
+    return "$rc"
+}
+
+_kyzn_verify_build_impl() {
     local project_type="${KYZN_PROJECT_TYPE:-generic}"
 
     log_header "KyZN verify — checking build & tests"

@@ -432,7 +432,10 @@ cmd_doctor() {
             # shellcheck source=lib/verify.sh
             source "$KYZN_ROOT/lib/verify.sh"
             detect_project_type
-            install_project_dependencies
+            if ! install_project_dependencies; then
+                log_error "Project dependency installation was not executed."
+                ok=false
+            fi
         else
             log_error "--install requires running inside a git repository"
             ok=false

@@ -265,6 +265,12 @@ EOF
     # Safely write project name via config_set to handle YAML-special chars
     config_set '.project.name' "$(project_name)"
 
+    # Persist an auto-detected (or already-configured) subdirectory so later
+    # runs don't have to re-guess it, and so it's visible/editable by the user.
+    if [[ -n "${KYZN_PROJECT_SUBDIR:-}" ]]; then
+        config_set '.project.root' "$KYZN_PROJECT_SUBDIR"
+    fi
+
     # Write trust to gitignored local config (prevents config poisoning)
     cat > "$KYZN_LOCAL_CONFIG" <<EOF
 # KyZN local config — NOT committed (gitignored)
