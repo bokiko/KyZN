@@ -722,7 +722,8 @@ cmd_improve() {
     _kyzn_cleanup() {
         # Mark run as failed if still running
         if [[ -n "${run_id:-}" ]]; then
-            local _hist_file="$KYZN_HISTORY_DIR/$run_id.json"
+            local _hist_file
+            _hist_file="$(_kyzn_history_dir_path)/$run_id.json"
             if [[ -f "$_hist_file" ]]; then
                 local _cur_status
                 _cur_status=$(jq -r '.status // ""' "$_hist_file" 2>/dev/null) || true
@@ -756,7 +757,7 @@ cmd_improve() {
 
     # Persist model choice to config (only if chosen interactively, not from CLI override)
     if has_config && ! $model_from_cli; then
-        VALUE="$model" yq eval -i '.preferences.model = strenv(VALUE)' "$KYZN_CONFIG"
+        VALUE="$model" yq eval -i '.preferences.model = strenv(VALUE)' "$(_kyzn_config_path)"
     fi
 
     # Step 2: Create branch (use run_id suffix for uniqueness)
@@ -1108,7 +1109,9 @@ handle_build_failure() {
         report)
             log_info "Writing failure report..."
             ensure_kyzn_dirs
-            cat > "$KYZN_REPORTS_DIR/$run_id-failed.md" <<EOF
+            local failed_report
+            failed_report="$(_kyzn_reports_dir_path)/$run_id-failed.md"
+            cat > "$failed_report" <<EOF
 # KyZN Run Failed: $run_id
 
 **Date:** $(date -u)
@@ -1126,7 +1129,7 @@ $(git diff --stat 2>/dev/null || echo "No diff available")
 - Review the changes manually
 - Consider running with a more conservative mode
 EOF
-            log_info "Report saved to $KYZN_REPORTS_DIR/$run_id-failed.md"
+            log_info "Report saved to $failed_report"
             safe_checkout_back
             if [[ -n "$branch_name" ]]; then safe_git branch -D "$branch_name" 2>/dev/null || true; fi
             ;;

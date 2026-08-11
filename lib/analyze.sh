@@ -338,7 +338,8 @@ run_profiler() {
     local output_file="$3"
 
     # Cache check: .kyzn/repo-profile.md with SHA on line 1
-    local cache_file="$KYZN_PROFILE_CACHE"
+    local cache_file
+    cache_file=$(_kyzn_profile_cache_path)
     local current_sha
     current_sha=$(git rev-parse HEAD 2>/dev/null || echo "none")
     if [[ -f "$cache_file" ]]; then
@@ -460,7 +461,8 @@ Be specific — reference actual file names and patterns you observed. Do not gu
     cp "$cache_file" "$output_file"
 
     # Add to .kyzn/.gitignore if not already there
-    local gi="$KYZN_DIR/.gitignore"
+    local gi
+    gi="$(_kyzn_dir_path)/.gitignore"
     if [[ -f "$gi" ]] && ! grep -qF "repo-profile.md" "$gi"; then
         echo "repo-profile.md" >> "$gi"
     fi
@@ -830,7 +832,8 @@ cmd_analyze() {
         done
         # Update history if still running
         if [[ -n "${run_id:-}" ]]; then
-            local _hist_file="$KYZN_HISTORY_DIR/$run_id.json"
+            local _hist_file
+            _hist_file="$(_kyzn_history_dir_path)/$run_id.json"
             if [[ -f "$_hist_file" ]]; then
                 local _cur_status
                 _cur_status=$(jq -r '.status // ""' "$_hist_file" 2>/dev/null) || true
@@ -893,7 +896,8 @@ cmd_analyze() {
     local settings_json="$KYZN_SETTINGS_JSON"
     local total_cost=0
 
-    local findings_file="$KYZN_REPORTS_DIR/$run_id-findings.json"
+    local findings_file
+    findings_file="$(_kyzn_reports_dir_path)/$run_id-findings.json"
 
     if $single || [[ -n "$focus" ]]; then
         # ---------------------------------------------------------------
@@ -1165,7 +1169,8 @@ cmd_analyze() {
 
     # Generate detailed markdown report (before display, so we can reference the path)
     ensure_kyzn_dirs
-    local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    local report_file
+    report_file="$(_kyzn_reports_dir_path)/$run_id-analysis.md"
     # Compute severity counts once (shared by generate_detailed_report + display_findings)
     local _sev_counts _sev_c _sev_h _sev_m _sev_l
     _sev_counts=$(jq -r '[
@@ -1180,7 +1185,8 @@ cmd_analyze() {
 
     # Keep the convenience copy with KyZN-owned ignored state so analysis does
     # not leave an untracked file in the target repository root.
-    local root_report="$KYZN_DIR/kyzn-report.md"
+    local root_report
+    root_report="$(_kyzn_dir_path)/kyzn-report.md"
     if ! $fix; then
         copy_analysis_convenience_report "$report_file" || log_warn "Could not create convenience report"
     fi
@@ -1221,7 +1227,7 @@ cmd_analyze() {
 copy_analysis_convenience_report() {
     local report_file="$1"
     ensure_kyzn_dirs
-    cp "$report_file" "$KYZN_DIR/kyzn-report.md"
+    cp "$report_file" "$(_kyzn_dir_path)/kyzn-report.md"
 }
 
 # ---------------------------------------------------------------------------
@@ -1339,7 +1345,8 @@ run_fix_phase() {
     local min_severity="$2"
     local run_id="$3"
     local fix_budget="$4"
-    local repo_profile="${5:-$KYZN_PROFILE_CACHE}"
+    local repo_profile="${5:-}"
+    [[ -n "$repo_profile" ]] || repo_profile=$(_kyzn_profile_cache_path)
 
     # Defense in depth for direct/internal callers; cmd_analyze gates before
     # spending analysis budget, but the fix phase must also fail closed.
@@ -1359,7 +1366,8 @@ run_fix_phase() {
     trap _kyzn_fix_cleanup EXIT INT TERM
 
     # Pass the full report to give Claude rich context for fixes
-    local report_file="$KYZN_REPORTS_DIR/$run_id-analysis.md"
+    local report_file
+    report_file="$(_kyzn_reports_dir_path)/$run_id-analysis.md"
 
     # Filter findings by severity
     local min_rank
@@ -1741,12 +1749,14 @@ ${retry_baseline_context}
             log_error "$tier batch still broken after retry — reverting batch"
             # Save user's local config before cleaning (gitignored, would be lost)
             local _saved_local=""
-            [[ -f "$KYZN_DIR/local.yaml" ]] && _saved_local=$(cat "$KYZN_DIR/local.yaml")
+            local _local_config_file
+            _local_config_file=$(_kyzn_local_config_path)
+            [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
             safe_git reset --hard "$pre_batch_head" 2>/dev/null
             # Restore saved files
             if [[ -n "$_saved_local" ]]; then
-                mkdir -p "$KYZN_DIR"
-                echo "$_saved_local" > "$KYZN_DIR/local.yaml"
+                mkdir -p "$(_kyzn_dir_path)"
+                echo "$_saved_local" > "$_local_config_file"
             fi
             ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
             (( batches_failed++ )) || true

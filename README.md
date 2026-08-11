@@ -238,8 +238,8 @@ The CI entries above are deterministic KyZN fixtures, not claims that every exte
 
 <!-- BEGIN GENERATED REPOSITORY FACTS -->
 - Repository files: **78**
-- Bash entrypoints/modules/scripts: **26** files, **15535** lines
-- Self-test harness: **113** test functions, **6671** lines (runtime assertion totals are reported by the suite, not hardcoded)
+- Bash entrypoints/modules/scripts: **26** files, **15734** lines
+- Self-test harness: **114** test functions, **6790** lines (runtime assertion totals are reported by the suite, not hardcoded)
 - Project profiles: **6** languages plus the generic fallback
 - CI matrix: **Linux and macOS**, each running quick and full self-tests
 <!-- END GENERATED REPOSITORY FACTS -->

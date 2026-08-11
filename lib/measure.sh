@@ -99,7 +99,7 @@ run_measurer() {
     # subdir) so measurers that read relative paths (package.json, Cargo.toml,
     # ...) see the actual project, not just whatever's at the repo root.
     local workdir run_rc=0
-    if ! workdir=$(project_workdir); then
+    if ! project_workdir workdir; then
         log_error "Measurement unavailable: $(project_workdir_error)"
         rm -f "$stderr_tmp"
         return 1

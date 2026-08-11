@@ -402,6 +402,55 @@ test_interview_config() {
     cleanup_sandbox
 }
 
+test_repo_state_paths_ignore_subdir_cwd() {
+    log_header "5b. repository state paths ignore a subdirectory CWD"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/interview.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p nested
+    cd nested
+
+    # config_set must create its parent at the Git root even when no .kyzn tree
+    # exists yet. The pre-fix split created nested/.kyzn, then failed to write
+    # the already-root-qualified config path.
+    local rc=0
+    config_set '.project.name' 'from-subdir' 2>/dev/null || rc=$?
+    assert_exit_code "subdir config_set creates the root config" 0 "$rc"
+    assert_eq "subdir config_set writes the root config" "from-subdir" \
+        "$(yq eval '.project.name' "$SANDBOX/.kyzn/config.yaml" 2>/dev/null)"
+    if [[ ! -e "$SANDBOX/nested/.kyzn" ]]; then
+        pass "subdir config_set creates no second .kyzn tree"
+    else
+        fail "subdir config_set creates no second .kyzn tree" "nested/.kyzn exists"
+    fi
+
+    # Exercise init's direct config/local.yaml writes from the same CWD with a
+    # fresh state tree. Every file must land under the repository root.
+    rm -rf "$SANDBOX/.kyzn" "$SANDBOX/nested/.kyzn"
+    rc=0
+    echo -e "1\n1\n2.50\n1\n1" | cmd_init &>/dev/null || rc=$?
+    assert_exit_code "subdir init completes" 0 "$rc"
+    assert_file_exists "subdir init writes root config" "$SANDBOX/.kyzn/config.yaml"
+    assert_file_exists "subdir init writes root local config" "$SANDBOX/.kyzn/local.yaml"
+    assert_file_exists "subdir init writes root gitignore" "$SANDBOX/.kyzn/.gitignore"
+
+    write_history "subdir-state-001" "measure" "completed"
+    assert_file_exists "subdir history stays at the root" \
+        "$SANDBOX/.kyzn/history/subdir-state-001.json"
+    if [[ ! -e "$SANDBOX/nested/.kyzn" ]]; then
+        pass "subdir init and history leave no split state tree"
+    else
+        fail "subdir init and history leave no split state tree" "nested/.kyzn exists"
+    fi
+
+    cleanup_sandbox
+}
+
 test_measure() {
     log_header "6. Measurement system"
 
@@ -1813,16 +1862,16 @@ LEAK_DYNAMIC
                 source "$1"
                 source "$2"
                 KYZN_ROOT="$KYZN_LEAK_ROOT"
-                KYZN_PROJECT_ROOT="$KYZN_LEAK_PROJECT"
+                KYZN_PROJECT_ROOT=$(cd "$KYZN_LEAK_PROJECT" && pwd -P)
                 require_git_repo() { :; }
                 detect_project_type() {
                     KYZN_PROJECT_TYPE="$KYZN_LEAK_TYPE"
                     KYZN_PROJECT_SUBDIR=""
-                    KYZN_PROJECT_WORKDIR="$KYZN_LEAK_PROJECT"
+                    KYZN_PROJECT_WORKDIR="$KYZN_PROJECT_ROOT"
                     KYZN_PROJECT_WORKDIR_ERROR=""
                     if [[ "$KYZN_LEAK_LOCATION" == "subdir" ]]; then
                         KYZN_PROJECT_SUBDIR="app"
-                        KYZN_PROJECT_WORKDIR="$KYZN_LEAK_PROJECT/app"
+                        KYZN_PROJECT_WORKDIR="$KYZN_PROJECT_ROOT/app"
                     fi
                 }
                 detect_project_features() { :; }
@@ -4369,6 +4418,75 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     PATH="$saved_path"
     cleanup_sandbox
 
+    # --- A3. Re-resolving a selected project directory must be a fixed-point
+    # check. If the directory is swapped for an in-repository symlink after
+    # detection, the run must go unavailable before Claude or publication.
+    create_sandbox generic
+    mkdir -p app sibling
+    echo '{"name":"selected-app","scripts":{"test":"true"}}' > app/package.json
+    echo '{"name":"wrong-sibling","scripts":{"test":"true"}}' > sibling/package.json
+    git add app sibling
+    git commit -q -m "add selectable projects"
+    _workflow_setup report
+    config_set '.project.root' 'app'
+    git add .kyzn/config.yaml >/dev/null 2>&1 || true
+    git commit -q -m "select app project root" >/dev/null 2>&1 || true
+    detect_project_type
+    assert_eq "improve/project-swap: selected project detected" "app" "$KYZN_PROJECT_SUBDIR"
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    local orig_sha; orig_sha=$(git rev-parse HEAD)
+
+    local saved_kyzn_root="$KYZN_ROOT"
+    local swap_root="$WORKFLOW_TMP/kyzn-root"
+    mkdir -p "$swap_root/measurers"
+    ln -s "$saved_kyzn_root/templates" "$swap_root/templates"
+    cat > "$swap_root/measurers/generic.sh" <<'SH'
+#!/usr/bin/env bash
+/bin/mv "$KYZN_SWAP_REPO/app" "$KYZN_SWAP_REPO/app-original"
+/bin/ln -s sibling "$KYZN_SWAP_REPO/app"
+printf '[]\n'
+SH
+    cat > "$swap_root/measurers/node.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'wrong project executed\n' > "$KYZN_SWAP_MARKER"
+printf '[]\n'
+SH
+    chmod +x "$swap_root/measurers/generic.sh" "$swap_root/measurers/node.sh"
+    KYZN_SWAP_REPO="$SANDBOX"
+    KYZN_SWAP_MARKER="$WORKFLOW_TMP/wrong-project-ran"
+    export KYZN_SWAP_REPO KYZN_SWAP_MARKER
+    KYZN_ROOT="$swap_root"
+
+    rc=0
+    cmd_improve --auto &> "$WORKFLOW_TMP/project-swap.out" || rc=$?
+    trap - EXIT INT TERM
+    KYZN_ROOT="$saved_kyzn_root"
+    log=$(cat "$WORKFLOW_LOG")
+    out=$(cat "$WORKFLOW_TMP/project-swap.out")
+
+    assert_exit_code "improve/project-swap: aborts non-zero" 1 "$rc"
+    assert_contains "improve/project-swap: reports the fixed-point failure" \
+        "$out" "project directory changed after detection"
+    if [[ ! -e "$KYZN_SWAP_MARKER" ]]; then
+        pass "improve/project-swap: wrong project measurer never ran"
+    else
+        fail "improve/project-swap: wrong project measurer never ran" \
+            "the swapped-in sibling project was measured"
+    fi
+    assert_not_contains "improve/project-swap: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "improve/project-swap: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/project-swap: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "improve/project-swap: no commit was created" "$orig_sha" "$(git rev-parse HEAD)"
+    assert_eq "improve/project-swap: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
+    if [[ ! -d "$SANDBOX/.kyzn/.improve.lock" ]]; then
+        pass "improve/project-swap: lock released"
+    else
+        fail "improve/project-swap: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    unset KYZN_SWAP_REPO KYZN_SWAP_MARKER
+    cleanup_sandbox
+
     # --- B. cmd_improve, unavailable AFTER Claude ran (adds tsconfig.json) ---
     create_sandbox node
     rm -f tsconfig.json           # baseline must pass: no TS check at all
@@ -6526,6 +6644,7 @@ main() {
     test_detect
     test_config
     test_interview_config
+    test_repo_state_paths_ignore_subdir_cwd
     test_measure
     test_allowlist
     test_report_arithmetic

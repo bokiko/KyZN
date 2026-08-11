@@ -107,8 +107,10 @@ _kyzn_python_has_tests() {
 # Returns newline-separated list of FAILED test identifiers.
 # ---------------------------------------------------------------------------
 capture_failing_tests() {
+    local workdir
+    project_workdir workdir || return 0
     (
-    cd "$(project_workdir)" 2>/dev/null || exit 0
+    cd "$workdir" 2>/dev/null || exit 0
     _kyzn_capture_failing_tests_impl
     )
 }
@@ -230,7 +232,7 @@ install_python_dependencies() {
 
 install_project_dependencies() {
     local workdir rc=0
-    if ! workdir=$(project_workdir); then
+    if ! project_workdir workdir; then
         verify_unavailable "$(project_workdir_error)"
         return "$KYZN_VERIFY_RC_UNAVAILABLE"
     fi
@@ -254,7 +256,7 @@ gate_new_test_files() {
     local _orig_pwd
     _orig_pwd="$(pwd)"
     local workdir
-    if ! workdir=$(project_workdir) || ! cd "$workdir" 2>/dev/null; then
+    if ! project_workdir workdir || ! cd "$workdir" 2>/dev/null; then
         KYZN_PYTEST_IGNORE_ARGS=()
         verify_unavailable "$(project_workdir_error)"
         return "$KYZN_VERIFY_RC_UNAVAILABLE"
@@ -320,7 +322,7 @@ verify_build() {
     KYZN_VERIFY_STATUS="passed"
     KYZN_VERIFY_UNAVAILABLE_REASON=""
     local workdir
-    if ! workdir=$(project_workdir) || ! cd "$workdir" 2>/dev/null; then
+    if ! project_workdir workdir || ! cd "$workdir" 2>/dev/null; then
         verify_unavailable "$(project_workdir_error)"
         return "$KYZN_VERIFY_RC_UNAVAILABLE"
     fi

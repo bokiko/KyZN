@@ -197,7 +197,7 @@ detect_project_features() {
     KYZN_HAS_DOCKER=false
     KYZN_HAS_LINTER=false
 
-    root=$(project_workdir) || return 0
+    project_workdir root || return 0
 
     # TypeScript
     if [[ -f "$root/tsconfig.json" ]]; then
@@ -261,7 +261,7 @@ print_detection() {
 # Node/Rust/Go: parses manifests (import names match package names).
 detect_installed_packages() {
     local workdir
-    workdir=$(project_workdir) || return 0
+    project_workdir workdir || return 0
     (
     cd "$workdir" 2>/dev/null || exit 0
     case "${KYZN_PROJECT_TYPE:-generic}" in
