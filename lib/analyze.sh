@@ -721,6 +721,19 @@ cmd_analyze() {
     detect_project_features
     print_detection
 
+    # Report-only analysis remains available for ambiguous repositories, but
+    # --fix must fail before spending any Claude budget: without project.root,
+    # no project build/test suite can authorize a mutation.
+    if $fix && [[ -n "${KYZN_PROJECT_AMBIGUITY_REASON:-}" ]]; then
+        local ambiguity_verify_rc=0
+        verify_build 2>/dev/null || ambiguity_verify_rc=$?
+        if verify_not_executed "$ambiguity_verify_rc"; then
+            log_error "Cannot verify this project: $KYZN_VERIFY_UNAVAILABLE_REASON"
+            log_error "Refusing to start analysis or fixes for changes KyZN cannot verify."
+            return 1
+        fi
+    fi
+
     # Measure first
     local measure_dir
     measure_dir=$(mktemp -d)

@@ -875,8 +875,111 @@ test_subdir_project_detection() {
     rm -rf "$symlink_outside"
 }
 
+test_ambiguous_subdir_verification_boundary() {
+    log_header "16c. Ambiguous subdirs keep read-only paths but block mutation"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    SANDBOX=$(mktemp -d)
+    cd "$SANDBOX"
+    git init -q
+    git commit --allow-empty -m "init" -q
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    printf 'module api\ngo 1.21\n' > api/go.mod
+    git add web api
+    git commit -q -m "add ambiguous projects"
+    ensure_kyzn_dirs
+    git add .kyzn/.gitignore
+    git commit -q -m "track kyzn state policy"
+
+    local detection_output detection_file
+    detection_file=$(mktemp)
+    detect_project_type > "$detection_file" 2>&1
+    detection_output=$(cat "$detection_file")
+    rm -f "$detection_file"
+    assert_eq "ambiguous verification: detection remains generic" "generic" "$KYZN_PROJECT_TYPE"
+    assert_contains "ambiguous verification: detection records a dedicated reason" \
+        "${KYZN_PROJECT_AMBIGUITY_REASON:-}" "Multiple candidate project directories"
+    assert_contains "ambiguous verification: detection still gives project.root guidance" \
+        "$detection_output" "set project.root in .kyzn/config.yaml to pick one"
+
+    local rc=0 out
+    verify_build &>/dev/null || rc=$?
+    assert_exit_code "ambiguous verification: verify_build is unavailable" 2 "$rc"
+    assert_eq "ambiguous verification: status is unavailable" "unavailable" "$KYZN_VERIFY_STATUS"
+    assert_contains "ambiguous verification: reason reaches verification" \
+        "$KYZN_VERIFY_UNAVAILABLE_REASON" "Multiple candidate project directories"
+
+    # Static measurement remains useful: ambiguity blocks authorization, not
+    # repository-only signals that execute no project command.
+    rc=0
+    out=$(cmd_measure 2>&1) || rc=$?
+    assert_exit_code "ambiguous verification: static measure still succeeds" 0 "$rc"
+    assert_contains "ambiguous verification: generic static measurer ran" \
+        "$out" "Running generic measurements"
+
+    # A report-only analysis may still read the repository. The corresponding
+    # --fix path must stop before this same Claude boundary.
+    local fake_bin analyze_marker saved_path="$PATH"
+    fake_bin=$(mktemp -d)
+    analyze_marker="$fake_bin/analyze-invoked"
+    cat > "$fake_bin/claude" <<'SH'
+#!/usr/bin/env bash
+: > "$KYZN_ANALYZE_MARKER"
+echo '{"total_cost_usd":0.01,"result":"[]"}'
+SH
+    chmod +x "$fake_bin/claude"
+    KYZN_ANALYZE_MARKER="$analyze_marker"
+    export KYZN_ANALYZE_MARKER
+    PATH="$fake_bin:$saved_path"
+
+    rc=0
+    cmd_analyze --fix --single --auto --budget 0.10 \
+        --allow-unsafe-host-execution &>/dev/null || rc=$?
+    assert_exit_code "ambiguous verification: analyze --fix aborts" 1 "$rc"
+    if [[ ! -e "$analyze_marker" ]]; then
+        pass "ambiguous verification: analyze --fix never invokes Claude"
+    else
+        fail "ambiguous verification: analyze --fix never invokes Claude" \
+            "Claude marker exists"
+    fi
+
+    rm -f "$analyze_marker"
+    rc=0
+    cmd_analyze --single --auto --budget 0.10 &>/dev/null || rc=$?
+    assert_exit_code "ambiguous verification: report-only analyze succeeds" 0 "$rc"
+    assert_file_exists "ambiguous verification: report-only analyze invokes Claude" "$analyze_marker"
+    PATH="$saved_path"
+    unset KYZN_ANALYZE_MARKER
+    rm -rf "$fake_bin"
+
+    # An explicit project.root resolves the dedicated ambiguity state and
+    # restores the normal verification path.
+    config_set '.project.root' 'web'
+    detect_project_type
+    assert_eq "ambiguous verification: project.root selects a project" "node" "$KYZN_PROJECT_TYPE"
+    assert_eq "ambiguous verification: project.root records the selected subdir" "web" "$KYZN_PROJECT_SUBDIR"
+    assert_eq "ambiguous verification: project.root clears ambiguity" "" \
+        "${KYZN_PROJECT_AMBIGUITY_REASON:-}"
+    rc=0
+    verify_build &>/dev/null || rc=$?
+    assert_exit_code "ambiguous verification: configured project verifies normally" 0 "$rc"
+    assert_eq "ambiguous verification: configured status passes" "passed" "$KYZN_VERIFY_STATUS"
+
+    cleanup_sandbox
+}
+
 test_init_persists_auto_detected_project_root() {
-    log_header "16c. init persists an auto-detected project.root"
+    log_header "16d. init persists an auto-detected project.root"
 
     source "$KYZN_ROOT/lib/detect.sh"
     source "$KYZN_ROOT/lib/interview.sh"
@@ -4487,6 +4590,50 @@ SH
     unset KYZN_SWAP_REPO KYZN_SWAP_MARKER
     cleanup_sandbox
 
+    # --- A4. Ambiguous project roots must not inherit generic verification.
+    # The operator's dirty file proves the unavailable unwind preserves the
+    # worktree while Claude and every publication boundary remain untouched.
+    create_sandbox generic
+    mkdir -p web api
+    echo '{"name":"web-app"}' > web/package.json
+    printf 'module api\ngo 1.21\n' > api/go.mod
+    echo "operator baseline" > operator-note.txt
+    git add web api operator-note.txt
+    git commit -q -m "add ambiguous projects"
+    detect_project_type 2>/dev/null
+    assert_contains "improve/ambiguous: detection records ambiguity" \
+        "${KYZN_PROJECT_AMBIGUITY_REASON:-}" "Multiple candidate project directories"
+    _workflow_setup report
+    orig=$(git rev-parse --abbrev-ref HEAD)
+    orig_sha=$(git rev-parse HEAD)
+    printf 'operator edit preserved\n' >> operator-note.txt
+    local operator_contents
+    operator_contents=$(cat operator-note.txt)
+
+    rc=0
+    cmd_improve --auto --allow-dirty &> "$WORKFLOW_TMP/ambiguous.out" || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    out=$(cat "$WORKFLOW_TMP/ambiguous.out")
+
+    assert_exit_code "improve/ambiguous: aborts non-zero" 1 "$rc"
+    assert_contains "improve/ambiguous: reports unavailable verification" \
+        "$out" "Multiple candidate project directories"
+    assert_not_contains "improve/ambiguous: Claude never invoked" "$log" "CLAUDE-INVOKED"
+    assert_not_contains "improve/ambiguous: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
+    assert_eq "improve/ambiguous: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
+    assert_eq "improve/ambiguous: no commit was created" "$orig_sha" "$(git rev-parse HEAD)"
+    assert_eq "improve/ambiguous: operator edit is preserved" \
+        "$operator_contents" "$(cat operator-note.txt)"
+    assert_eq "improve/ambiguous: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
+    if [[ ! -d "$SANDBOX/.kyzn/.improve.lock" ]]; then
+        pass "improve/ambiguous: lock released"
+    else
+        fail "improve/ambiguous: lock released" "lock directory still present"
+    fi
+    PATH="$saved_path"
+    cleanup_sandbox
+
     # --- B. cmd_improve, unavailable AFTER Claude ran (adds tsconfig.json) ---
     create_sandbox node
     rm -f tsconfig.json           # baseline must pass: no TS check at all
@@ -6658,6 +6805,7 @@ main() {
     test_unknown_command
     test_rust_workspace_detection
     test_subdir_project_detection
+    test_ambiguous_subdir_verification_boundary
     test_init_persists_auto_detected_project_root
     test_configurable_model
     test_deep_mode_constraints

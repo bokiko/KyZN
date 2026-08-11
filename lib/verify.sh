@@ -321,6 +321,10 @@ verify_build() {
     _orig_pwd="$(pwd)"
     KYZN_VERIFY_STATUS="passed"
     KYZN_VERIFY_UNAVAILABLE_REASON=""
+    if [[ -n "${KYZN_PROJECT_AMBIGUITY_REASON:-}" ]]; then
+        verify_unavailable "$KYZN_PROJECT_AMBIGUITY_REASON"
+        return "$KYZN_VERIFY_RC_UNAVAILABLE"
+    fi
     local workdir
     if ! project_workdir workdir || ! cd "$workdir" 2>/dev/null; then
         verify_unavailable "$(project_workdir_error)"

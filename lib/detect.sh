@@ -125,6 +125,7 @@ detect_project_type() {
     KYZN_PROJECT_SUBDIR=""
     KYZN_PROJECT_WORKDIR=""
     KYZN_PROJECT_WORKDIR_ERROR=""
+    KYZN_PROJECT_AMBIGUITY_REASON=""
 
     local root
     root="$(project_root)"
@@ -173,7 +174,8 @@ detect_project_type() {
                 log_error "$KYZN_PROJECT_WORKDIR_ERROR"
             fi
         elif (( ${#candidates[@]} > 1 )); then
-            log_warn "Multiple candidate project directories one level down (${candidates[*]}) — set project.root in .kyzn/config.yaml to pick one."
+            KYZN_PROJECT_AMBIGUITY_REASON="Multiple candidate project directories one level down (${candidates[*]}) — set project.root in .kyzn/config.yaml to pick one."
+            log_warn "$KYZN_PROJECT_AMBIGUITY_REASON"
         fi
     fi
 
