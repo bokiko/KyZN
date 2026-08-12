@@ -6864,10 +6864,14 @@ SH
     assert_exit_code "batch-revert: run succeeds on the surviving HIGH batch" 0 "$rc"
     PATH="$saved_path"; cleanup_sandbox
 
-    # --- B. The only batch crashes and leaves an untracked file behind — a
-    #        `git reset --hard` cannot remove what git never tracked. The
-    #        all-batches-failed abort must refuse to switch branches out of a
-    #        dirty tree and must leave the kyzn/ branch in place. -------------
+    # --- B. The only batch crashes and leaves an untracked file behind that
+    #        looks like a credential. `git reset --hard` cannot remove what
+    #        git never tracked, and the untracked-residue sweep deliberately
+    #        leaves secret-looking paths alone (same exclusion
+    #        stage_claude_changes uses) rather than silently deleting a
+    #        possible credential. The all-batches-failed abort must refuse to
+    #        switch branches out of that dirty tree and must leave the kyzn/
+    #        branch in place. -------------------------------------------------
     _batch_revert_sandbox
     run_id="20260812-fixt11"
     printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
@@ -6876,8 +6880,8 @@ SH
 
     cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
 #!/usr/bin/env bash
-echo "junk" > src/half-written.js
-echo "mock claude crashed mid-edit, left an untracked file behind" >&2
+echo "-----BEGIN OPENSSH PRIVATE KEY-----" > id_rsa
+echo "mock claude crashed mid-edit, left a credential-looking file behind" >&2
 exit 5
 SH
     CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
@@ -6895,7 +6899,7 @@ SH
     assert_exit_code "dirty-guard: run still aborts non-zero" 1 "$rc"
     assert_contains "dirty-guard: refuses to switch branches out of a dirty tree" \
         "$out" "refusing to switch branches"
-    assert_contains "dirty-guard: names the leftover file as the reason" "$out" "half-written.js"
+    assert_contains "dirty-guard: names the leftover file as the reason" "$out" "id_rsa"
 
     local cur_branch
     cur_branch=$(git rev-parse --abbrev-ref HEAD)
@@ -6905,9 +6909,180 @@ SH
         fail "dirty-guard: no branch switch — still on the kyzn branch" "current branch is '$cur_branch'"
     fi
     assert_contains "dirty-guard: current branch is the kyzn fix branch" "$cur_branch" "kyzn/"
-    assert_file_exists "dirty-guard: leftover untracked file preserved for inspection" "src/half-written.js"
+    assert_file_exists "dirty-guard: leftover credential-looking file preserved for inspection" "id_rsa"
     assert_eq "dirty-guard: original branch gains no commits" "$orig_sha" "$(git rev-parse "$orig_branch")"
     assert_not_contains "dirty-guard: nothing pushed or PR'd" "$log" "FORBIDDEN"
+
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+}
+
+test_fix_batch_preserves_dirty_baseline_and_ignored_residue() {
+    log_header "92. dirty pre-existing edits and ignored-file residue survive a crashed batch"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc out run_id findings orig_branch orig_sha cur_branch
+
+    # --- A. (F1) The worktree already has the user's own uncommitted tracked
+    #        edit before the fix phase starts — what --allow-dirty permits.
+    #        The only batch crashes immediately, so every batch fails; a bare
+    #        `git reset --hard $pre_batch_head` would destroy that edit as a
+    #        side effect of reverting the crashed batch. It must survive, and
+    #        the run must refuse to delete the branch that preserves it. -----
+    _batch_revert_sandbox
+    echo 'const USER_PRE_EXISTING_EDIT = true;' >> src/index.js
+    orig_branch=$(git rev-parse --abbrev-ref HEAD)
+    orig_sha=$(git rev-parse HEAD)
+
+    run_id="20260812-fixt12"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[{"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"}]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+echo "// half-written fix" >> src/index.js
+echo "mock claude crashed mid-edit for CRITICAL batch" >&2
+exit 7
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/a.out")
+
+    assert_exit_code "dirty-baseline: run aborts non-zero (all batches failed)" 1 "$rc"
+    assert_contains "dirty-baseline: refuses to switch branches" "$out" "refusing to switch branches"
+    assert_contains "dirty-baseline: explains that pre-existing edits were preserved" \
+        "$out" "pre-existing worktree changes were preserved"
+
+    cur_branch=$(git rev-parse --abbrev-ref HEAD)
+    assert_contains "dirty-baseline: still on the kyzn branch, no switch" "$cur_branch" "kyzn/"
+    assert_contains "dirty-baseline: user's pre-existing edit survives in the working tree" \
+        "$(cat src/index.js)" "USER_PRE_EXISTING_EDIT"
+    assert_not_contains "dirty-baseline: crashed batch's half-written edit was reverted" \
+        "$(cat src/index.js)" "half-written fix"
+    assert_not_contains "dirty-baseline: the original branch never saw the edit" \
+        "$(git show "$orig_branch:src/index.js" 2>/dev/null)" "USER_PRE_EXISTING_EDIT"
+    assert_eq "dirty-baseline: original branch gains no commits" "$orig_sha" "$(git rev-parse "$orig_branch")"
+
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- B. (F2) The CRITICAL batch crashes leaving an untracked file behind;
+    #        the HIGH batch that follows succeeds. `git reset --hard` cannot
+    #        remove what git never tracked — without a residue sweep, the HIGH
+    #        batch's `stage_claude_changes` (git add -u + new files) would
+    #        pick up the crashed batch's file and commit it. -----------------
+    _batch_revert_sandbox
+    run_id="20260812-fixt13"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[
+        {"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"},
+        {"severity":"HIGH","category":"correctness","title":"h1","description":"d2","file":"src/index.js","fix":"f2"}
+    ]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${CLAUDE_CALL:-1}" == "1" ]]; then
+    echo "junk" > src/half-written.js
+    echo "mock claude crashed mid-edit, left untracked residue" >&2
+    exit 5
+else
+    printf '# Test Project\n\nUsage documentation.\n' > README.md
+fi
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" HIGH "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/b.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/b.out")
+
+    assert_eq "residue: both batches ran" "2" "$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")"
+    assert_contains "residue: the HIGH batch applied" "$out" "1 batches applied"
+    assert_exit_code "residue: run succeeds on the surviving HIGH batch" 0 "$rc"
+
+    if [[ -e src/half-written.js ]]; then
+        fail "residue: crashed batch's untracked file was swept away" "still present on disk"
+    else
+        pass "residue: crashed batch's untracked file was swept away"
+    fi
+    if git ls-files --error-unmatch src/half-written.js &>/dev/null; then
+        fail "residue: crashed batch's file never tracked by a later batch" "git tracks it"
+    else
+        pass "residue: crashed batch's file never tracked by a later batch"
+    fi
+    if git log --all -p -- src/half-written.js 2>/dev/null | grep -q junk; then
+        fail "residue: crashed batch's content never enters git history" "found in git log -p"
+    else
+        pass "residue: crashed batch's content never enters git history"
+    fi
+
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- C. (F3) The only batch writes a gitignored file (.env) before
+    #        crashing. `git reset --hard` and the untracked-residue sweep both
+    #        leave ignored files alone, and `git status --porcelain` never
+    #        reports them either — the all-failed abort must still catch it
+    #        instead of silently checking out over it. A pre-existing ignored
+    #        file the batch never touched must NOT be flagged. --------------
+    _batch_revert_sandbox
+    cat > .gitignore <<'GI'
+.env
+*.local.txt
+GI
+    git add .gitignore && git commit -q -m "add gitignore"
+    echo "PRE_EXISTING=true" > existing.local.txt
+
+    run_id="20260812-fixt14"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[{"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"}]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+echo "SECRET=abc123" > .env
+echo "mock claude crashed mid-edit, wrote .env before crashing" >&2
+exit 5
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    orig_branch=$(git rev-parse --abbrev-ref HEAD)
+    orig_sha=$(git rev-parse HEAD)
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/c.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/c.out")
+
+    assert_exit_code "ignored-guard: run aborts non-zero (all batches failed)" 1 "$rc"
+    assert_contains "ignored-guard: refuses to switch branches" "$out" "refusing to switch branches"
+    assert_contains "ignored-guard: names the ignored file a batch wrote" "$out" ".env"
+    assert_not_contains "ignored-guard: pre-existing untouched ignored file not flagged" \
+        "$out" "existing.local.txt"
+
+    cur_branch=$(git rev-parse --abbrev-ref HEAD)
+    assert_contains "ignored-guard: still on the kyzn branch, no switch" "$cur_branch" "kyzn/"
+    assert_file_exists "ignored-guard: the AI-written ignored file preserved for inspection" ".env"
+    assert_contains "ignored-guard: pre-existing ignored file left untouched" \
+        "$(cat existing.local.txt)" "PRE_EXISTING=true"
+    assert_eq "ignored-guard: original branch gains no commits" "$orig_sha" "$(git rev-parse "$orig_branch")"
 
     PATH="$saved_path"
     unset CLAUDE_MUTATE
@@ -7041,6 +7216,7 @@ main() {
     test_test_deletion_guard_sees_both_rename_sides
     test_git_path_batches_flush_and_surface_failure
     test_fix_batch_claude_failure_reverts_and_never_leaks
+    test_fix_batch_preserves_dirty_baseline_and_ignored_residue
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
