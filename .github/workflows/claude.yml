@@ -36,4 +36,4 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
-            --allowedTools "Bash(bash tests/selftest.sh:*),Bash(shellcheck:*),Bash(gh pr create:*)"
+            --allowedTools "Bash(bash tests/selftest.sh:*),Bash(bash scripts/check-repository-facts.sh:*),Bash(shellcheck:*),Bash(gh pr create:*)"
