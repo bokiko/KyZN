@@ -1505,80 +1505,6 @@ run_fix_phase() {
     local installed_packages=""
     installed_packages=$(detect_installed_packages 2>/dev/null) || true
 
-    # Revert a failed batch to $1 (a commit), preserving .kyzn/local.yaml (gitignored,
-    # would otherwise be wiped by reset --hard). Shared by the claude-execution-failure
-    # and verify-failure paths so both leave a clean tree for the next batch.
-    _kyzn_revert_fix_batch() {
-        local target_head="$1"
-        local _saved_local=""
-        local _local_config_file
-        _local_config_file=$(_kyzn_local_config_path)
-        [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
-        safe_git reset --hard "$target_head" 2>/dev/null
-
-        # `reset --hard` only rewinds tracked content — it never removes a file
-        # the batch created before crashing, because git never tracked it. Any
-        # pre-existing dirty state was committed onto this branch before the
-        # first batch ran (below), so anything still untracked here was
-        # created after $target_head by this batch. Sweep it away so a later
-        # batch's `git add -u`-based commit can't pick up this batch's
-        # residue. Secrets, KyZN's own artifacts and generated dirs are left
-        # alone, matching stage_claude_changes.
-        git ls-files -z --others --exclude-standard 2>/dev/null \
-            | _kyzn_filter_paths_z drop "$_KYZN_ARTIFACT_PATHS" \
-            | _kyzn_filter_paths_z drop "$_KYZN_GENERATED_DIRS" \
-            | _kyzn_filter_paths_z drop "$_KYZN_SECRET_PATHS" -i \
-            | _kyzn_git_apply_paths_z clean -fd
-
-        if [[ -n "$_saved_local" ]]; then
-            mkdir -p "$(_kyzn_dir_path)"
-            echo "$_saved_local" > "$_local_config_file"
-        fi
-        ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
-    }
-
-    # Snapshot ignored files (path + git blob hash), excluding KyZN's own
-    # artifacts and generated dirs. `git status --porcelain` never reports
-    # ignored files, so a batch that creates or modifies one (e.g. `.env`)
-    # before crashing would otherwise be invisible to every check above.
-    # `--directory` collapses a whole ignored dir (node_modules, etc.) into
-    # one entry instead of walking every file inside — those are dropped by
-    # the generated-dirs filter anyway.
-    _kyzn_ignored_files_snapshot() {
-        local f hash
-        git ls-files -z --others --ignored --exclude-standard --directory --no-empty-directory 2>/dev/null \
-            | _kyzn_filter_paths_z drop "$_KYZN_ARTIFACT_PATHS" \
-            | _kyzn_filter_paths_z drop "$_KYZN_GENERATED_DIRS" \
-            | while IFS= read -r -d '' f; do
-                if [[ -f "$f" ]]; then
-                    hash=$(git hash-object -- "$f" 2>/dev/null)
-                else
-                    hash="<dir>"
-                fi
-                printf '%s\t%s\n' "$f" "$hash"
-            done | sort
-    }
-
-    # Preserve any pre-existing dirty worktree state before the first batch
-    # runs. require_clean_worktree only lets the caller reach here dirty when
-    # it opted in with --allow-dirty; otherwise this is a no-op. Committing it
-    # now — with the same exclusions batches use — means every batch's
-    # pre_batch_head already contains it, so a batch's `git reset --hard`
-    # rollback can never destroy the user's own edits, and can never mistake
-    # them for that batch's own leftover residue.
-    local _kyzn_preserved_pre_existing=false
-    local _pre_existing_dirty
-    _pre_existing_dirty=$(git status --porcelain 2>/dev/null)
-    if [[ -n "$_pre_existing_dirty" ]]; then
-        stage_claude_changes
-        if ! git diff --cached --quiet 2>/dev/null; then
-            safe_git commit -q -m "KyZN: preserve pre-existing worktree changes" 2>/dev/null \
-                && _kyzn_preserved_pre_existing=true
-        fi
-    fi
-    local _kyzn_ignored_baseline
-    _kyzn_ignored_baseline=$(_kyzn_ignored_files_snapshot)
-
     # Step 4: Fix each severity tier as a separate batch, commit incrementally
     for tier in "${severity_tiers[@]}"; do
         local tier_findings
@@ -1653,8 +1579,9 @@ run_fix_phase() {
             local exit_code=$?
             stop_progress
 
-            # Preserve diagnostics before anything else — this is the only record of
-            # why the batch crashed, and it must survive the revert below.
+            # Preserve diagnostics before anything else — the log file is this
+            # batch's only surviving record of why it crashed. It is never
+            # deleted, unlike the temp stderr capture below.
             local fix_log
             ensure_kyzn_dirs
             fix_log="$(_kyzn_reports_dir_path)/${run_id}-fix-${tier}.log"
@@ -1665,9 +1592,9 @@ run_fix_phase() {
             } > "$fix_log" 2>/dev/null
 
             if (( exit_code == 124 )); then
-                log_error "$tier batch timed out — reverting"
+                log_error "$tier batch timed out — skipping"
             else
-                log_error "$tier batch failed — reverting"
+                log_error "$tier batch failed — skipping"
             fi
             log_dim "  Diagnostics: $fix_log (exit_code: $exit_code)"
             local _stderr_tail
@@ -1676,10 +1603,6 @@ run_fix_phase() {
             rm -f "$fix_stderr"
 
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
-
-            # Claude may have edited files before crashing — revert so the next
-            # batch (and the all-failed abort check) start from a clean tree.
-            _kyzn_revert_fix_batch "$pre_batch_head"
             (( batches_failed++ )) || true
             continue
         }
@@ -1855,7 +1778,18 @@ ${retry_baseline_context}
             log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
         else
             log_error "$tier batch still broken after retry — reverting batch"
-            _kyzn_revert_fix_batch "$pre_batch_head"
+            # Save user's local config before cleaning (gitignored, would be lost)
+            local _saved_local=""
+            local _local_config_file
+            _local_config_file=$(_kyzn_local_config_path)
+            [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
+            safe_git reset --hard "$pre_batch_head" 2>/dev/null
+            # Restore saved files
+            if [[ -n "$_saved_local" ]]; then
+                mkdir -p "$(_kyzn_dir_path)"
+                echo "$_saved_local" > "$_local_config_file"
+            fi
+            ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
             (( batches_failed++ )) || true
         fi
 
@@ -1866,60 +1800,6 @@ ${retry_baseline_context}
     # Step 5: Check if any batches succeeded
     if (( batches_applied == 0 )); then
         log_error "All fix batches failed. No changes to commit."
-
-        # Never switch branches (or delete this one) out of a state that isn't
-        # safely disposable. Three distinct ways that can happen, none of
-        # which `git reset --hard` + the untracked-residue sweep above catch:
-        #  1. Tracked/untracked dirty content is still present (a check that
-        #     can't fully run, a race, etc).
-        #  2. An ignored file (e.g. .env) was created or modified by a batch
-        #     before it crashed — invisible to `git status --porcelain`, and
-        #     `git checkout` back to the original branch would leave it sitting
-        #     there unexplained since checkout never touches ignored files.
-        #  3. The user's own pre-existing dirty edits were preserved by
-        #     committing them onto this branch before the first batch ran —
-        #     deleting the branch now would discard that commit for good.
-        local _dirty_status
-        _dirty_status=$(git status --porcelain 2>/dev/null)
-
-        # `diff` isn't among KyZN's documented prerequisites, so the
-        # comparison stays in plain bash + grep (both already hard
-        # dependencies of this script) instead of shelling out to it.
-        local _kyzn_ignored_current
-        _kyzn_ignored_current=$(_kyzn_ignored_files_snapshot)
-        local _kyzn_ignored_changed=false
-        local _ignored_diff=""
-        if [[ "$_kyzn_ignored_baseline" != "$_kyzn_ignored_current" ]]; then
-            _kyzn_ignored_changed=true
-            _ignored_diff=$(
-                {
-                    grep -Fxv -f <(printf '%s\n' "$_kyzn_ignored_baseline") <<< "$_kyzn_ignored_current" 2>/dev/null
-                    grep -Fxv -f <(printf '%s\n' "$_kyzn_ignored_current") <<< "$_kyzn_ignored_baseline" 2>/dev/null
-                } | grep -v '^$'
-            )
-        fi
-
-        if [[ -n "$_dirty_status" ]] || $_kyzn_ignored_changed || $_kyzn_preserved_pre_existing; then
-            log_error "This run's state is not safe to discard — refusing to switch branches:"
-            if [[ -n "$_dirty_status" ]]; then
-                echo "$_dirty_status" | while IFS= read -r _line; do
-                    [[ -n "$_line" ]] && log_dim "  $_line"
-                done
-            fi
-            if $_kyzn_ignored_changed; then
-                log_dim "  Ignored files changed during this run (a batch created/modified one before crashing):"
-                echo "$_ignored_diff" | while IFS= read -r _line; do
-                    [[ -n "$_line" ]] && log_dim "    $_line"
-                done
-            fi
-            if $_kyzn_preserved_pre_existing; then
-                log_dim "  Your own pre-existing worktree changes were preserved as a commit on '$branch_name' (--allow-dirty)."
-            fi
-            log_error "Leaving branch '$branch_name' in place for inspection — run 'git status' to see what's dirty."
-            release_kyzn_lock
-            return 1
-        fi
-
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         release_kyzn_lock
