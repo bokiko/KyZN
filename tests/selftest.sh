@@ -3246,7 +3246,6 @@ GI
 
     assert_contains "custom entry preserved" "$(cat "$KYZN_DIR/.gitignore")" "my-custom-scratch/"
     assert_contains "kyzn-report.md added" "$(cat "$KYZN_DIR/.gitignore")" "kyzn-report.md"
-    assert_contains ".improve.lock/ added" "$(cat "$KYZN_DIR/.gitignore")" ".improve.lock/"
     # history/ already existed — should not be duplicated
     local count
     count=$(grep -c 'history/' "$KYZN_DIR/.gitignore")
@@ -4485,7 +4484,7 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     assert_not_contains "improve/baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
     assert_eq "improve/baseline: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
     assert_eq "improve/baseline: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "improve/baseline: lock released"
     else
         fail "improve/baseline: lock released" "lock directory still present"
@@ -4517,7 +4516,7 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     assert_not_contains "improve/subdir baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
     assert_eq "improve/subdir baseline: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
     assert_eq "improve/subdir baseline: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "improve/subdir baseline: lock released"
     else
         fail "improve/subdir baseline: lock released" "lock directory still present"
@@ -4585,7 +4584,7 @@ SH
     assert_eq "improve/project-swap: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
     assert_eq "improve/project-swap: no commit was created" "$orig_sha" "$(git rev-parse HEAD)"
     assert_eq "improve/project-swap: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
-    if [[ ! -d "$SANDBOX/.kyzn/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "improve/project-swap: lock released"
     else
         fail "improve/project-swap: lock released" "lock directory still present"
@@ -4630,7 +4629,7 @@ SH
     assert_eq "improve/ambiguous: operator edit is preserved" \
         "$operator_contents" "$(cat operator-note.txt)"
     assert_eq "improve/ambiguous: no kyzn branch left behind" "" "$(git branch --list 'kyzn/*')"
-    if [[ ! -d "$SANDBOX/.kyzn/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "improve/ambiguous: lock released"
     else
         fail "improve/ambiguous: lock released" "lock directory still present"
@@ -4713,7 +4712,7 @@ SH
     else
         fail "backstop: untracked file" "backstop-new.txt was deleted"
     fi
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "backstop: lock released"
     else
         fail "backstop: lock released" "lock directory still present"
@@ -4741,7 +4740,7 @@ SH
     assert_not_contains "analyze/baseline: fix phase never invoked Claude" "$log" "CLAUDE-INVOKED"
     assert_not_contains "analyze/baseline: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/baseline: no kyzn branch created" "" "$(git branch --list 'kyzn/*')"
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "analyze/baseline: lock released"
     else
         fail "analyze/baseline: lock released" "lock directory still present"
@@ -4897,7 +4896,7 @@ SH
     assert_not_contains "python/workflow: Claude never invoked" "$log" "CLAUDE-INVOKED"
     assert_not_contains "python/workflow: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
     assert_eq "python/workflow: original branch restored" "$orig" "$(git rev-parse --abbrev-ref HEAD)"
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "python/workflow: lock released"
     else
         fail "python/workflow: lock released" "lock directory still present"
@@ -5052,7 +5051,7 @@ test_abort_never_destroys_user_work() {
     assert_contains "abort: Claude's edit intact for inspection" "$(cat tests/test.sh)" "claude edit"
 
     # Lock is released even though nothing was cleaned up
-    if [[ ! -d "$KYZN_DIR/.improve.lock" ]]; then
+    if [[ ! -d "$KYZN_LOCKDIR" ]]; then
         pass "abort: lock released"
     else
         fail "abort: lock released" "lock directory still present"
@@ -6863,6 +6862,328 @@ SH
 }
 
 # ---------------------------------------------------------------------------
+# Repository-wide lock identity (stage 1 of #21 — refs #22)
+# ---------------------------------------------------------------------------
+
+test_lock_identity_canonical_and_worktrees() {
+    log_header "92. Repository-wide lock identity: canonical paths, worktrees, symlinks"
+
+    create_sandbox generic
+
+    local main_common
+    main_common=$(git_common_dir)
+    assert_eq "git_common_dir resolves to the repository's .git dir" "$SANDBOX/.git" "$main_common"
+    assert_eq "invocation_root resolves to the checkout root" "$SANDBOX" "$(invocation_root)"
+
+    # --- Primary checkout vs a linked worktree: same repository, one lock ---
+    local wt_parent="$SANDBOX-wt"
+    mkdir -p "$wt_parent"
+    local wt_dir="$wt_parent/wt1" wt2_dir="$wt_parent/wt2"
+    git worktree add -q -b kyzn-lock-wt1 "$wt_dir" >/dev/null 2>&1
+    git worktree add -q -b kyzn-lock-wt2 "$wt2_dir" >/dev/null 2>&1
+
+    local wt_common
+    wt_common=$(cd "$wt_dir" && git_common_dir)
+    assert_eq "linked worktree shares the primary checkout's git-common-dir" "$main_common" "$wt_common"
+
+    acquire_kyzn_lock "improve"
+    local shared_lockdir="$KYZN_LOCKDIR"
+    if [[ -d "$shared_lockdir" ]]; then
+        pass "primary checkout acquired the lock"
+    else
+        fail "primary checkout acquired the lock" "not created"
+    fi
+
+    local rc=0
+    ( cd "$wt_dir" && acquire_kyzn_lock "fix" ) >/dev/null 2>&1 || rc=$?
+    assert_exit_code "linked worktree is refused: same repository contends" 1 "$rc"
+
+    rc=0
+    ( cd "$wt2_dir" && acquire_kyzn_lock "fix" ) >/dev/null 2>&1 || rc=$?
+    assert_exit_code "a second linked worktree is also refused" 1 "$rc"
+
+    release_kyzn_lock
+    if [[ ! -d "$shared_lockdir" ]]; then
+        pass "lock released from the primary checkout"
+    else
+        fail "lock released from the primary checkout" "still present"
+    fi
+
+    rc=0
+    ( cd "$wt_dir" && acquire_kyzn_lock "fix" && rm -rf "$KYZN_LOCKDIR" ) >/dev/null 2>&1 || rc=$?
+    assert_exit_code "the worktree acquires once the lock is free" 0 "$rc"
+
+    git worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    git worktree remove --force "$wt2_dir" >/dev/null 2>&1 || true
+    rm -rf "$wt_parent"
+
+    # --- Two unrelated repositories with identical basenames do not contend ---
+    local outer_a outer_b repo_a repo_b
+    outer_a=$(mktemp -d); outer_b=$(mktemp -d)
+    repo_a="$outer_a/same-name"; repo_b="$outer_b/same-name"
+    mkdir -p "$repo_a" "$repo_b"
+    ( cd "$repo_a" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+    ( cd "$repo_b" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+
+    cd "$repo_a"
+    rc=0
+    acquire_kyzn_lock "improve" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "repo A (same basename) acquires its own lock" 0 "$rc"
+    local lockdir_a="$KYZN_LOCKDIR"
+
+    cd "$repo_b"
+    rc=0
+    acquire_kyzn_lock "improve" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "repo B (same basename) is not blocked by repo A" 0 "$rc"
+    local lockdir_b="$KYZN_LOCKDIR"
+
+    if [[ "$lockdir_a" != "$lockdir_b" ]]; then
+        pass "repo A and repo B get distinct lock directories despite identical basenames"
+    else
+        fail "repo A and repo B get distinct lock directories" "same lock dir: $lockdir_a"
+    fi
+    rm -rf "$lockdir_a" "$lockdir_b" "$outer_a" "$outer_b"
+    cd "$SANDBOX"
+
+    # --- A symlinked path to the same repository resolves to the same lock identity ---
+    local link_dir="$SANDBOX-link"
+    ln -s "$SANDBOX" "$link_dir"
+    local via_symlink
+    via_symlink=$(cd "$link_dir" && git_common_dir)
+    assert_eq "a symlinked checkout path resolves to the same canonical common dir" "$main_common" "$via_symlink"
+    rm -f "$link_dir"
+
+    cleanup_sandbox
+}
+
+test_lock_symlinked_global_dir() {
+    log_header "93. A symlinked KYZN_GLOBAL_DIR resolves correctly"
+
+    create_sandbox generic
+
+    local real_global backup_global=""
+    real_global=$(mktemp -d)
+    if [[ -e "$KYZN_GLOBAL_DIR" || -L "$KYZN_GLOBAL_DIR" ]]; then
+        backup_global="${KYZN_GLOBAL_DIR}.bak.$$"
+        mv "$KYZN_GLOBAL_DIR" "$backup_global"
+    fi
+    ln -s "$real_global" "$KYZN_GLOBAL_DIR"
+
+    local rc=0
+    acquire_kyzn_lock "improve" >/dev/null 2>&1 || rc=$?
+    # KYZN_LOCKDIR is a string built from the symlink's name, unchanged by the
+    # swap below — what must be verified is where it physically landed on disk.
+    local resolved_lockdir resolved_real
+    resolved_lockdir=$(cd "${KYZN_LOCKDIR:-/nonexistent}" 2>/dev/null && pwd -P) || resolved_lockdir=""
+    resolved_real=$(cd "$real_global" && pwd -P)
+    if [[ $rc -eq 0 && -n "$resolved_lockdir" && "$resolved_lockdir" == "$resolved_real"/* ]]; then
+        pass "lock acquired correctly through a symlinked global dir"
+    else
+        fail "lock acquired correctly through a symlinked global dir" \
+            "rc=$rc lockdir=${KYZN_LOCKDIR:-} resolved=$resolved_lockdir real=$resolved_real"
+    fi
+    release_kyzn_lock
+
+    rm -f "$KYZN_GLOBAL_DIR"
+    rm -rf "$real_global"
+    if [[ -n "$backup_global" ]]; then
+        mv "$backup_global" "$KYZN_GLOBAL_DIR"
+    else
+        # shellcheck disable=SC2174 # Restrictive mode is desired on first creation; chmod below fixes pre-existing dirs.
+        mkdir -p -m 700 "$KYZN_GLOBAL_DIR"
+        chmod 700 "$KYZN_GLOBAL_DIR" 2>/dev/null || true
+    fi
+
+    cleanup_sandbox
+}
+
+test_lock_reclaim_semantics() {
+    log_header "94. Lock reclaim: live PID kept, stale complete record reclaimed, malformed record fails closed"
+
+    create_sandbox generic
+
+    # --- A live PID (self) is never reclaimed; refusal names the lock location ---
+    acquire_kyzn_lock "improve"
+    local lockdir="$KYZN_LOCKDIR"
+    local out rc
+    rc=0; out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    assert_exit_code "a live lock refuses a second acquisition" 1 "$rc"
+    assert_contains "refusal names the lock location" "$out" "$lockdir"
+    assert_contains "refusal gives a safe manual removal command" "$out" "rm -rf $lockdir"
+    if [[ -d "$lockdir" ]]; then
+        pass "live lock was not reclaimed"
+    else
+        fail "live lock was not reclaimed" "directory removed"
+    fi
+    release_kyzn_lock
+
+    # --- A stale PID with a complete, valid record is reclaimed ---
+    acquire_kyzn_lock "improve"
+    lockdir="$KYZN_LOCKDIR"
+    local common_dir
+    common_dir=$(git_common_dir)
+    ( : ) &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+    jq -n --arg common_dir "$common_dir" --arg pid "$dead_pid" --arg label "improve" \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time}' \
+        > "$lockdir/meta.json"
+    rc=0; out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    assert_exit_code "a stale, complete record is reclaimed" 0 "$rc"
+    assert_contains "reclaim is logged" "$out" "stale lock"
+    release_kyzn_lock
+
+    # --- An incomplete/malformed record is NOT reclaimed; it fails closed ---
+    mkdir "$lockdir"
+    echo 'not json' > "$lockdir/meta.json"
+    rc=0; out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    assert_exit_code "a malformed record refuses acquisition" 1 "$rc"
+    assert_contains "malformed record message says incomplete or malformed" "$out" "incomplete or malformed"
+    assert_contains "malformed record message gives inspection guidance" "$out" "Manual inspection procedure"
+    if [[ -d "$lockdir" ]]; then
+        pass "malformed record was not removed (fails closed)"
+    else
+        fail "malformed record was not removed (fails closed)" "directory removed"
+    fi
+    rm -rf "$lockdir"
+
+    # A missing meta.json entirely (dir exists, no record at all) is likewise not reclaimed.
+    mkdir "$lockdir"
+    rc=0
+    acquire_kyzn_lock "improve" &>/dev/null || rc=$?
+    assert_exit_code "an empty lock dir (no record) refuses acquisition" 1 "$rc"
+    if [[ -d "$lockdir" ]]; then
+        pass "empty lock dir was not removed (fails closed)"
+    else
+        fail "empty lock dir was not removed (fails closed)" "directory removed"
+    fi
+    rm -rf "$lockdir"
+
+    cleanup_sandbox
+}
+
+test_lock_call_order_wiring() {
+    log_header "95. acquire_kyzn_lock stays inside run_fix_phase; measure/report-analyze never acquire"
+
+    local fix_body
+    fix_body=$(awk '/^run_fix_phase\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
+    assert_contains "acquire_kyzn_lock \"fix\" is inside run_fix_phase" "$fix_body" 'acquire_kyzn_lock "fix"'
+
+    local analyze_body
+    analyze_body=$(awk '/^cmd_analyze\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
+    assert_not_contains "cmd_analyze itself never calls acquire_kyzn_lock directly" "$analyze_body" "acquire_kyzn_lock"
+
+    local measure_body
+    measure_body=$(awk '/^cmd_measure\(\)/,/^}/' "$KYZN_ROOT/lib/measure.sh")
+    assert_not_contains "cmd_measure never acquires the lock" "$measure_body" "acquire_kyzn_lock"
+}
+
+test_lock_cross_command_contention() {
+    log_header "96. quick and analyze --fix contend for one lock; measure proceeds while locked"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH"
+
+    create_sandbox generic
+    detect_project_type
+    _workflow_setup report
+
+    # --- quick holds the lock; analyze --fix is refused at its existing lock point ---
+    acquire_kyzn_lock "improve"
+    echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"scripts/run.sh","fix":"f"}]' \
+        > "$WORKFLOW_TMP/findings.json"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260812-lockt01-analysis.md"
+
+    local rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "20260812-lockt01" "1.00" &>/dev/null || rc=$?
+    local log; log=$(cat "$WORKFLOW_LOG")
+    assert_exit_code "fix is refused while quick holds the lock" 1 "$rc"
+    assert_not_contains "fix phase never invoked Claude while refused" "$log" "CLAUDE-INVOKED"
+    release_kyzn_lock
+
+    # --- analyze --fix holds the lock; quick is refused ---
+    acquire_kyzn_lock "fix"
+    : > "$WORKFLOW_LOG"
+    rc=0
+    cmd_improve --auto &>/dev/null || rc=$?
+    trap - EXIT INT TERM
+    log=$(cat "$WORKFLOW_LOG")
+    assert_exit_code "quick is refused while fix holds the lock" 1 "$rc"
+    assert_not_contains "quick never invoked Claude while refused" "$log" "CLAUDE-INVOKED"
+    release_kyzn_lock
+
+    # --- measure proceeds while the repository lock is held by another run ---
+    acquire_kyzn_lock "fix"
+    PATH="$saved_path"
+    if cmd_measure &>/dev/null; then
+        pass "measure completes while the repository lock is held"
+    else
+        fail "measure completes while the repository lock is held" "cmd_measure returned non-zero"
+    fi
+    release_kyzn_lock
+
+    PATH="$saved_path"
+    cleanup_sandbox
+}
+
+test_lock_signal_cleanup() {
+    log_header "97. Signal cleanup releases the repository lock"
+
+    create_sandbox generic
+
+    local tmp_sig_dir ready_file lockdir_file
+    tmp_sig_dir=$(mktemp -d)
+    ready_file="$tmp_sig_dir/ready"
+    lockdir_file="$tmp_sig_dir/lockdir"
+
+    (
+        acquire_kyzn_lock "improve"
+        echo "$KYZN_LOCKDIR" > "$lockdir_file"
+        trap 'release_kyzn_lock; exit 143' TERM
+        touch "$ready_file"
+        sleep 30
+    ) &
+    local bg_pid=$!
+
+    local waited=0
+    while [[ ! -f "$ready_file" && $waited -lt 50 ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    local child_lockdir=""
+    [[ -f "$lockdir_file" ]] && child_lockdir=$(cat "$lockdir_file")
+
+    if [[ -n "$child_lockdir" && -d "$child_lockdir" ]]; then
+        pass "background run acquired the lock before signaling"
+    else
+        fail "background run acquired the lock before signaling" "no lock directory observed"
+    fi
+
+    kill -TERM "$bg_pid" 2>/dev/null || true
+    wait "$bg_pid" 2>/dev/null || true
+
+    if [[ -n "$child_lockdir" && ! -d "$child_lockdir" ]]; then
+        pass "SIGTERM cleanup released the lock"
+    else
+        fail "SIGTERM cleanup released the lock" "lock directory still present: $child_lockdir"
+    fi
+
+    rm -rf "$tmp_sig_dir"
+    cleanup_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -6989,6 +7310,12 @@ main() {
     test_test_deletion_guard_sees_both_rename_sides
     test_git_path_batches_flush_and_surface_failure
     test_fix_batch_claude_failure_writes_diagnostics
+    test_lock_identity_canonical_and_worktrees
+    test_lock_symlinked_global_dir
+    test_lock_reclaim_semantics
+    test_lock_call_order_wiring
+    test_lock_cross_command_contention
+    test_lock_signal_cleanup
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

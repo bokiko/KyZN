@@ -39,6 +39,7 @@ KYZN_HISTORY_DIR="$KYZN_DIR/history"
 KYZN_REPORTS_DIR="$KYZN_DIR/reports"
 KYZN_GLOBAL_DIR="${HOME}/.kyzn"
 KYZN_GLOBAL_HISTORY="${KYZN_GLOBAL_DIR}/history"
+KYZN_GLOBAL_LOCKS_DIR="${KYZN_GLOBAL_DIR}/locks"
 # shellcheck disable=SC2034 # Shared constant consumed by modules loaded after core.sh.
 KYZN_PROFILE_CACHE="$KYZN_DIR/repo-profile.md"
 
@@ -55,8 +56,8 @@ ensure_kyzn_dirs() {
     reports_dir=$(_kyzn_reports_dir_path)
     mkdir -p "$kyzn_dir" "$history_dir" "$reports_dir"
     # shellcheck disable=SC2174 # Restrictive mode is desired on first creation; chmod below fixes pre-existing dirs.
-    mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY"
-    chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" 2>/dev/null || true
+    mkdir -p -m 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" "$KYZN_GLOBAL_LOCKS_DIR"
+    chmod 700 "$KYZN_GLOBAL_DIR" "$KYZN_GLOBAL_HISTORY" "$KYZN_GLOBAL_LOCKS_DIR" 2>/dev/null || true
 
     # Always ensure .kyzn/.gitignore exists (protects target repos even without kyzn init)
     local gi="$kyzn_dir/.gitignore"
@@ -67,9 +68,65 @@ history/
 reports/
 local.yaml
 kyzn-report.md
-.improve.lock/
 repo-profile.md
 GITIGNORE
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Canonical repository identity — shared by lock acquisition (and, in a later
+# stage, worktree registration). Two linked worktrees of the same repository
+# share one git-common-dir; two unrelated repos never do, regardless of what
+# their checkout directories happen to be named.
+# ---------------------------------------------------------------------------
+
+# Physical, symlink-resolved absolute path of the repository's shared git
+# directory (".git" for a normal checkout; the main worktree's ".git" for a
+# linked worktree). This is the identity a repository-wide lock keys on.
+# Fails closed (non-zero, no output) if it cannot be determined — callers
+# must never fall back to a guessed or partial path.
+git_common_dir() {
+    local raw
+    raw=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+    [[ -n "$raw" ]] || return 1
+    [[ "$raw" == /* ]] || raw="$(pwd)/$raw"
+    local resolved
+    resolved=$(cd "$raw" 2>/dev/null && pwd -P) || return 1
+    printf '%s\n' "$resolved"
+}
+
+# Physical, symlink-resolved absolute path of the checkout KyZN was invoked
+# from (the working tree root — possibly a linked worktree). This identifies
+# *where* a run is executing, as opposed to git_common_dir() which identifies
+# *which repository* it is executing against. Used for lock diagnostics only.
+invocation_root() {
+    local resolved
+    resolved=$(cd "$(project_root)" 2>/dev/null && pwd -P) || return 1
+    printf '%s\n' "$resolved"
+}
+
+# Portable path hash for partitioning lock directories. Not a security
+# boundary — collisions merely need to be detected (which the stored
+# canonical path in the lock record does), not to be cryptographically
+# infeasible. Verification workflows sanitize PATH down to KyZN's own
+# prerequisites (git, jq, perl/python3, ...) to hide language toolchains, so
+# this must not depend on sha256sum/shasum/openssl being present — it falls
+# back to perl or python3, the same guaranteed-present interpreters the
+# portable `timeout` controller above relies on. Prints nothing on total
+# failure; callers must treat empty output as a hard failure, not a valid
+# (empty) hash.
+_kyzn_hash_path() {
+    local input="$1"
+    if has_cmd sha256sum; then
+        printf '%s' "$input" | sha256sum | cut -d' ' -f1
+    elif has_cmd shasum; then
+        printf '%s' "$input" | shasum -a 256 | cut -d' ' -f1
+    elif has_cmd openssl; then
+        printf '%s' "$input" | openssl dgst -sha256 | awk '{print $NF}'
+    elif has_cmd perl; then
+        printf '%s' "$input" | perl -MDigest::SHA=sha256_hex -0777 -ne 'print sha256_hex($_)' 2>/dev/null
+    elif has_cmd python3; then
+        printf '%s' "$input" | python3 -c 'import sys, hashlib; sys.stdout.write(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null
     fi
 }
 
@@ -77,36 +134,115 @@ GITIGNORE
 # Lock management — atomic mkdir-based lock with stale PID detection
 # Usage: acquire_kyzn_lock "label"   (label = "improve" or "fix")
 #        release_kyzn_lock
-# Returns 0 on success, 1 if another process holds the lock.
+# Returns 0 on success, 1 if another process holds the lock (or the lock
+# record cannot be trusted).
 # Sets KYZN_LOCKDIR for the caller to use in cleanup traps.
+#
+# The lock is keyed on the repository's canonical git-common-dir, not on any
+# checkout path, so two linked worktrees of the same repository — and a
+# primary checkout plus its linked worktrees — contend for one lock. It is
+# stored under ~/.kyzn/locks/<hash>/, never inside the repository's .git
+# directory: KyZN does not write application-specific state into shared git
+# internals.
 # ---------------------------------------------------------------------------
 acquire_kyzn_lock() {
     local label="${1:-improve}"
     ensure_kyzn_dirs
-    KYZN_LOCKDIR="$(_kyzn_dir_path)/.improve.lock"
+
+    local common_dir
+    if ! common_dir="$(git_common_dir)"; then
+        log_error "Could not resolve this repository's shared git directory; refusing to acquire the KyZN lock."
+        return 1
+    fi
+
+    local lock_hash
+    lock_hash="$(_kyzn_hash_path "$common_dir")"
+    if [[ -z "$lock_hash" ]]; then
+        log_error "Could not compute a lock identity hash (no sha256sum, shasum, openssl, perl, or python3 available); refusing to acquire the KyZN lock."
+        return 1
+    fi
+    KYZN_LOCKDIR="$KYZN_GLOBAL_LOCKS_DIR/$lock_hash"
 
     if mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
-        echo $$ > "$KYZN_LOCKDIR/pid"
+        _kyzn_write_lock_metadata "$label" "$common_dir"
         return 0
     fi
 
-    # Lock exists — check for stale PID
-    local stale_pid
-    stale_pid=$(cat "$KYZN_LOCKDIR/pid" 2>/dev/null || echo "")
-    if [[ -n "$stale_pid" ]] && kill -0 "$stale_pid" 2>/dev/null; then
-        log_error "Another KyZN $label is already running on this repo (PID: $stale_pid)."
-        log_dim "  If this is wrong, remove the lock: rm -rf $KYZN_LOCKDIR"
+    # Lock directory exists — a complete, valid record is required before the
+    # existing kill -0 reclaim decision applies. A missing, partial, or
+    # malformed record fails closed instead of being treated as reclaimable:
+    # richer metadata (multiple fields, not just a PID file) widens the
+    # mkdir-then-write window, so treating "incomplete" the same as "stale"
+    # would let a lock observed mid-acquisition be reclaimed out from under
+    # its owner.
+    local rec_pid rec_common rec_label rec_source rec_time
+    if ! _kyzn_read_lock_metadata rec_pid rec_common rec_label rec_source rec_time; then
+        log_error "Found an incomplete or malformed KyZN lock record at:"
+        log_dim "  $KYZN_LOCKDIR"
+        log_dim "  This can happen if a previous run was killed at the instant it acquired the lock."
+        log_dim "  Manual inspection procedure: check whether a 'kyzn' process for this repository is"
+        log_dim "  actually running (e.g. ps -ef | grep kyzn); if not, remove the lock: rm -rf $KYZN_LOCKDIR"
         return 1
     fi
 
-    # Stale lock — reclaim: remove then mkdir (not fully atomic, but mkdir failure is handled)
-    log_warn "Removing stale lock from a previous run (PID: ${stale_pid:-unknown})"
-    rm -rf "$KYZN_LOCKDIR"
-    if ! mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
-        log_error "Another KyZN $label grabbed the lock during recovery."
+    if kill -0 "$rec_pid" 2>/dev/null; then
+        log_error "Another KyZN $rec_label is already running on this repository (PID: $rec_pid)."
+        log_dim "  Repository: $rec_common"
+        log_dim "  Source checkout: $rec_source"
+        log_dim "  Acquired: $rec_time"
+        log_dim "  Lock location: $KYZN_LOCKDIR"
+        log_dim "  If this is wrong, inspect and remove the lock: rm -rf $KYZN_LOCKDIR"
         return 1
     fi
-    echo $$ > "$KYZN_LOCKDIR/pid"
+
+    # Stale — the recorded PID is a complete record but no longer alive. Reclaim.
+    log_warn "Removing stale lock from a previous run (PID: $rec_pid, $rec_label)"
+    rm -rf "$KYZN_LOCKDIR"
+    if ! mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
+        log_error "Another KyZN process grabbed the lock during recovery."
+        return 1
+    fi
+    _kyzn_write_lock_metadata "$label" "$common_dir"
+    return 0
+}
+
+# Write the lock metadata record. Built in a temp file and moved into place
+# with a single rename so a concurrent reader never observes a partially
+# written record — it sees either no record (freshly mkdir'd lock) or a
+# complete one.
+_kyzn_write_lock_metadata() {
+    local label="$1" common_dir="$2"
+    local source_root
+    source_root="$(invocation_root 2>/dev/null || echo "$common_dir")"
+    local tmp_file
+    tmp_file=$(mktemp "$KYZN_LOCKDIR/.meta.XXXXXX" 2>/dev/null) || return 0
+    if jq -n --arg common_dir "$common_dir" --arg pid "$$" --arg label "$label" \
+        --arg source "$source_root" --arg time "$(timestamp)" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time}' \
+        > "$tmp_file" 2>/dev/null; then
+        mv -f "$tmp_file" "$KYZN_LOCKDIR/meta.json" 2>/dev/null || rm -f "$tmp_file"
+    else
+        rm -f "$tmp_file"
+    fi
+}
+
+# Read and validate the lock metadata record. Populates the five named
+# out-vars and returns 0 only when every field is present and well-formed.
+_kyzn_read_lock_metadata() {
+    local -n _out_pid="$1" _out_common="$2" _out_label="$3" _out_source="$4" _out_time="$5"
+    local meta_file="$KYZN_LOCKDIR/meta.json"
+
+    [[ -s "$meta_file" ]] || return 1
+    jq -e '.' "$meta_file" >/dev/null 2>&1 || return 1
+
+    _out_pid=$(jq -r '.pid // empty' "$meta_file" 2>/dev/null)
+    _out_common=$(jq -r '.common_dir // empty' "$meta_file" 2>/dev/null)
+    _out_label=$(jq -r '.label // empty' "$meta_file" 2>/dev/null)
+    _out_source=$(jq -r '.source // empty' "$meta_file" 2>/dev/null)
+    _out_time=$(jq -r '.acquired_at // empty' "$meta_file" 2>/dev/null)
+
+    [[ -n "$_out_pid" && "$_out_pid" =~ ^[0-9]+$ ]] || return 1
+    [[ -n "$_out_common" && -n "$_out_label" && -n "$_out_source" && -n "$_out_time" ]] || return 1
     return 0
 }
 
