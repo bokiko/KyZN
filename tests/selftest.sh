@@ -4356,6 +4356,10 @@ echo "CLAUDE-INVOKED" >> "$WORKFLOW_LOG"
 _n=$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")
 if [[ -n "${CLAUDE_MUTATE:-}" && -f "$CLAUDE_MUTATE" ]]; then
     CLAUDE_CALL="$_n" bash "$CLAUDE_MUTATE"
+    _mutate_rc=$?
+    # A mutate script that crashes mid-edit must make the mock behave like the
+    # real CLI did too: no JSON result, and the caller's exit code preserved.
+    (( _mutate_rc != 0 )) && exit "$_mutate_rc"
 fi
 echo '{"total_cost_usd":0.01,"result":"mock change"}'
 exit 0
@@ -6771,6 +6775,145 @@ FAKE_GIT
     rm -rf "$tmp"
 }
 
+# Base project for the batch-revert / dirty-guard tests below: a Node project
+# with no tsconfig.json (a local `tsc` is never installed in this fixture, and
+# leaving tsconfig.json in place would make TypeScript verification unavailable
+# and abort the run for an unrelated reason), wired with the default workflow
+# mocks. Only CLAUDE_MUTATE needs scenario-specific setup after this.
+_batch_revert_sandbox() {
+    create_sandbox node
+    rm -f tsconfig.json
+    git add -A && git commit -q -m "drop tsconfig (no local tsc in fixture)"
+    detect_project_type
+    _workflow_setup report
+}
+
+test_fix_batch_claude_failure_reverts_and_never_leaks() {
+    log_header "91. a crashed fix batch reverts and diagnoses instead of leaking edits"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc out log run_id fix_log findings
+
+    # --- A. Claude crashes mid-edit on the CRITICAL batch, having already
+    #        appended to a tracked file. The HIGH batch that follows must start
+    #        from a clean tree (the crashed edit reverted) and succeed on its
+    #        own; diagnostics must survive instead of being deleted. -----------
+    _batch_revert_sandbox
+    run_id="20260812-fixt10"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[
+        {"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"},
+        {"severity":"HIGH","category":"correctness","title":"h1","description":"d2","file":"src/index.js","fix":"f2"}
+    ]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${CLAUDE_CALL:-1}" == "1" ]]; then
+    echo "// half-written fix" >> src/index.js
+    echo "mock claude crashed mid-edit for CRITICAL batch" >&2
+    exit 7
+else
+    printf '# Test Project\n\nUsage documentation.\n' > README.md
+fi
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" HIGH "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
+
+    assert_eq "batch-revert: both batches ran" "2" "$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")"
+    assert_contains "batch-revert: CRITICAL batch reported as reverted, not skipped" \
+        "$out" "CRITICAL batch failed — reverting"
+    assert_contains "batch-revert: the next batch applied cleanly" "$out" "1 batches applied"
+
+    fix_log="$KYZN_REPORTS_DIR/${run_id}-fix-CRITICAL.log"
+    assert_file_exists "batch-revert: diagnostics log written instead of deleted" "$fix_log"
+    assert_contains "batch-revert: log records the exit code" "$(cat "$fix_log" 2>/dev/null)" "exit_code: 7"
+    assert_contains "batch-revert: log records claude's stderr" "$(cat "$fix_log" 2>/dev/null)" \
+        "mock claude crashed mid-edit for CRITICAL batch"
+    assert_contains "batch-revert: CLI output names the log path" "$out" "$fix_log"
+
+    # The revert must be real, not merely claimed: the crashed edit must not
+    # survive in the working tree or anywhere in the batch's git history — it
+    # was reverted before the HIGH batch ever started, so it never had a chance
+    # to be carried forward or committed.
+    assert_not_contains "batch-revert: half-written edit not left in the working tree" \
+        "$(cat src/index.js)" "half-written fix"
+    if git log --all -p -- src/index.js | grep -q "half-written fix"; then
+        fail "batch-revert: half-written edit never enters git history" "found in git log -p"
+    else
+        pass "batch-revert: half-written edit never enters git history"
+    fi
+
+    assert_contains "batch-revert: run reached push" "$log" "FORBIDDEN git push"
+    assert_contains "batch-revert: run reached PR creation" "$log" "FORBIDDEN gh pr"
+    assert_exit_code "batch-revert: run succeeds on the surviving HIGH batch" 0 "$rc"
+    PATH="$saved_path"; cleanup_sandbox
+
+    # --- B. The only batch crashes and leaves an untracked file behind — a
+    #        `git reset --hard` cannot remove what git never tracked. The
+    #        all-batches-failed abort must refuse to switch branches out of a
+    #        dirty tree and must leave the kyzn/ branch in place. -------------
+    _batch_revert_sandbox
+    run_id="20260812-fixt11"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[{"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"}]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+echo "junk" > src/half-written.js
+echo "mock claude crashed mid-edit, left an untracked file behind" >&2
+exit 5
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    local orig_branch orig_sha
+    orig_branch=$(git rev-parse --abbrev-ref HEAD)
+    orig_sha=$(git rev-parse HEAD)
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" CRITICAL "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/b.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/b.out"); log=$(cat "$WORKFLOW_LOG")
+
+    assert_exit_code "dirty-guard: run still aborts non-zero" 1 "$rc"
+    assert_contains "dirty-guard: refuses to switch branches out of a dirty tree" \
+        "$out" "refusing to switch branches"
+    assert_contains "dirty-guard: names the leftover file as the reason" "$out" "half-written.js"
+
+    local cur_branch
+    cur_branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$cur_branch" != "$orig_branch" ]]; then
+        pass "dirty-guard: no branch switch — still on the kyzn branch"
+    else
+        fail "dirty-guard: no branch switch — still on the kyzn branch" "current branch is '$cur_branch'"
+    fi
+    assert_contains "dirty-guard: current branch is the kyzn fix branch" "$cur_branch" "kyzn/"
+    assert_file_exists "dirty-guard: leftover untracked file preserved for inspection" "src/half-written.js"
+    assert_eq "dirty-guard: original branch gains no commits" "$orig_sha" "$(git rev-parse "$orig_branch")"
+    assert_not_contains "dirty-guard: nothing pushed or PR'd" "$log" "FORBIDDEN"
+
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -6897,6 +7040,7 @@ main() {
     test_repository_facts_survive_oversized_indexed_blobs
     test_test_deletion_guard_sees_both_rename_sides
     test_git_path_batches_flush_and_surface_failure
+    test_fix_batch_claude_failure_reverts_and_never_leaks
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

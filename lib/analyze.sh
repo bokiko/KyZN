@@ -1505,6 +1505,23 @@ run_fix_phase() {
     local installed_packages=""
     installed_packages=$(detect_installed_packages 2>/dev/null) || true
 
+    # Revert a failed batch to $1 (a commit), preserving .kyzn/local.yaml (gitignored,
+    # would otherwise be wiped by reset --hard). Shared by the claude-execution-failure
+    # and verify-failure paths so both leave a clean tree for the next batch.
+    _kyzn_revert_fix_batch() {
+        local target_head="$1"
+        local _saved_local=""
+        local _local_config_file
+        _local_config_file=$(_kyzn_local_config_path)
+        [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
+        safe_git reset --hard "$target_head" 2>/dev/null
+        if [[ -n "$_saved_local" ]]; then
+            mkdir -p "$(_kyzn_dir_path)"
+            echo "$_saved_local" > "$_local_config_file"
+        fi
+        ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
+    }
+
     # Step 4: Fix each severity tier as a separate batch, commit incrementally
     for tier in "${severity_tiers[@]}"; do
         local tier_findings
@@ -1578,13 +1595,34 @@ run_fix_phase() {
             2>"$fix_stderr") || {
             local exit_code=$?
             stop_progress
+
+            # Preserve diagnostics before anything else — this is the only record of
+            # why the batch crashed, and it must survive the revert below.
+            local fix_log
+            ensure_kyzn_dirs
+            fix_log="$(_kyzn_reports_dir_path)/${run_id}-fix-${tier}.log"
+            {
+                echo "exit_code: $exit_code"
+                echo "---- stderr ----"
+                cat "$fix_stderr" 2>/dev/null
+            } > "$fix_log" 2>/dev/null
+
             if (( exit_code == 124 )); then
-                log_error "$tier batch timed out — skipping"
+                log_error "$tier batch timed out — reverting"
             else
-                log_error "$tier batch failed — skipping"
+                log_error "$tier batch failed — reverting"
             fi
+            log_dim "  Diagnostics: $fix_log (exit_code: $exit_code)"
+            local _stderr_tail
+            _stderr_tail=$(tail -20 "$fix_stderr" 2>/dev/null)
+            [[ -n "$_stderr_tail" ]] && log_dim "$_stderr_tail"
             rm -f "$fix_stderr"
+
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
+
+            # Claude may have edited files before crashing — revert so the next
+            # batch (and the all-failed abort check) start from a clean tree.
+            _kyzn_revert_fix_batch "$pre_batch_head"
             (( batches_failed++ )) || true
             continue
         }
@@ -1760,18 +1798,7 @@ ${retry_baseline_context}
             log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
         else
             log_error "$tier batch still broken after retry — reverting batch"
-            # Save user's local config before cleaning (gitignored, would be lost)
-            local _saved_local=""
-            local _local_config_file
-            _local_config_file=$(_kyzn_local_config_path)
-            [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
-            safe_git reset --hard "$pre_batch_head" 2>/dev/null
-            # Restore saved files
-            if [[ -n "$_saved_local" ]]; then
-                mkdir -p "$(_kyzn_dir_path)"
-                echo "$_saved_local" > "$_local_config_file"
-            fi
-            ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
+            _kyzn_revert_fix_batch "$pre_batch_head"
             (( batches_failed++ )) || true
         fi
 
@@ -1782,6 +1809,23 @@ ${retry_baseline_context}
     # Step 5: Check if any batches succeeded
     if (( batches_applied == 0 )); then
         log_error "All fix batches failed. No changes to commit."
+
+        # Every batch is reverted with git reset --hard on failure, but that can't
+        # remove files it never tracked (e.g. a new file Claude created mid-edit
+        # before crashing). Never switch branches out of a dirty tree — that's how
+        # uncommitted AI changes leak onto the user's original branch.
+        local _dirty_status
+        _dirty_status=$(git status --porcelain 2>/dev/null)
+        if [[ -n "$_dirty_status" ]]; then
+            log_error "Worktree is not clean after reverting all batches — refusing to switch branches:"
+            echo "$_dirty_status" | while IFS= read -r _line; do
+                [[ -n "$_line" ]] && log_dim "  $_line"
+            done
+            log_error "Leaving branch '$branch_name' in place for inspection — run 'git status' to see what's dirty."
+            release_kyzn_lock
+            return 1
+        fi
+
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         release_kyzn_lock
