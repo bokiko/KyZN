@@ -1578,12 +1578,30 @@ run_fix_phase() {
             2>"$fix_stderr") || {
             local exit_code=$?
             stop_progress
+
+            # Preserve diagnostics before anything else — the log file is this
+            # batch's only surviving record of why it crashed. It is never
+            # deleted, unlike the temp stderr capture below.
+            local fix_log
+            ensure_kyzn_dirs
+            fix_log="$(_kyzn_reports_dir_path)/${run_id}-fix-${tier}.log"
+            {
+                echo "exit_code: $exit_code"
+                echo "---- stderr ----"
+                cat "$fix_stderr" 2>/dev/null
+            } > "$fix_log" 2>/dev/null
+
             if (( exit_code == 124 )); then
                 log_error "$tier batch timed out — skipping"
             else
                 log_error "$tier batch failed — skipping"
             fi
+            log_dim "  Diagnostics: $fix_log (exit_code: $exit_code)"
+            local _stderr_tail
+            _stderr_tail=$(tail -20 "$fix_stderr" 2>/dev/null)
+            [[ -n "$_stderr_tail" ]] && log_dim "$_stderr_tail"
             rm -f "$fix_stderr"
+
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
             continue
