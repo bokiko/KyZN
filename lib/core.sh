@@ -136,7 +136,8 @@ _kyzn_hash_path() {
 #        release_kyzn_lock
 # Returns 0 on success, 1 if another process holds the lock (or the lock
 # record cannot be trusted).
-# Sets KYZN_LOCKDIR for the caller to use in cleanup traps.
+# Sets KYZN_LOCKDIR, KYZN_LOCK_TOKEN and KYZN_LOCK_COMMON_DIR for the caller's
+# cleanup trap and for release_kyzn_lock's own ownership check — see there.
 #
 # The lock is keyed on the repository's canonical git-common-dir, not on any
 # checkout path, so two linked worktrees of the same repository — and a
@@ -145,10 +146,43 @@ _kyzn_hash_path() {
 # directory: KyZN does not write application-specific state into shared git
 # internals.
 # ---------------------------------------------------------------------------
+
+# Generate a per-acquisition ownership token. This is not a security
+# boundary — mkdir's atomicity is what excludes other processes from the
+# lock directory itself. The token exists so release_kyzn_lock can prove, at
+# release time, that it is releasing the specific acquisition it made,
+# rather than a directory a successor process has since re-created at the
+# same path (same repo => same hash => same path). PID alone cannot serve
+# this purpose: the OS reuses PIDs, so a successor can legitimately hold the
+# same PID an earlier, already-exited acquisition recorded.
+_kyzn_gen_lock_token() {
+    local rand_part
+    rand_part=$(od -A n -t x1 -N 16 /dev/urandom 2>/dev/null | tr -d ' \n')
+    # The token is load-bearing for release_kyzn_lock's ownership check — a
+    # token silently missing its random component (od/urandom unavailable
+    # or failing) would still be a well-formed, nonempty string, so the
+    # caller must fail closed here rather than discover the weakness later.
+    [[ -n "$rand_part" ]] || return 1
+    printf '%s-%s-%s\n' "$(date +%s%N 2>/dev/null || date +%s)" "$$" "$rand_part"
+}
+
 acquire_kyzn_lock() {
     local label="${1:-improve}"
     ensure_kyzn_dirs
 
+    # Everything below operates on a LOCAL candidate path/token, never the
+    # global KYZN_LOCKDIR/KYZN_LOCK_TOKEN/KYZN_LOCK_COMMON_DIR — until the
+    # complete metadata record is confirmed installed. Publishing KYZN_LOCKDIR
+    # early (even just the path, before token/common_dir are known) makes it
+    # point at a DIFFERENT lock than what KYZN_LOCK_TOKEN/COMMON_DIR still
+    # describe the instant this call is for a different repository than one
+    # this process already legitimately owns: e.g. this process holds repo
+    # A's lock, then attempts (and is refused for) repo B — if KYZN_LOCKDIR
+    # were reassigned to B here, release_kyzn_lock would try to release B
+    # using A's token, fail the ownership check, and clear ALL THREE globals
+    # — losing every reference needed to ever release A. A failed acquisition
+    # must leave whatever this process already owned byte-for-byte unchanged;
+    # a caller's cleanup trap firing later still needs to be able to find it.
     local common_dir
     if ! common_dir="$(git_common_dir)"; then
         log_error "Could not resolve this repository's shared git directory; refusing to acquire the KyZN lock."
@@ -161,10 +195,25 @@ acquire_kyzn_lock() {
         log_error "Could not compute a lock identity hash (no sha256sum, shasum, openssl, perl, or python3 available); refusing to acquire the KyZN lock."
         return 1
     fi
-    KYZN_LOCKDIR="$KYZN_GLOBAL_LOCKS_DIR/$lock_hash"
+    local candidate_lockdir="$KYZN_GLOBAL_LOCKS_DIR/$lock_hash"
 
-    if mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
-        _kyzn_write_lock_metadata "$label" "$common_dir"
+    if mkdir "$candidate_lockdir" 2>/dev/null; then
+        local token
+        if ! token="$(_kyzn_gen_lock_token)"; then
+            log_error "Failed to generate a lock ownership token; lock initialization failed."
+            log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+            rm -rf "$candidate_lockdir"
+            return 1
+        fi
+        if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_write_lock_metadata "$label" "$common_dir" "$token"; then
+            log_error "Failed to write the KyZN lock record; lock initialization failed."
+            log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+            rm -rf "$candidate_lockdir"
+            return 1
+        fi
+        KYZN_LOCKDIR="$candidate_lockdir"
+        KYZN_LOCK_TOKEN="$token"
+        KYZN_LOCK_COMMON_DIR="$common_dir"
         return 0
     fi
 
@@ -175,13 +224,31 @@ acquire_kyzn_lock() {
     # mkdir-then-write window, so treating "incomplete" the same as "stale"
     # would let a lock observed mid-acquisition be reclaimed out from under
     # its owner.
-    local rec_pid rec_common rec_label rec_source rec_time
-    if ! _kyzn_read_lock_metadata rec_pid rec_common rec_label rec_source rec_time; then
+    local rec_pid rec_common rec_label rec_source rec_time rec_token
+    if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_read_lock_metadata rec_pid rec_common rec_label rec_source rec_time rec_token; then
         log_error "Found an incomplete or malformed KyZN lock record at:"
-        log_dim "  $KYZN_LOCKDIR"
+        log_dim "  $candidate_lockdir"
         log_dim "  This can happen if a previous run was killed at the instant it acquired the lock."
         log_dim "  Manual inspection procedure: check whether a 'kyzn' process for this repository is"
-        log_dim "  actually running (e.g. ps -ef | grep kyzn); if not, remove the lock: rm -rf $KYZN_LOCKDIR"
+        log_dim "  actually running (e.g. ps -ef | grep kyzn); if not, remove the lock: rm -rf $candidate_lockdir"
+        return 1
+    fi
+
+    # The lock directory's path is deterministically derived from common_dir
+    # (hash of it), so a mismatch here is only ever a hash collision or an
+    # implementation error — never normal operation. Check this BEFORE the
+    # PID/liveness decision below: a mismatched record belongs to a
+    # repository this invocation knows nothing about, so this process must
+    # not reclaim it, remove it, or rewrite it, no matter what its recorded
+    # PID's liveness looks like.
+    if [[ "$rec_common" != "$common_dir" ]]; then
+        log_error "Lock identity mismatch at:"
+        log_dim "  $candidate_lockdir"
+        log_dim "  Recorded repository: $rec_common"
+        log_dim "  This repository:     $common_dir"
+        log_dim "  This can only happen from a lock-hash collision or an internal error."
+        log_dim "  Refusing to touch this lock. Manual inspection procedure: confirm which"
+        log_dim "  repository actually owns it before removing anything."
         return 1
     fi
 
@@ -190,46 +257,67 @@ acquire_kyzn_lock() {
         log_dim "  Repository: $rec_common"
         log_dim "  Source checkout: $rec_source"
         log_dim "  Acquired: $rec_time"
-        log_dim "  Lock location: $KYZN_LOCKDIR"
-        log_dim "  If this is wrong, inspect and remove the lock: rm -rf $KYZN_LOCKDIR"
+        log_dim "  Lock location: $candidate_lockdir"
+        log_dim "  If this is wrong, inspect and remove the lock: rm -rf $candidate_lockdir"
         return 1
     fi
 
     # Stale — the recorded PID is a complete record but no longer alive. Reclaim.
     log_warn "Removing stale lock from a previous run (PID: $rec_pid, $rec_label)"
-    rm -rf "$KYZN_LOCKDIR"
-    if ! mkdir "$KYZN_LOCKDIR" 2>/dev/null; then
+    rm -rf "$candidate_lockdir"
+    if ! mkdir "$candidate_lockdir" 2>/dev/null; then
         log_error "Another KyZN process grabbed the lock during recovery."
         return 1
     fi
-    _kyzn_write_lock_metadata "$label" "$common_dir"
+    local token
+    if ! token="$(_kyzn_gen_lock_token)"; then
+        log_error "Failed to generate a lock ownership token; lock initialization failed."
+        log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+        rm -rf "$candidate_lockdir"
+        return 1
+    fi
+    if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_write_lock_metadata "$label" "$common_dir" "$token"; then
+        log_error "Failed to write the KyZN lock record after reclaiming a stale lock; lock initialization failed."
+        log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+        rm -rf "$candidate_lockdir"
+        return 1
+    fi
+    KYZN_LOCKDIR="$candidate_lockdir"
+    KYZN_LOCK_TOKEN="$token"
+    KYZN_LOCK_COMMON_DIR="$common_dir"
     return 0
 }
 
 # Write the lock metadata record. Built in a temp file and moved into place
 # with a single rename so a concurrent reader never observes a partially
 # written record — it sees either no record (freshly mkdir'd lock) or a
-# complete one.
+# complete one. Returns 0 only when the record is actually in place; every
+# failure (mktemp, jq, mv) returns 1 so the caller never treats a lock
+# directory with no metadata as a successful acquisition.
 _kyzn_write_lock_metadata() {
-    local label="$1" common_dir="$2"
+    local label="$1" common_dir="$2" token="$3"
     local source_root
     source_root="$(invocation_root 2>/dev/null || echo "$common_dir")"
     local tmp_file
-    tmp_file=$(mktemp "$KYZN_LOCKDIR/.meta.XXXXXX" 2>/dev/null) || return 0
+    tmp_file=$(mktemp "$KYZN_LOCKDIR/.meta.XXXXXX" 2>/dev/null) || return 1
     if jq -n --arg common_dir "$common_dir" --arg pid "$$" --arg label "$label" \
-        --arg source "$source_root" --arg time "$(timestamp)" \
-        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time}' \
+        --arg source "$source_root" --arg time "$(timestamp)" --arg token "$token" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
         > "$tmp_file" 2>/dev/null; then
-        mv -f "$tmp_file" "$KYZN_LOCKDIR/meta.json" 2>/dev/null || rm -f "$tmp_file"
-    else
+        if mv -f "$tmp_file" "$KYZN_LOCKDIR/meta.json" 2>/dev/null; then
+            return 0
+        fi
         rm -f "$tmp_file"
+        return 1
     fi
+    rm -f "$tmp_file"
+    return 1
 }
 
-# Read and validate the lock metadata record. Populates the five named
+# Read and validate the lock metadata record. Populates the six named
 # out-vars and returns 0 only when every field is present and well-formed.
 _kyzn_read_lock_metadata() {
-    local -n _out_pid="$1" _out_common="$2" _out_label="$3" _out_source="$4" _out_time="$5"
+    local -n _out_pid="$1" _out_common="$2" _out_label="$3" _out_source="$4" _out_time="$5" _out_token="$6"
     local meta_file="$KYZN_LOCKDIR/meta.json"
 
     [[ -s "$meta_file" ]] || return 1
@@ -240,14 +328,43 @@ _kyzn_read_lock_metadata() {
     _out_label=$(jq -r '.label // empty' "$meta_file" 2>/dev/null)
     _out_source=$(jq -r '.source // empty' "$meta_file" 2>/dev/null)
     _out_time=$(jq -r '.acquired_at // empty' "$meta_file" 2>/dev/null)
+    _out_token=$(jq -r '.token // empty' "$meta_file" 2>/dev/null)
 
     [[ -n "$_out_pid" && "$_out_pid" =~ ^[0-9]+$ ]] || return 1
-    [[ -n "$_out_common" && -n "$_out_label" && -n "$_out_source" && -n "$_out_time" ]] || return 1
+    [[ -n "$_out_common" && -n "$_out_label" && -n "$_out_source" && -n "$_out_time" && -n "$_out_token" ]] || return 1
     return 0
 }
 
+# Owner-bound, single-use release. Verifies this acquisition's token, PID
+# and canonical common_dir are still exactly what is recorded at
+# KYZN_LOCKDIR before removing anything, then unconditionally clears this
+# process's ownership state. That second part is what makes a second call
+# safe: the most common second call is the EXIT/INT/TERM trap firing after
+# an explicit release earlier in the same function already ran — with
+# ownership state cleared, that second call finds KYZN_LOCKDIR/TOKEN empty
+# and does nothing, instead of repeating rm -rf against a lock path a
+# successor process may have already re-acquired.
 release_kyzn_lock() {
-    rm -rf "${KYZN_LOCKDIR:-}" 2>/dev/null
+    if [[ -z "${KYZN_LOCKDIR:-}" || -z "${KYZN_LOCK_TOKEN:-}" ]]; then
+        KYZN_LOCKDIR=""
+        KYZN_LOCK_TOKEN=""
+        KYZN_LOCK_COMMON_DIR=""
+        return 0
+    fi
+
+    local rec_pid rec_common rec_label rec_source rec_time rec_token
+    if _kyzn_read_lock_metadata rec_pid rec_common rec_label rec_source rec_time rec_token &&
+       [[ "$rec_token" == "$KYZN_LOCK_TOKEN" && "$rec_pid" == "$$" && "$rec_common" == "${KYZN_LOCK_COMMON_DIR:-}" ]]; then
+        rm -rf "$KYZN_LOCKDIR"
+    else
+        log_warn "Skipping lock release: $KYZN_LOCKDIR no longer holds this acquisition's record."
+        log_dim "  This is expected if the lock was already released and reclaimed by another process."
+    fi
+
+    KYZN_LOCKDIR=""
+    KYZN_LOCK_TOKEN=""
+    KYZN_LOCK_COMMON_DIR=""
+    return 0
 }
 
 # Validate run ID format (prevent path traversal and injection)

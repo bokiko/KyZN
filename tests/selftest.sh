@@ -3916,7 +3916,7 @@ _clean_path() {
     # The fail-closed tests are unaffected: they assert on absent dotnet/cargo/
     # go, and the "no controller runtime" test builds its own isolated PATH.
     for u in bash sh env cat head tail grep sed awk sort uniq wc find tr cut \
-             date mktemp rm mkdir chmod ln touch git jq timeout xargs \
+             date mktemp rm mv mkdir chmod ln touch git jq timeout xargs \
              basename dirname perl python3 od "$@"; do
         src=$(command -v "$u" 2>/dev/null) || continue
         ln -sf "$src" "$dir/$u" 2>/dev/null || true
@@ -7026,10 +7026,18 @@ test_lock_reclaim_semantics() {
     local dead_pid=$!
     wait "$dead_pid" 2>/dev/null || true
     jq -n --arg common_dir "$common_dir" --arg pid "$dead_pid" --arg label "improve" \
-        --arg source "$SANDBOX" --arg time "$(timestamp)" \
-        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time}' \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" --arg token "test-stale-token" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
         > "$lockdir/meta.json"
-    rc=0; out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    # Not `out=$(acquire_kyzn_lock ...)`: command substitution runs the call
+    # in a subshell, so a SUCCESSFUL reclaim's KYZN_LOCK_TOKEN/COMMON_DIR
+    # assignments would be discarded when the subshell exits, even though
+    # the on-disk record it wrote is real — leaving the parent shell's
+    # ownership state stale and release_kyzn_lock below unable to match it.
+    local out_file; out_file=$(mktemp)
+    rc=0
+    acquire_kyzn_lock "improve" > "$out_file" 2>&1 || rc=$?
+    out=$(cat "$out_file"); rm -f "$out_file"
     assert_exit_code "a stale, complete record is reclaimed" 0 "$rc"
     assert_contains "reclaim is logged" "$out" "stale lock"
     release_kyzn_lock
@@ -7048,6 +7056,24 @@ test_lock_reclaim_semantics() {
     fi
     rm -rf "$lockdir"
 
+    # --- A well-formed record missing the token field is also malformed ---
+    # (an older/foreign writer, or a schema regression, must not be treated
+    # as a valid record just because pid/common_dir/label/source/time parse).
+    mkdir "$lockdir"
+    jq -n --arg common_dir "$common_dir" --arg pid "$dead_pid" --arg label "improve" \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time}' \
+        > "$lockdir/meta.json"
+    rc=0; out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    assert_exit_code "a record missing the token field refuses acquisition" 1 "$rc"
+    assert_contains "missing-token record is reported as incomplete or malformed" "$out" "incomplete or malformed"
+    if [[ -d "$lockdir" ]]; then
+        pass "record missing token was not removed (fails closed)"
+    else
+        fail "record missing token was not removed (fails closed)" "directory removed"
+    fi
+    rm -rf "$lockdir"
+
     # A missing meta.json entirely (dir exists, no record at all) is likewise not reclaimed.
     mkdir "$lockdir"
     rc=0
@@ -7060,6 +7086,462 @@ test_lock_reclaim_semantics() {
     fi
     rm -rf "$lockdir"
 
+    cleanup_sandbox
+}
+
+test_lock_release_ownership() {
+    log_header "94a. release_kyzn_lock is owner-bound and single-use: a stale second release cannot delete a successor's live lock"
+
+    create_sandbox generic
+
+    # --- A acquires and releases; B (a real, separate, still-alive process)
+    # then acquires the same repository-wide lock; A's stale second release
+    # — simulating an EXIT/INT/TERM trap firing after an already-completed
+    # explicit release, exactly the sequence every mutating workflow uses —
+    # must not delete B's live lock. ---
+    acquire_kyzn_lock "improve"
+    local a_lockdir="$KYZN_LOCKDIR"
+    release_kyzn_lock
+
+    local ready_file lockdir_file tmp_sig_dir
+    tmp_sig_dir=$(mktemp -d)
+    ready_file="$tmp_sig_dir/ready"
+    lockdir_file="$tmp_sig_dir/lockdir"
+    (
+        acquire_kyzn_lock "fix"
+        echo "$KYZN_LOCKDIR" > "$lockdir_file"
+        touch "$ready_file"
+        sleep 30
+    ) &
+    local b_pid=$!
+
+    local waited=0
+    while [[ ! -f "$ready_file" && $waited -lt 50 ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    local b_lockdir=""
+    [[ -f "$lockdir_file" ]] && b_lockdir=$(cat "$lockdir_file")
+    if [[ -n "$b_lockdir" && "$b_lockdir" == "$a_lockdir" && -d "$b_lockdir" ]]; then
+        pass "B (successor) acquired the same repository-wide lock A held and released"
+    else
+        fail "B (successor) acquired the same repository-wide lock A held and released" \
+            "a_lockdir=$a_lockdir b_lockdir=$b_lockdir"
+    fi
+
+    # A's stale second release. In the unpatched code this is
+    # `rm -rf "${KYZN_LOCKDIR:-}"` against A's never-cleared KYZN_LOCKDIR —
+    # which by now is B's live lock at the same path — and deletes it.
+    release_kyzn_lock
+
+    if [[ -n "$b_lockdir" && -d "$b_lockdir" ]]; then
+        pass "A's stale second release did not delete B's live lock"
+    else
+        fail "A's stale second release did not delete B's live lock" "B's lock directory is gone"
+    fi
+
+    # B is still alive and its lock still blocks a third acquisition.
+    local rc=0
+    acquire_kyzn_lock "improve" &>/dev/null || rc=$?
+    assert_exit_code "B's lock continues to block another mutating acquisition" 1 "$rc"
+
+    kill -TERM "$b_pid" 2>/dev/null || true
+    wait "$b_pid" 2>/dev/null || true
+    rm -rf "$b_lockdir" "$tmp_sig_dir" 2>/dev/null
+
+    # --- Release also fails closed — refuses to remove, and warns — when
+    # the on-disk record's token no longer matches this process's ownership
+    # state, e.g. because the lock was reclaimed by someone else between
+    # this process's acquisition and its release. ---
+    acquire_kyzn_lock "improve"
+    local lockdir="$KYZN_LOCKDIR"
+    local common_dir
+    common_dir=$(git_common_dir)
+    jq -n --arg common_dir "$common_dir" --arg pid "$$" --arg label "improve" \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" --arg token "someone-elses-token" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
+        > "$lockdir/meta.json"
+    local out
+    out=$(release_kyzn_lock 2>&1)
+    assert_contains "release refuses and warns on a token mismatch" "$out" "no longer holds this acquisition's record"
+    if [[ -d "$lockdir" ]]; then
+        pass "release did not remove a lock whose record no longer matches this acquisition"
+    else
+        fail "release did not remove a lock whose record no longer matches this acquisition" "directory removed"
+    fi
+    rm -rf "$lockdir"
+
+    cleanup_sandbox
+}
+
+test_lock_acquire_preserves_existing_ownership() {
+    log_header "94d. A failed acquisition for a DIFFERENT repository leaves this process's existing lock ownership byte-for-byte unchanged"
+
+    create_sandbox generic
+
+    # --- This process legitimately acquires repo A (the sandbox). ---
+    acquire_kyzn_lock "improve"
+    local a_lockdir a_token a_common
+    a_lockdir="$KYZN_LOCKDIR"
+    a_token="$KYZN_LOCK_TOKEN"
+    a_common="$KYZN_LOCK_COMMON_DIR"
+    if [[ -n "$a_lockdir" && -n "$a_token" && -n "$a_common" ]]; then
+        pass "repo A acquired; ownership state captured"
+    else
+        fail "repo A acquired; ownership state captured" "lockdir=$a_lockdir token=$a_token common=$a_common"
+    fi
+
+    # --- Repo B (a wholly separate repository) already has a genuinely live
+    # lock held by a REAL separate process. This process — still holding
+    # A — attempts to acquire B and must be refused. ---
+    local outer_b repo_b
+    outer_b=$(mktemp -d)
+    repo_b="$outer_b/repo-b"
+    mkdir -p "$repo_b"
+    ( cd "$repo_b" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+
+    local ready_file tmp_sig_dir
+    tmp_sig_dir=$(mktemp -d)
+    ready_file="$tmp_sig_dir/ready"
+    local sleep_bin; sleep_bin=$(command -v sleep)
+    (
+        cd "$repo_b"
+        trap 'release_kyzn_lock; exit 143' TERM
+        acquire_kyzn_lock "improve"
+        touch "$ready_file"
+        "$sleep_bin" 10
+    ) &
+    local b_holder_pid=$!
+    local waited=0
+    while [[ ! -f "$ready_file" && $waited -lt 50 ]]; do
+        "$sleep_bin" 0.1
+        waited=$((waited + 1))
+    done
+
+    local orig_dir; orig_dir=$(pwd)
+    cd "$repo_b"
+    local rc=0
+    acquire_kyzn_lock "improve" &>/dev/null || rc=$?
+    cd "$orig_dir"
+    assert_exit_code "attempting repo B while A is held is refused" 1 "$rc"
+
+    # --- The refusal must not have disturbed A's ownership state at all. ---
+    if [[ "$KYZN_LOCKDIR" == "$a_lockdir" && "$KYZN_LOCK_TOKEN" == "$a_token" && "$KYZN_LOCK_COMMON_DIR" == "$a_common" ]]; then
+        pass "repo A's ownership state is byte-for-byte unchanged after the refused repo B attempt"
+    else
+        fail "repo A's ownership state is byte-for-byte unchanged after the refused repo B attempt" \
+            "lockdir: $a_lockdir -> $KYZN_LOCKDIR | token: $a_token -> $KYZN_LOCK_TOKEN | common: $a_common -> $KYZN_LOCK_COMMON_DIR"
+    fi
+
+    # --- A can still be released correctly, and B remains untouched. ---
+    release_kyzn_lock
+    if [[ ! -d "$a_lockdir" ]]; then
+        pass "repo A releases successfully using its preserved ownership state"
+    else
+        fail "repo A releases successfully using its preserved ownership state" "A's lock directory still present"
+    fi
+
+    local b_lockdir
+    b_lockdir=$(cd "$repo_b" && git_common_dir)
+    b_lockdir="$KYZN_GLOBAL_LOCKS_DIR/$(_kyzn_hash_path "$b_lockdir")"
+    if [[ -d "$b_lockdir" ]]; then
+        pass "repo B remains untouched by the refused attempt and A's release"
+    else
+        fail "repo B remains untouched by the refused attempt and A's release" "B's lock directory is gone"
+    fi
+
+    kill -TERM "$b_holder_pid" 2>/dev/null || true
+    wait "$b_holder_pid" 2>/dev/null || true
+    rm -rf "$outer_b" "$tmp_sig_dir"
+
+    cleanup_sandbox
+}
+
+test_lock_acquire_write_failure_preserves_existing_ownership() {
+    log_header "94e. A metadata-write failure for a fresh candidate leaves an already-held lock's ownership state untouched"
+
+    create_sandbox generic
+
+    # This process legitimately acquires repo A (the sandbox).
+    acquire_kyzn_lock "improve"
+    local a_lockdir a_token a_common
+    a_lockdir="$KYZN_LOCKDIR"
+    a_token="$KYZN_LOCK_TOKEN"
+    a_common="$KYZN_LOCK_COMMON_DIR"
+
+    # Repo C: a second, separate repository with NO existing lock, so the
+    # attempt below reaches the fresh-mkdir-succeeds branch — then the
+    # metadata write is forced to fail via a black-box override (restored
+    # immediately after), simulating defect #3 from the prior round but this
+    # time while a DIFFERENT acquisition (A) is already legitimately held.
+    local outer_c repo_c
+    outer_c=$(mktemp -d)
+    repo_c="$outer_c/repo-c"
+    mkdir -p "$repo_c"
+    ( cd "$repo_c" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+
+    local orig_write_fn
+    orig_write_fn=$(declare -f _kyzn_write_lock_metadata)
+    _kyzn_write_lock_metadata() { return 1; }
+
+    local orig_dir; orig_dir=$(pwd)
+    cd "$repo_c"
+    local rc=0
+    acquire_kyzn_lock "improve" &>/dev/null || rc=$?
+    cd "$orig_dir"
+    eval "$orig_write_fn"
+    assert_exit_code "the fresh attempt on repo C fails closed when its metadata write fails" 1 "$rc"
+
+    if [[ "$KYZN_LOCKDIR" == "$a_lockdir" && "$KYZN_LOCK_TOKEN" == "$a_token" && "$KYZN_LOCK_COMMON_DIR" == "$a_common" ]]; then
+        pass "repo A's ownership state is unchanged after repo C's failed fresh acquisition"
+    else
+        fail "repo A's ownership state is unchanged after repo C's failed fresh acquisition" \
+            "lockdir: $a_lockdir -> $KYZN_LOCKDIR | token: $a_token -> $KYZN_LOCK_TOKEN | common: $a_common -> $KYZN_LOCK_COMMON_DIR"
+    fi
+
+    local c_lockdir
+    c_lockdir=$(cd "$repo_c" && git_common_dir)
+    c_lockdir="$KYZN_GLOBAL_LOCKS_DIR/$(_kyzn_hash_path "$c_lockdir")"
+    if [[ ! -d "$c_lockdir" ]]; then
+        pass "repo C's incomplete candidate lock was cleaned up, not left dangling"
+    else
+        fail "repo C's incomplete candidate lock was cleaned up, not left dangling" "directory still present"
+    fi
+
+    release_kyzn_lock
+    rm -rf "$outer_c"
+    cleanup_sandbox
+}
+
+test_lock_token_generation_fails_closed() {
+    log_header "94f. Token generation failing closed: fresh acquisition and stale reclaim both fail instead of proceeding with a weak token"
+
+    create_sandbox generic
+
+    # Constrain the command dependency in THIS test rather than adding a
+    # production test hook: shadow `od` in PATH with a version that always
+    # fails, matching how _kyzn_gen_lock_token's entropy source can fail in
+    # the wild (od missing, /dev/urandom unreadable, etc.).
+    local fake_bin saved_path
+    fake_bin=$(mktemp -d)
+    cat > "$fake_bin/od" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+    chmod +x "$fake_bin/od"
+    saved_path="$PATH"
+
+    # --- Fresh acquisition: mkdir succeeds, entropy fails. ---
+    PATH="$fake_bin:$saved_path"
+    local rc=0 out
+    out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "fresh acquisition fails closed when token generation fails" 1 "$rc"
+    assert_contains "failure is reported as a token generation failure" "$out" "lock ownership token"
+
+    local lockdir
+    lockdir=$(git_common_dir)
+    lockdir="$KYZN_GLOBAL_LOCKS_DIR/$(_kyzn_hash_path "$lockdir")"
+    if [[ ! -d "$lockdir" ]]; then
+        pass "the incomplete candidate lock from the failed fresh attempt was removed"
+    else
+        fail "the incomplete candidate lock from the failed fresh attempt was removed" "directory still present"
+        rm -rf "$lockdir"
+    fi
+
+    # --- Stale reclaim: install a real stale, complete, valid record first
+    # so acquire reaches the reclaim branch, then let entropy fail there. ---
+    PATH="$saved_path"
+    acquire_kyzn_lock "improve"
+    lockdir="$KYZN_LOCKDIR"
+    local common_dir
+    common_dir=$(git_common_dir)
+    ( : ) &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+    jq -n --arg common_dir "$common_dir" --arg pid "$dead_pid" --arg label "improve" \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" --arg token "stale-before-reclaim-notoken" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
+        > "$lockdir/meta.json"
+    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""
+
+    PATH="$fake_bin:$saved_path"
+    rc=0
+    out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "stale-lock reclaim fails closed when token generation fails" 1 "$rc"
+    assert_contains "reclaim failure is reported as a token generation failure" "$out" "lock ownership token"
+    if [[ ! -d "$lockdir" ]]; then
+        pass "a failed reclaim (token generation) removes the incomplete lock instead of leaving it dangling"
+    else
+        fail "a failed reclaim (token generation) removes the incomplete lock instead of leaving it dangling" "directory still present"
+        rm -rf "$lockdir"
+    fi
+
+    rm -rf "$fake_bin"
+    cleanup_sandbox
+}
+
+test_lock_collision_check() {
+    log_header "94b. Lock collision check: a forced hash collision between two unrelated repositories fails closed"
+
+    create_sandbox generic
+
+    local orig_hash_fn
+    orig_hash_fn=$(declare -f _kyzn_hash_path)
+    # Force every repository to hash to the same lock path for this test
+    # only — a black-box override of an internal helper, restored below,
+    # not a change to production code.
+    _kyzn_hash_path() { printf 'forced-collision-hash\n'; }
+
+    local outer_a outer_b repo_a repo_b
+    outer_a=$(mktemp -d); outer_b=$(mktemp -d)
+    repo_a="$outer_a/repo-a"; repo_b="$outer_b/repo-b"
+    mkdir -p "$repo_a" "$repo_b"
+    ( cd "$repo_a" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+    ( cd "$repo_b" && git init -q && git config user.email a@b.c && git config user.name t && git commit -q --allow-empty -m init )
+
+    cd "$repo_a"
+    local common_a
+    common_a=$(git_common_dir)
+    local lockdir="$KYZN_GLOBAL_LOCKS_DIR/forced-collision-hash"
+    mkdir -p "$lockdir"
+    ( : ) &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+    jq -n --arg common_dir "$common_a" --arg pid "$dead_pid" --arg label "improve" \
+        --arg source "$repo_a" --arg time "$(timestamp)" --arg token "repo-a-stale-token" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
+        > "$lockdir/meta.json"
+    local before_record
+    before_record=$(cat "$lockdir/meta.json")
+
+    cd "$repo_b"
+    local rc=0 out
+    # Avoids `out=$(...)` on principle even though this attempt fails
+    # (failure paths intentionally leave KYZN_LOCK_TOKEN/etc. untouched, so
+    # a subshell wouldn't discard anything observable here) — consistent
+    # with the successful-reclaim call below, where it does matter.
+    local out_file; out_file=$(mktemp)
+    acquire_kyzn_lock "improve" > "$out_file" 2>&1 || rc=$?
+    out=$(cat "$out_file"); rm -f "$out_file"
+    assert_exit_code "repo B refuses to acquire when its hash collides with repo A's stale lock" 1 "$rc"
+    assert_contains "the refusal names the identity mismatch" "$out" "identity mismatch"
+    assert_contains "the refusal shows repo A's recorded identity" "$out" "$common_a"
+
+    local after_record
+    after_record=$(cat "$lockdir/meta.json" 2>/dev/null)
+    assert_eq "repo A's lock record is byte-identical after repo B's refused attempt" "$before_record" "$after_record"
+
+    # The refused acquisition must not have claimed ownership: a
+    # release_kyzn_lock call now must not delete repo A's directory. This is
+    # the property that actually matters, not merely that some variable was
+    # cleared — acquire_kyzn_lock intentionally leaves an unrelated prior
+    # acquisition's ownership state untouched on failure (see core.sh), so a
+    # process can safely attempt and fail an acquisition without disturbing
+    # a genuinely held lock elsewhere in the same process.
+    release_kyzn_lock 2>/dev/null
+    if [[ -d "$lockdir" ]]; then
+        pass "repo B's refused attempt cannot delete repo A's lock via release_kyzn_lock"
+    else
+        fail "repo B's refused attempt cannot delete repo A's lock via release_kyzn_lock" "directory removed"
+    fi
+
+    eval "$orig_hash_fn"
+    rm -rf "$lockdir" "$outer_a" "$outer_b"
+    cd "$SANDBOX" 2>/dev/null || true
+
+    cleanup_sandbox
+}
+
+test_lock_metadata_write_failure() {
+    log_header "94c. Lock metadata write failure fails acquisition closed instead of reporting success"
+
+    create_sandbox generic
+
+    # --- Unit level: mktemp/jq/mv failing inside _kyzn_write_lock_metadata
+    # must each return failure, not silently succeed. Each is a fake
+    # executable shadowing the real one in PATH for one call — standard
+    # black-box environment fault injection, not a change to production
+    # code or a test-only production hook. ---
+    local saved_lockdir="${KYZN_LOCKDIR:-}" saved_path="$PATH"
+    local tool
+    for tool in mktemp jq mv; do
+        local fake_bin probe_dir rc
+        fake_bin=$(mktemp -d)
+        cat > "$fake_bin/$tool" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+        chmod +x "$fake_bin/$tool"
+        probe_dir=$(mktemp -d)
+        KYZN_LOCKDIR="$probe_dir"
+        PATH="$fake_bin:$saved_path"
+        rc=0
+        _kyzn_write_lock_metadata "improve" "/fake/common" "fake-token" || rc=$?
+        PATH="$saved_path"
+        assert_exit_code "_kyzn_write_lock_metadata returns failure when $tool fails" 1 "$rc"
+        assert_eq "a failed write ($tool) leaves no meta.json behind" "" "$(ls "$probe_dir"/meta.json 2>/dev/null)"
+        rm -rf "$probe_dir" "$fake_bin"
+    done
+    KYZN_LOCKDIR="$saved_lockdir"
+
+    # --- Integration level, both acquisition paths: acquire_kyzn_lock must
+    # check the write's result and clean up its own incomplete lock rather
+    # than reporting success. Simulated by temporarily overriding
+    # _kyzn_write_lock_metadata to always fail — a black-box override of an
+    # internal helper for this one test, restored immediately after each
+    # use, not a production-only hook. ---
+    local orig_write_fn
+    orig_write_fn=$(declare -f _kyzn_write_lock_metadata)
+
+    # Fresh-acquisition path (mkdir succeeds, then the write fails).
+    _kyzn_write_lock_metadata() { return 1; }
+    local rc=0 out
+    local out_file; out_file=$(mktemp)
+    acquire_kyzn_lock "improve" > "$out_file" 2>&1 || rc=$?
+    out=$(cat "$out_file"); rm -f "$out_file"
+    assert_exit_code "fresh acquisition fails closed when metadata write fails" 1 "$rc"
+    assert_contains "failure is reported as lock initialization failing" "$out" "lock initialization failed"
+    eval "$orig_write_fn"
+    # The mkdir this failed attempt made must not survive as a dangling,
+    # metadata-less lock — confirmed directly: a normal acquisition succeeds
+    # now (the meaningful property is the on-disk directory being cleaned
+    # up, not any particular process-local variable's value).
+    rc=0
+    acquire_kyzn_lock "improve" &>/dev/null || rc=$?
+    assert_exit_code "a normal acquisition succeeds after the failed fresh attempt cleaned up" 0 "$rc"
+    release_kyzn_lock
+
+    # Stale-reclaim path: install a real stale, complete, valid record so
+    # acquire reaches the reclaim branch, then let the write fail there too.
+    acquire_kyzn_lock "improve"
+    local lockdir="$KYZN_LOCKDIR"
+    local common_dir
+    common_dir=$(git_common_dir)
+    ( : ) &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+    jq -n --arg common_dir "$common_dir" --arg pid "$dead_pid" --arg label "improve" \
+        --arg source "$SANDBOX" --arg time "$(timestamp)" --arg token "stale-before-reclaim" \
+        '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
+        > "$lockdir/meta.json"
+    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""
+
+    _kyzn_write_lock_metadata() { return 1; }
+    rc=0
+    out=$(acquire_kyzn_lock "improve" 2>&1) || rc=$?
+    assert_exit_code "stale-lock reclaim fails closed when metadata write fails" 1 "$rc"
+    assert_contains "reclaim reports lock initialization failing" "$out" "lock initialization failed"
+    if [[ ! -d "$lockdir" ]]; then
+        pass "a failed reclaim removes the incomplete lock instead of leaving it dangling"
+    else
+        fail "a failed reclaim removes the incomplete lock instead of leaving it dangling" "directory still present"
+    fi
+    eval "$orig_write_fn"
+
+    rm -rf "$lockdir" 2>/dev/null
     cleanup_sandbox
 }
 
@@ -7132,6 +7614,258 @@ test_lock_cross_command_contention() {
     fi
     release_kyzn_lock
 
+    # --- report-only analyze does not merely go unrefused in source — it
+    # actually runs, invokes Claude, and completes, while the repository
+    # lock is held by another (simulated) run. Uses a dedicated stub rather
+    # than the generic _workflow_mocks claude wrapper, matching the
+    # already-proven `--single --auto` fixture used elsewhere for
+    # report-only analyze. ---
+    local analyze_fake_bin analyze_marker
+    analyze_fake_bin=$(mktemp -d)
+    analyze_marker="$analyze_fake_bin/analyze-invoked"
+    cat > "$analyze_fake_bin/claude" <<'SH'
+#!/usr/bin/env bash
+: > "$KYZN_ANALYZE_MARKER"
+echo '{"total_cost_usd":0.01,"result":"[]"}'
+SH
+    chmod +x "$analyze_fake_bin/claude"
+    KYZN_ANALYZE_MARKER="$analyze_marker"
+    export KYZN_ANALYZE_MARKER
+
+    acquire_kyzn_lock "fix"
+    PATH="$analyze_fake_bin:$saved_path"
+    rc=0
+    cmd_analyze --single --auto --budget 0.10 &>/dev/null || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "report-only analyze completes while the repository lock is held" 0 "$rc"
+    assert_file_exists "report-only analyze actually invoked Claude under the held lock" "$analyze_marker"
+    release_kyzn_lock
+
+    unset KYZN_ANALYZE_MARKER
+    rm -rf "$analyze_fake_bin"
+
+    PATH="$saved_path"
+    cleanup_sandbox
+}
+
+test_lock_cross_process_command_contention() {
+    log_header "96b. quick/fix contend across two real processes and two linked checkouts, end to end — both directions, real mutating entrypoints on both sides"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH"
+    local sleep_bin
+    sleep_bin=$(command -v sleep)
+
+    create_sandbox generic
+    detect_project_type
+    _workflow_setup report
+
+    # A linked worktree of the SAME repository — a genuinely different
+    # checkout sharing SANDBOX's git-common-dir. Created AFTER _workflow_setup
+    # commits .kyzn/config.yaml, so the worktree's checkout has it too.
+    local wt_dir="$SANDBOX-wt"
+    git worktree add -q -b kyzn-contention-wt "$wt_dir" >/dev/null 2>&1
+
+    local tmp_sig_dir
+    tmp_sig_dir=$(mktemp -d)
+
+    # Neither holder acquires the lock directly. Both are the REAL mutating
+    # entrypoint, held for a controlled window by making the mocked `claude`
+    # sleep before answering — reusing _workflow_mocks' existing
+    # CLAUDE_MUTATE hook (a script run before the mock prints its success
+    # JSON) rather than a bespoke PATH override or any production-only test
+    # hook. The command's own real acquire_kyzn_lock call is what creates
+    # the lock directory; polling for that directory's existence is the
+    # synchronization point, not a hand-placed ready file.
+    local sleep_mutate="$tmp_sig_dir/sleep_mutate.sh"
+    cat > "$sleep_mutate" <<EOF
+#!/usr/bin/env bash
+"$sleep_bin" 4
+EOF
+    chmod +x "$sleep_mutate"
+
+    local sandbox_lockdir
+    sandbox_lockdir="$KYZN_GLOBAL_LOCKS_DIR/$(_kyzn_hash_path "$(cd "$SANDBOX" && git_common_dir)")"
+
+    _wait_for_lockdir() {
+        local dir="$1" waited=0
+        while [[ ! -d "$dir" && $waited -lt 50 ]]; do
+            "$sleep_bin" 0.1
+            waited=$((waited + 1))
+        done
+        [[ -d "$dir" ]]
+    }
+
+    # ======================================================================
+    # Direction A: primary checkout runs cmd_improve (real acquisition,
+    # "improve"); linked checkout's run_fix_phase is refused, then succeeds
+    # once cmd_improve finishes and releases on its own.
+    # ======================================================================
+
+    (
+        cd "$SANDBOX"
+        WORKFLOW_LOG="$tmp_sig_dir/holderA-workflow.log"
+        : > "$WORKFLOW_LOG"
+        CLAUDE_MUTATE="$sleep_mutate"
+        export CLAUDE_MUTATE WORKFLOW_LOG
+        _holder_rc=0
+        cmd_improve --auto &>/dev/null || _holder_rc=$?
+        echo "$_holder_rc" > "$tmp_sig_dir/holderA.rc"
+    ) &
+    local holderA_pid=$!
+
+    if _wait_for_lockdir "$sandbox_lockdir"; then
+        pass "direction A: cmd_improve (separate process, primary checkout) really acquired the lock"
+    else
+        fail "direction A: cmd_improve (separate process, primary checkout) really acquired the lock" \
+            "lock directory never appeared"
+    fi
+
+    (
+        cd "$wt_dir"
+        unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
+              KYZN_PROJECT_AMBIGUITY_REASON KYZN_PROJECT_WORKDIR_ERROR
+        detect_project_type >/dev/null 2>&1
+        WORKFLOW_LOG="$tmp_sig_dir/attemptA-workflow.log"
+        : > "$WORKFLOW_LOG"
+        echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"scripts/run.sh","fix":"f"}]' \
+            > "$tmp_sig_dir/findingsA.json"
+        mkdir -p "$(_kyzn_reports_dir_path)"
+        printf '# Analysis\n' > "$(_kyzn_reports_dir_path)/20260813-crosswtA1-analysis.md"
+        _attempt_rc=0
+        run_fix_phase "$tmp_sig_dir/findingsA.json" CRITICAL "20260813-crosswtA1" "1.00" &>/dev/null || _attempt_rc=$?
+        echo "$_attempt_rc" > "$tmp_sig_dir/attemptA.rc"
+    ) &
+    wait $! 2>/dev/null || true
+
+    local attemptA_rc=""
+    [[ -f "$tmp_sig_dir/attemptA.rc" ]] && attemptA_rc=$(cat "$tmp_sig_dir/attemptA.rc")
+    assert_eq "direction A: run_fix_phase in the linked worktree is refused while cmd_improve holds the lock" "1" "$attemptA_rc"
+    if [[ -f "$tmp_sig_dir/attemptA-workflow.log" ]]; then
+        assert_not_contains "direction A: the refused run_fix_phase never invoked Claude" \
+            "$(cat "$tmp_sig_dir/attemptA-workflow.log")" "CLAUDE-INVOKED"
+    else
+        fail "direction A: the refused run_fix_phase never invoked Claude" "attempt workflow log was never created"
+    fi
+
+    # cmd_improve's real claude call is still asleep or just finishing; let
+    # it complete and release the lock entirely on its own — no external
+    # kill, matching a real command's natural exit.
+    wait "$holderA_pid" 2>/dev/null || true
+    if [[ ! -d "$sandbox_lockdir" ]]; then
+        pass "direction A: cmd_improve released the lock on its own completion"
+    else
+        fail "direction A: cmd_improve released the lock on its own completion" "lock directory still present"
+    fi
+
+    (
+        cd "$wt_dir"
+        unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
+              KYZN_PROJECT_AMBIGUITY_REASON KYZN_PROJECT_WORKDIR_ERROR
+        detect_project_type >/dev/null 2>&1
+        WORKFLOW_LOG="$tmp_sig_dir/attemptA2-workflow.log"
+        : > "$WORKFLOW_LOG"
+        _attempt2_rc=0
+        run_fix_phase "$tmp_sig_dir/findingsA.json" CRITICAL "20260813-crosswtA2" "1.00" &>/dev/null || _attempt2_rc=$?
+        echo "$_attempt2_rc" > "$tmp_sig_dir/attemptA2.rc"
+    ) &
+    wait $! 2>/dev/null || true
+    local attemptA2_rc=""
+    [[ -f "$tmp_sig_dir/attemptA2.rc" ]] && attemptA2_rc=$(cat "$tmp_sig_dir/attemptA2.rc")
+    assert_eq "direction A: run_fix_phase in the linked worktree succeeds once cmd_improve releases" "0" "$attemptA2_rc"
+
+    # ======================================================================
+    # Direction B: primary checkout runs run_fix_phase (real acquisition,
+    # "fix"); linked checkout's cmd_improve is refused, then succeeds once
+    # run_fix_phase finishes and releases on its own.
+    # ======================================================================
+
+    echo '[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"scripts/run.sh","fix":"f"}]' \
+        > "$tmp_sig_dir/findingsB.json"
+    mkdir -p "$KYZN_REPORTS_DIR"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/20260813-crosswtB1-analysis.md"
+
+    (
+        cd "$SANDBOX"
+        unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
+              KYZN_PROJECT_AMBIGUITY_REASON KYZN_PROJECT_WORKDIR_ERROR
+        detect_project_type >/dev/null 2>&1
+        WORKFLOW_LOG="$tmp_sig_dir/holderB-workflow.log"
+        : > "$WORKFLOW_LOG"
+        CLAUDE_MUTATE="$sleep_mutate"
+        export CLAUDE_MUTATE WORKFLOW_LOG
+        _holder_rc=0
+        run_fix_phase "$tmp_sig_dir/findingsB.json" CRITICAL "20260813-crosswtB1" "1.00" &>/dev/null || _holder_rc=$?
+        echo "$_holder_rc" > "$tmp_sig_dir/holderB.rc"
+    ) &
+    local holderB_pid=$!
+
+    if _wait_for_lockdir "$sandbox_lockdir"; then
+        pass "direction B: run_fix_phase (separate process, primary checkout) really acquired the lock"
+    else
+        fail "direction B: run_fix_phase (separate process, primary checkout) really acquired the lock" \
+            "lock directory never appeared"
+    fi
+
+    (
+        cd "$wt_dir"
+        unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
+              KYZN_PROJECT_AMBIGUITY_REASON KYZN_PROJECT_WORKDIR_ERROR
+        WORKFLOW_LOG="$tmp_sig_dir/attemptB-workflow.log"
+        : > "$WORKFLOW_LOG"
+        _attempt_rc=0
+        cmd_improve --auto &>/dev/null || _attempt_rc=$?
+        trap - EXIT INT TERM
+        echo "$_attempt_rc" > "$tmp_sig_dir/attemptB.rc"
+    ) &
+    wait $! 2>/dev/null || true
+
+    local attemptB_rc=""
+    [[ -f "$tmp_sig_dir/attemptB.rc" ]] && attemptB_rc=$(cat "$tmp_sig_dir/attemptB.rc")
+    assert_eq "direction B: cmd_improve in the linked worktree is refused while run_fix_phase holds the lock" "1" "$attemptB_rc"
+    if [[ -f "$tmp_sig_dir/attemptB-workflow.log" ]]; then
+        assert_not_contains "direction B: the refused cmd_improve never invoked Claude" \
+            "$(cat "$tmp_sig_dir/attemptB-workflow.log")" "CLAUDE-INVOKED"
+    else
+        fail "direction B: the refused cmd_improve never invoked Claude" "attempt workflow log was never created"
+    fi
+
+    wait "$holderB_pid" 2>/dev/null || true
+    if [[ ! -d "$sandbox_lockdir" ]]; then
+        pass "direction B: run_fix_phase released the lock on its own completion"
+    else
+        fail "direction B: run_fix_phase released the lock on its own completion" "lock directory still present"
+    fi
+
+    (
+        cd "$wt_dir"
+        unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
+              KYZN_PROJECT_AMBIGUITY_REASON KYZN_PROJECT_WORKDIR_ERROR
+        WORKFLOW_LOG="$tmp_sig_dir/attemptB2-workflow.log"
+        : > "$WORKFLOW_LOG"
+        _attempt2_rc=0
+        cmd_improve --auto &>/dev/null || _attempt2_rc=$?
+        trap - EXIT INT TERM
+        echo "$_attempt2_rc" > "$tmp_sig_dir/attemptB2.rc"
+    ) &
+    wait $! 2>/dev/null || true
+    local attemptB2_rc=""
+    [[ -f "$tmp_sig_dir/attemptB2.rc" ]] && attemptB2_rc=$(cat "$tmp_sig_dir/attemptB2.rc")
+    assert_eq "direction B: cmd_improve in the linked worktree succeeds once run_fix_phase releases" "0" "$attemptB2_rc"
+
+    unset -f _wait_for_lockdir
+    unset CLAUDE_MUTATE
+    git worktree remove --force "$wt_dir" >/dev/null 2>&1 || true
+    rm -rf "$tmp_sig_dir"
     PATH="$saved_path"
     cleanup_sandbox
 }
@@ -7313,8 +8047,15 @@ main() {
     test_lock_identity_canonical_and_worktrees
     test_lock_symlinked_global_dir
     test_lock_reclaim_semantics
+    test_lock_release_ownership
+    test_lock_acquire_preserves_existing_ownership
+    test_lock_acquire_write_failure_preserves_existing_ownership
+    test_lock_token_generation_fails_closed
+    test_lock_collision_check
+    test_lock_metadata_write_failure
     test_lock_call_order_wiring
     test_lock_cross_command_contention
+    test_lock_cross_process_command_contention
     test_lock_signal_cleanup
 
     # Stress tests
