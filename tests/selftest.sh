@@ -6870,10 +6870,19 @@ test_lock_identity_canonical_and_worktrees() {
 
     create_sandbox generic
 
+    # $SANDBOX is the raw `mktemp -d` output, which on macOS is a symlink
+    # (/var/... -> /private/var/...). git_common_dir()/invocation_root() are
+    # documented to return the physical, symlink-resolved path (pwd -P), so
+    # expectations here must be resolved the same way — comparing against
+    # the unresolved $SANDBOX fails on any platform where TMPDIR itself is a
+    # symlink, which is production behaving exactly as designed, not a bug.
+    local physical_sandbox
+    physical_sandbox=$(cd "$SANDBOX" && pwd -P)
+
     local main_common
     main_common=$(git_common_dir)
-    assert_eq "git_common_dir resolves to the repository's .git dir" "$SANDBOX/.git" "$main_common"
-    assert_eq "invocation_root resolves to the checkout root" "$SANDBOX" "$(invocation_root)"
+    assert_eq "git_common_dir resolves to the repository's .git dir" "$physical_sandbox/.git" "$main_common"
+    assert_eq "invocation_root resolves to the checkout root" "$physical_sandbox" "$(invocation_root)"
 
     # --- Primary checkout vs a linked worktree: same repository, one lock ---
     local wt_parent="$SANDBOX-wt"
