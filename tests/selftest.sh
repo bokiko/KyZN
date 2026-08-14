@@ -7547,8 +7547,8 @@ SH
     # legacy guard this acquisition also claimed shares this shell's live
     # PID and must be cleared to match the new-format record being faked
     # stale, or it would wrongly block the reclaim attempt below.
-    rm -rf "$(_kyzn_legacy_lock_path_for "$(project_root)")"
-    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""; KYZN_LEGACY_GUARD_DIR=""
+    _kyzn_release_legacy_guard
+    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""
 
     PATH="$fake_bin:$saved_path"
     rc=0
@@ -7715,8 +7715,8 @@ SH
     # legacy guard this acquisition also claimed shares this shell's live
     # PID and must be cleared to match the new-format record being faked
     # stale, or it would wrongly block the reclaim attempt below.
-    rm -rf "$(_kyzn_legacy_lock_path_for "$(project_root)")"
-    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""; KYZN_LEGACY_GUARD_DIR=""
+    _kyzn_release_legacy_guard
+    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""
 
     _kyzn_write_lock_metadata() { return 1; }
     rc=0
@@ -8169,8 +8169,8 @@ test_lock_reclaim_serialized_concurrency() {
     # See the matching comment in test_lock_reclaim_semantics: clear the
     # real legacy guard this acquisition also claimed, or it wrongly blocks
     # the reclaim attempts below (it shares this shell's live PID).
-    rm -rf "$(_kyzn_legacy_lock_path_for "$(project_root)")"
-    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""; KYZN_LEGACY_GUARD_DIR=""
+    _kyzn_release_legacy_guard
+    KYZN_LOCKDIR=""; KYZN_LOCK_TOKEN=""; KYZN_LOCK_COMMON_DIR=""
 
     local tmp_sig_dir; tmp_sig_dir=$(mktemp -d)
     local contender="$tmp_sig_dir/contender.sh"
