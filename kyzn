@@ -59,6 +59,7 @@ Commands:
   diff <id>       Show what a run changed
   history         Show all runs with scores and trends
   dashboard       Machine-wide activity summary (all projects)
+  worktrees       Inspect/remove retained analyze --fix execution worktrees
 
   schedule        Remove legacy recurring runs (creation disabled in Phase 0)
   selftest        Run the test suite
@@ -84,7 +85,8 @@ Fix options:
   --min-severity <s>  Minimum severity to fix (CRITICAL|HIGH|MEDIUM|LOW)
   --profile <p>       opus | hybrid | sonnet
   --budget <USD>      Budget for analysis phase
-  --allow-dirty       Allow running with uncommitted local changes
+  --allow-dirty       Not supported — fix batches run in an isolated worktree;
+                      commit or stash first (rejected outright, not gated)
   --allow-unsafe-host-execution
                       Explicitly allow repository commands and AI changes on this host
 
@@ -95,7 +97,8 @@ Analyze options:
   --single            Use single reviewer instead of 4 specialists
   --focus <area>      Narrow analysis to one area
   --profile <p>       opus | hybrid | sonnet
-  --allow-dirty       Only applies with --fix
+  --allow-dirty       Not supported with --fix (see Fix options); ignored by
+                      report-only analyze
   --allow-unsafe-host-execution
                       Enable dynamic measurements; required with --fix
 
@@ -110,6 +113,10 @@ Doctor options:
 
 History options:
   --global            Show history from all projects
+
+Worktrees options:
+  kyzn worktrees list             List retained analyze --fix execution worktrees
+  kyzn worktrees remove <run-id>  Remove a retained worktree, its private ref and metadata
 
 General:
   -h, --help          Show this help
@@ -202,7 +209,7 @@ main() {
     # Check for updates (non-blocking, once per day) — skip for fast/local commands
     case "$cmd" in
         version|--version|-v|help|--help|-h|""|doctor|selftest) ;;
-        quick|improve|fix|analyze|measure|status|init|approve|reject|diff|history|dashboard|schedule|update) check_for_updates ;;
+        quick|improve|fix|analyze|measure|status|init|approve|reject|diff|history|dashboard|schedule|worktrees|update) check_for_updates ;;
     esac
 
     case "$cmd" in
@@ -227,6 +234,7 @@ main() {
             source "$KYZN_ROOT/lib/verify.sh"
             source "$KYZN_ROOT/lib/allowlist.sh"
             source "$KYZN_ROOT/lib/report.sh"
+            source "$KYZN_ROOT/lib/worktree.sh"
             source "$KYZN_ROOT/lib/analyze.sh"
             cmd_analyze --fix "$@"
             ;;
@@ -239,6 +247,7 @@ main() {
             source "$KYZN_ROOT/lib/verify.sh"
             source "$KYZN_ROOT/lib/allowlist.sh"
             source "$KYZN_ROOT/lib/report.sh"
+            source "$KYZN_ROOT/lib/worktree.sh"
             source "$KYZN_ROOT/lib/analyze.sh"
             cmd_analyze "$@"
             ;;
@@ -296,6 +305,11 @@ main() {
             shift
             source "$KYZN_ROOT/lib/schedule.sh"
             cmd_schedule "$@"
+            ;;
+        worktrees)
+            shift
+            source "$KYZN_ROOT/lib/worktree.sh"
+            cmd_worktrees "$@"
             ;;
         update)
             shift

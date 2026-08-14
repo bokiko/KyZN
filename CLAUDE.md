@@ -69,6 +69,7 @@ Profiler agent (Sonnet) reads repo files and caches conventions to `.kyzn/repo-p
 | `lib/execute.sh` | `execute_claude`, `cmd_improve`, safety wrappers (`safe_git`, `unstage_secrets`) |
 | `lib/analyze.sh` | Multi-agent Opus pipeline, `cmd_analyze` |
 | `lib/verify.sh` | `verify_build`, `capture_failing_tests` (per language) |
+| `lib/worktree.sh` | Isolated execution-transaction worktrees for `analyze --fix` (registry, private-ref transaction anchor, `kyzn worktrees list/remove`) |
 | `lib/prompt.sh` | Prompt assembly with `{{PLACEHOLDER}}` replacement |
 | `lib/allowlist.sh` | Per-language Claude tool flags |
 | `lib/report.sh` | PR body generation, `gh pr create` |
@@ -88,6 +89,7 @@ Two-layer: `.kyzn/config.yaml` (committed, project settings) and `.kyzn/local.ya
 - Hard ceilings: max $25 budget, 100 turns, 10000 diff lines
 - CI files (`.github/workflows/`) unstaged after Claude runs
 - Atomic `mkdir` lock prevents concurrent runs on same repo
+- `analyze --fix` runs its mutating batches and verification inside a disposable Git worktree (`lib/worktree.sh`, `~/.kyzn/worktrees/<run-id>/`) instead of the invocation checkout; failed batches are discarded and recreated rather than rolled back with `reset --hard`. This does not claim the invocation checkout can never be touched — Claude still holds unrestricted `Read`/`Edit`/`Write` and project commands can write absolute paths or mutate global caches, so `--allow-unsafe-host-execution` is still required. `--allow-dirty` is rejected outright for `analyze --fix` (report-only `analyze` and `quick`/`improve` are unaffected)
 
 ## Conventions
 
@@ -137,9 +139,9 @@ remain on the branch; preserving them is deliberate, and the branch is left for 
 `tests/selftest.sh` is a self-contained Bash test suite with `assert_eq`, `assert_contains`, `assert_exit_code`, etc. Tests use temp-dir sandboxes with fake git repos. Runtime assertion totals come from the suite output; repository-size facts below are generated and checked in CI.
 
 <!-- BEGIN GENERATED REPOSITORY FACTS -->
-- Repository files: **78**
-- Bash entrypoints/modules/scripts: **26** files, **18791** lines
-- Self-test harness: **134** test functions, **9072** lines (runtime assertion totals are reported by the suite, not hardcoded)
+- Repository files: **79**
+- Bash entrypoints/modules/scripts: **27** files, **19750** lines
+- Self-test harness: **140** test functions, **9310** lines (runtime assertion totals are reported by the suite, not hardcoded)
 - Project profiles: **6** languages plus the generic fallback
 - CI matrix: **Linux and macOS**, each running quick and full self-tests
 <!-- END GENERATED REPOSITORY FACTS -->

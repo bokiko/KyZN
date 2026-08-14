@@ -8887,6 +8887,238 @@ SH
 }
 
 # ---------------------------------------------------------------------------
+# Isolated analyze --fix execution transaction (issue #21 stage 2)
+# ---------------------------------------------------------------------------
+
+test_worktree_register_materialize_discard() {
+    log_header "97. worktree registry: register, materialize, discard"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    rc=0
+    kyzn_wt_register "$SANDBOX" "$src_sha" || rc=$?
+    assert_exit_code "register succeeds" 0 "$rc"
+    local run_id="$KYZN_WT_RUN_ID"
+    assert_eq "register: run ID matches validate_run_id format" "0" "$([[ "$run_id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]+$ ]]; echo $?)"
+
+    local meta_file="$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json"
+    if [[ -f "$meta_file" ]]; then
+        pass "register: metadata.json created"
+    else
+        fail "register: metadata.json created" "missing at $meta_file"
+    fi
+    local mode; mode=$(stat -c '%a' "$meta_file" 2>/dev/null || stat -f '%Lp' "$meta_file" 2>/dev/null)
+    assert_eq "register: metadata.json is mode 600" "600" "$mode"
+
+    local json; json=$(cat "$meta_file")
+    assert_eq "register: schema_version 1" "1" "$(jq -r '.schema_version' <<<"$json")"
+    assert_eq "register: phase registered" "registered" "$(jq -r '.phase' <<<"$json")"
+    assert_eq "register: checkout_state absent" "absent" "$(jq -r '.checkout_state' <<<"$json")"
+    assert_eq "register: status active" "active" "$(jq -r '.status' <<<"$json")"
+    assert_eq "register: accepted_head is the pinned source commit" "$src_sha" "$(jq -r '.accepted_head' <<<"$json")"
+    assert_eq "register: owner_pid is this process" "$BASHPID" "$(jq -r '.owner_pid' <<<"$json")"
+    assert_eq "register: ref_name is derived from run id" "refs/kyzn/runs/$run_id/accepted" "$(jq -r '.ref_name' <<<"$json")"
+
+    local ref_sha; ref_sha=$(git -C "$SANDBOX" rev-parse --verify -q "refs/kyzn/runs/$run_id/accepted" 2>/dev/null)
+    assert_eq "register: private ref created at the pinned commit" "$src_sha" "$ref_sha"
+
+    rc=0
+    kyzn_wt_materialize "$run_id" "$src_sha" || rc=$?
+    assert_exit_code "materialize succeeds" 0 "$rc"
+    local checkout_dir; checkout_dir=$(kyzn_wt_checkout_dir "$run_id")
+    if [[ -f "$checkout_dir/scripts/run.sh" ]]; then
+        pass "materialize: pinned tree content is present in the checkout"
+    else
+        fail "materialize: pinned tree content is present in the checkout" "scripts/run.sh missing"
+    fi
+    assert_eq "materialize: checkout_state materialized" "materialized" \
+        "$(jq -r '.checkout_state' <<<"$(cat "$meta_file")")"
+    local checkout_head; checkout_head=$(git -C "$checkout_dir" rev-parse HEAD)
+    assert_eq "materialize: checkout HEAD is the pinned commit" "$src_sha" "$checkout_head"
+    rc=0
+    git -C "$checkout_dir" symbolic-ref -q HEAD >/dev/null 2>&1 && rc=1
+    assert_exit_code "materialize: checkout HEAD is detached" 1 "$rc"
+
+    kyzn_wt_discard "$run_id"
+    assert_eq "discard: checkout_state absent again" "absent" \
+        "$(jq -r '.checkout_state' <<<"$(cat "$meta_file")")"
+    if [[ -d "$checkout_dir" ]]; then
+        fail "discard: checkout directory removed" "still present at $checkout_dir"
+    else
+        pass "discard: checkout directory removed"
+    fi
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout_dir" && rc=1
+    assert_exit_code "discard: no longer registered with git" 1 "$rc"
+
+    kyzn_wt_remove_run "$run_id"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        fail "remove_run: run directory removed" "still present"
+    else
+        pass "remove_run: run directory removed"
+    fi
+    rc=0
+    git -C "$SANDBOX" rev-parse --verify -q "refs/kyzn/runs/$run_id/accepted" >/dev/null 2>&1 && rc=1
+    assert_exit_code "remove_run: private ref deleted" 1 "$rc"
+
+    cleanup_sandbox
+}
+
+test_worktree_advance_accepted_head_cas() {
+    log_header "98. worktree accepted-head: two-phase CAS advance"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run_id" "$src_sha"
+    local checkout_dir; checkout_dir=$(kyzn_wt_checkout_dir "$run_id")
+
+    (
+        cd "$checkout_dir"
+        echo "batch change" >> scripts/run.sh
+        git -c user.email=t@t -c user.name=t add -A
+        git -c user.email=t@t -c user.name=t commit -q -m "batch commit"
+    )
+    local new_sha; new_sha=$(git -C "$checkout_dir" rev-parse HEAD)
+
+    rc=0
+    kyzn_wt_advance_accepted_head "$run_id" "$new_sha" || rc=$?
+    assert_exit_code "advance_accepted_head succeeds" 0 "$rc"
+    assert_eq "accepted_head function reflects the new commit" "$new_sha" "$(kyzn_wt_accepted_head "$run_id")"
+
+    local ref_sha; ref_sha=$(git -C "$SANDBOX" rev-parse --verify -q "$(kyzn_wt_ref_name "$run_id")")
+    assert_eq "private ref moved to the new accepted commit" "$new_sha" "$ref_sha"
+
+    local pending; pending=$(jq -r '.pending_head' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json")")
+    assert_eq "pending_head cleared after a successful CAS" "null" "$pending"
+
+    kyzn_wt_discard "$run_id"
+    kyzn_wt_remove_run "$run_id"
+    cleanup_sandbox
+}
+
+test_worktree_cli_list_and_remove() {
+    log_header "99. kyzn worktrees list / remove"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+    kyzn_wt_preserve "$run_id" "verification-unavailable"
+
+    local list_out; list_out=$(cmd_worktrees list 2>&1)
+    assert_contains "worktrees list: shows the run id" "$list_out" "$run_id"
+    assert_contains "worktrees list: shows the preservation reason" "$list_out" "verification-unavailable"
+
+    rc=0
+    cmd_worktrees remove "../../etc" &>/dev/null || rc=$?
+    assert_exit_code "worktrees remove: rejects a path-like run id" 1 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        pass "worktrees remove: invalid run id touched nothing"
+    else
+        fail "worktrees remove: invalid run id touched nothing" "the real run directory disappeared"
+    fi
+
+    rc=0
+    cmd_worktrees remove "$run_id" &>/dev/null || rc=$?
+    assert_exit_code "worktrees remove: succeeds for a preserved run" 0 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        fail "worktrees remove: run directory gone" "still present"
+    else
+        pass "worktrees remove: run directory gone"
+    fi
+
+    cleanup_sandbox
+}
+
+test_worktree_remove_refuses_live_active_owner() {
+    log_header "100. kyzn worktrees remove refuses an active run with a live owner"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    rc=0
+    cmd_worktrees remove "$run_id" &>/dev/null || rc=$?
+    assert_exit_code "remove refuses an active run whose owner_pid is this live process" 1 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        pass "the active run directory survives the refused removal"
+    else
+        fail "the active run directory survives the refused removal" "it was deleted anyway"
+    fi
+
+    kyzn_wt_remove_run "$run_id"
+    cleanup_sandbox
+}
+
+test_analyze_fix_rejects_allow_dirty_outright() {
+    log_header "101. analyze --fix rejects --allow-dirty outright (issue #21 stage 2)"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    create_sandbox node
+    echo 'dirty edit' >> src/index.js
+    local dirty_before; dirty_before=$(git status --porcelain)
+
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
+
+    rc=0
+    local out; out=$(cmd_analyze --fix --allow-dirty --auto 2>&1) || rc=$?
+    assert_exit_code "analyze --fix --allow-dirty is refused" 1 "$rc"
+    assert_contains "refusal names --allow-dirty as unsupported" "$out" "--allow-dirty is not supported"
+
+    local dirty_after; dirty_after=$(git status --porcelain)
+    assert_eq "the dirty edit is completely untouched" "$dirty_before" "$dirty_after"
+    assert_eq "no kyzn branch was created" "" "$(git branch --list 'kyzn/*')"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees" ]] && [[ -n "$(ls -A "$KYZN_GLOBAL_DIR/worktrees" 2>/dev/null)" ]]; then
+        fail "no execution worktree was ever registered" "worktrees directory is non-empty"
+    else
+        pass "no execution worktree was ever registered"
+    fi
+
+    cleanup_sandbox
+}
+
+test_analyze_fix_removed_machinery_is_absent() {
+    log_header "102. removed-not-ported: rollback machinery is gone from run_fix_phase"
+
+    local fix_body
+    fix_body=$(awk '/^run_fix_phase\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
+
+    assert_not_contains "run_fix_phase never does 'reset --hard'" "$fix_body" "reset --hard"
+    assert_not_contains "run_fix_phase never calls safe_checkout_back" "$fix_body" "safe_checkout_back"
+    assert_not_contains "run_fix_phase never saves/restores .kyzn/local.yaml around a batch" \
+        "$fix_body" "_saved_local"
+    assert_not_contains "run_fix_phase never re-runs ensure_kyzn_dirs to repair a wiped tree" \
+        "$fix_body" "re-create .kyzn/"
+    assert_contains "run_fix_phase discards and recreates the isolated worktree instead" \
+        "$fix_body" "kyzn_wt_discard"
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -9031,6 +9263,12 @@ main() {
     test_lock_reclaim_serialized_concurrency
     test_lock_reclaim_injected_failures
     test_lock_legacy_compat
+    test_worktree_register_materialize_discard
+    test_worktree_advance_accepted_head_cas
+    test_worktree_cli_list_and_remove
+    test_worktree_remove_refuses_live_active_owner
+    test_analyze_fix_rejects_allow_dirty_outright
+    test_analyze_fix_removed_machinery_is_absent
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
