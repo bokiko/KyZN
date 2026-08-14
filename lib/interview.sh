@@ -292,7 +292,7 @@ EOF
 setup_kyzn_gitignore() {
     local gi
     gi="$(_kyzn_dir_path)/.gitignore"
-    local -a required=("history/" "reports/" "local.yaml" "kyzn-report.md")
+    local -a required=("history/" "reports/" "local.yaml" "kyzn-report.md" ".improve.lock/")
     # Create with header if new, append missing entries if existing
     [[ -f "$gi" ]] || echo "# kyzn — gitignored local data" > "$gi"
     for entry in "${required[@]}"; do

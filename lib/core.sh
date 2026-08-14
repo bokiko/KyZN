@@ -68,6 +68,7 @@ history/
 reports/
 local.yaml
 kyzn-report.md
+.improve.lock/
 repo-profile.md
 GITIGNORE
     fi
@@ -166,6 +167,342 @@ _kyzn_gen_lock_token() {
     printf '%s-%s-%s\n' "$(date +%s%N 2>/dev/null || date +%s)" "$$" "$rand_part"
 }
 
+# ---------------------------------------------------------------------------
+# Legacy (pre-repository-wide-lock) mutating-workflow lock compatibility.
+#
+# Before this lock became repository-wide and content-addressed, it was a
+# directory at <checkout>/.kyzn/.improve.lock containing a bare `pid` file
+# — checkout-local, exactly like .kyzn/ itself. An old KyZN version invoked
+# during the upgrade window (mixed old/new installs across a team, or a
+# long-running old process outliving an in-place upgrade) knows nothing
+# about the new global lock and will happily mutate the repository
+# alongside it unless explicitly checked for.
+#
+# Scope actually provided, stated plainly rather than implied:
+#   - A live legacy lock ANYWHERE in the repository's worktrees (checked via
+#     `git worktree list`) blocks a new-format acquisition. This is a
+#     point-in-time check, re-run on every acquisition attempt. A dead
+#     legacy record found this way does not block, and is never migrated
+#     or removed — see below.
+#   - For the SPECIFIC checkout a new-format acquisition is running from,
+#     this process ALSO claims that checkout's own legacy-format guard for
+#     the duration of the hold, so an old-version process starting in that
+#     SAME checkout after our check is excluded by its own pre-existing
+#     mkdir-based logic — not merely a stale check-then-continue snapshot.
+#     That guard claim is a FRESH atomic mkdir only: if a legacy lock
+#     directory already exists in this checkout for ANY reason — live PID,
+#     dead PID, or a missing/malformed/empty/unreadable record — the claim
+#     fails closed rather than reclaiming it. This means a dead legacy lock
+#     in THIS checkout DOES block a new acquisition here (unlike the
+#     cross-worktree check above, which lets a dead record pass), because
+#     there is no race-free way to both diagnose "safely dead" and act on
+#     it without either coordinating with genuinely-old code (which has no
+#     notion of this protocol) or reintroducing the read-then-delete race
+#     the new format's own reclaim protocol exists to avoid.
+#   - For every OTHER worktree, no such standing guard is held: doing so
+#     would mean creating a .kyzn tree in a checkout this process was never
+#     invoked from, which is out of scope for a lock compatibility shim.
+#     A legacy process that starts in another worktree strictly AFTER this
+#     process's check ran is therefore not excluded until its own next
+#     acquisition attempt (report-only commands are unaffected either way,
+#     since they never held this lock under the old scheme either).
+#   - NOT eliminated: the legacy format's own pre-existing mkdir-before-
+#     pid-write window (an old-version process's mkdir can succeed before
+#     it writes its pid file; another actor reading the directory in that
+#     narrow window sees no readable pid record). That race predates this
+#     compatibility layer, lives entirely in code this layer does not
+#     control, and is out of scope to fix here. A simultaneous old-version
+#     and new-version start racing on the identical checkout is therefore
+#     NOT guaranteed to have exactly one winner in that narrow window —
+#     only sequential (non-overlapping) contention is.
+# ---------------------------------------------------------------------------
+
+KYZN_LEGACY_LOCK_NAME=".improve.lock"
+
+_kyzn_legacy_lock_path_for() {
+    printf '%s/%s/%s\n' "$1" "$KYZN_DIR" "$KYZN_LEGACY_LOCK_NAME"
+}
+
+# Point-in-time check: does a legacy lock anywhere in this repository's
+# worktrees block a new-format acquisition right now? A complete record
+# (numeric pid) with a live PID blocks. A legacy lock DIRECTORY that exists
+# but has no readable, well-formed pid file also blocks — fail closed,
+# since an incomplete record could belong to an old-version process still
+# mid-acquisition, exactly like the new format's own incomplete-record
+# handling. A legacy lock directory that GENUINELY does not exist never
+# blocks; nor does one whose complete record's PID is confirmed dead.
+# "Genuinely" is load-bearing: every parent directory on the way to the
+# legacy lock path must itself be confirmed traversable before an absence
+# there is trusted, and the legacy lock path itself (.improve.lock) is
+# treated as present (and untrustworthy — blocks) if it is a symlink,
+# including a dangling one, rather than a plain directory. `[[ -e path ]]`
+# alone cannot tell "genuinely absent" apart from "a parent along the way
+# is not traversable, so bash can't see it either way" — conflating those
+# is a fail-open bug: a live legacy lock underneath a non-traversable
+# .kyzn directory would go completely unseen. This symlink policy is
+# NOT the same for .kyzn itself: a .kyzn that is a symlink resolving to a
+# traversable directory is permitted (bash's own -d/-x follow symlinks,
+# and such a directory is fully inspectable) — only .improve.lock, the
+# thing actually being trusted as a source of PID data, is refused
+# outright for being a symlink at all.
+# Enumeration failure (git worktree list itself fails) ALSO fails closed —
+# "could not check" must never silently become "assume clear."
+# Diagnostics go to stderr via log_error/log_dim; returns 0 to block, 1 to
+# allow.
+#
+# Consumes `git worktree list --porcelain -z` from a SINGLE invocation,
+# captured into an owned temporary file and parsed from that same file —
+# never process substitution, never command substitution, never a second
+# invocation. Two earlier attempts at this both had a real gap: process
+# substitution's `< <(cmd)` doesn't expose `cmd`'s own exit status to the
+# shell, so a first attempt ran `git worktree list` a SECOND time (output
+# discarded) just to check its status — if that first call happened to
+# succeed and the second one then failed (a real, not merely theoretical,
+# race — git can fail transiently, or a worktree can be removed between
+# the two calls), the parsing loop below silently received zero fields
+# and returned "allow." Running it exactly once and checking THAT
+# invocation's own status removes the gap entirely. Command substitution
+# is avoided for the same reason as always: it strips embedded NUL bytes,
+# corrupting the -z parse, and a worktree path containing a literal
+# newline would be silently split by any newline-delimited relay of the
+# results — a real file preserves both.
+# Temporary-file creation failure and the enumeration itself failing both
+# fail closed (block); cleanup removes only this function's own owned file.
+_kyzn_legacy_lock_blocks() {
+    local list_file
+    list_file=$(mktemp 2>/dev/null) || {
+        log_error "Failed to create a temporary file to enumerate this repository's worktrees; refusing to acquire the KyZN lock until legacy-lock visibility can be confirmed."
+        return 0
+    }
+    if ! git worktree list --porcelain -z > "$list_file" 2>/dev/null; then
+        rm -f "$list_file"
+        log_error "Could not enumerate this repository's worktrees; refusing to acquire the KyZN lock until legacy-lock visibility can be confirmed."
+        return 0
+    fi
+
+    local field wt kyzn_dir legacy_dir pid_file raw_pid
+    while IFS= read -r -d '' field; do
+        case "$field" in
+            worktree\ *)
+                wt="${field#worktree }"
+
+                # `[[ -e path/to/child ]]` requires traversing every
+                # component of the path — if ANY parent directory along
+                # the way is not traversable, bash reports the child as
+                # nonexistent even when it genuinely, live, exists. A
+                # plain `[[ -e "$legacy_dir" ]] || continue` therefore
+                # silently treats "I could not check" as "there is
+                # nothing there," which is exactly fail-open: an old
+                # process's live legacy lock underneath an inaccessible
+                # .kyzn directory would never be seen. Establish
+                # traversability of each parent explicitly, from the
+                # worktree root down, before ever trusting an absence.
+                if [[ ! -d "$wt" || ! -x "$wt" ]]; then
+                    log_error "Could not inspect a registered worktree for a legacy KyZN lock:"
+                    log_dim "  $wt"
+                    log_dim "  The worktree root is missing or not traversable; refusing to acquire"
+                    log_dim "  the KyZN lock until legacy-lock visibility can be confirmed."
+                    rm -f "$list_file"
+                    return 0
+                fi
+
+                legacy_dir=$(_kyzn_legacy_lock_path_for "$wt")
+                kyzn_dir=$(dirname "$legacy_dir")
+
+                # .kyzn genuinely absent (not even a dangling symlink) —
+                # only NOW, having confirmed the worktree root itself is
+                # traversable, is that conclusion trustworthy.
+                if [[ ! -e "$kyzn_dir" && ! -L "$kyzn_dir" ]]; then
+                    continue
+                fi
+                # .kyzn exists as something, but isn't a traversable
+                # directory once symlinks are resolved. `-d`/`-x` follow
+                # symlinks, so a .kyzn that is itself a symlink resolving
+                # to a traversable directory PASSES this check and is
+                # permitted, exactly like an ordinary directory — this is
+                # deliberate, not an oversight, since such a symlink is
+                # fully inspectable. Only a dangling symlink, a symlink to
+                # something that isn't a traversable directory, or a
+                # permission-denied entry fails closed here, since none of
+                # those let this code rule out a live lock underneath.
+                if [[ ! -d "$kyzn_dir" || ! -x "$kyzn_dir" ]]; then
+                    log_error "Could not inspect a worktree's .kyzn directory for a legacy KyZN lock:"
+                    log_dim "  $kyzn_dir"
+                    log_dim "  It is not a traversable directory; refusing to acquire the KyZN lock"
+                    log_dim "  until legacy-lock visibility can be confirmed."
+                    rm -f "$list_file"
+                    return 0
+                fi
+
+                # $kyzn_dir is now confirmed traversable, so an absence
+                # check on the legacy lock path itself is trustworthy —
+                # UNLESS that path is a symlink (dangling or not): a
+                # dangling symlink reads as absent under plain `-e`, and
+                # even a resolving one is not the plain directory this
+                # code needs to trust before reading a pid file out of it.
+                if [[ ! -e "$legacy_dir" && ! -L "$legacy_dir" ]]; then
+                    continue
+                fi
+                if [[ -L "$legacy_dir" || ! -d "$legacy_dir" || ! -x "$legacy_dir" ]]; then
+                    log_error "Found an untrustworthy legacy KyZN lock path (a symlink, a dangling"
+                    log_dim "  symlink, or a non-directory entry) at:"
+                    log_dim "  $legacy_dir"
+                    log_dim "  Manual inspection procedure: confirm no old-version 'kyzn' process is"
+                    log_dim "  running for this repository, then remove: rm -rf $legacy_dir"
+                    rm -f "$list_file"
+                    return 0
+                fi
+
+                pid_file="$legacy_dir/pid"
+                if [[ ! -s "$pid_file" ]]; then
+                    log_error "Found a legacy KyZN lock with no readable pid record at:"
+                    log_dim "  $legacy_dir"
+                    log_dim "  This can happen if an older KyZN version was killed mid-acquisition."
+                    log_dim "  Manual inspection procedure: confirm no old-version 'kyzn' process is"
+                    log_dim "  running for this repository, then remove: rm -rf $legacy_dir"
+                    rm -f "$list_file"
+                    return 0
+                fi
+                raw_pid=$(cat "$pid_file" 2>/dev/null) || true
+                if [[ ! "$raw_pid" =~ ^[0-9]+$ ]]; then
+                    log_error "Found a malformed legacy KyZN lock record at:"
+                    log_dim "  $pid_file"
+                    log_dim "  Manual inspection procedure: confirm no old-version 'kyzn' process is"
+                    log_dim "  running for this repository, then remove: rm -rf $legacy_dir"
+                    rm -f "$list_file"
+                    return 0
+                fi
+                if kill -0 "$raw_pid" 2>/dev/null; then
+                    log_error "An older KyZN version is already running on this repository (PID: $raw_pid)."
+                    log_dim "  Checkout: $wt"
+                    log_dim "  Legacy lock: $legacy_dir"
+                    log_dim "  This is a pre-upgrade lock format; upgrade that checkout's KyZN or let it finish."
+                    rm -f "$list_file"
+                    return 0
+                fi
+                ;;
+        esac
+    done < "$list_file"
+
+    rm -f "$list_file"
+    return 1
+}
+
+# Claim THIS checkout's own legacy-format lock for the duration this
+# process holds the new-format lock — see the header above for exactly
+# what this does and does not protect against.
+#
+# NEVER automatically removes or reclaims an existing legacy lock
+# directory, regardless of what its record says: this is a FRESH atomic
+# mkdir attempt only. If the directory already exists — live PID, dead
+# PID, or a missing/malformed/empty/unreadable record — this fails closed
+# and reports which case it was, for manual inspection. Reclaiming a
+# legacy lock automatically would reintroduce exactly the read-then-delete
+# race the new format's own reclaim protocol above exists to avoid, except
+# against genuinely-old code this layer cannot coordinate with at all —
+# see the header's note on the pre-existing legacy mkdir-before-pid-write
+# race, which this deliberately does not attempt to close.
+#
+# Writes this process's real PID into a freshly mkdir'd legacy guard
+# directory. Factored out to its own function only so tests can override
+# this exact write primitive as a black-box boundary (matching the
+# existing pattern used for _kyzn_write_lock_metadata elsewhere in this
+# file) instead of needing a production-only test hook to force a write
+# failure.
+_kyzn_write_legacy_pid() {
+    echo "$BASHPID" > "$1/pid" 2>/dev/null
+}
+
+# Sets KYZN_LEGACY_GUARD_DIR on success and returns 0; leaves it unset and
+# returns 1 otherwise. Records $BASHPID, not $$: bash leaves $$ pointing
+# at the ORIGINATING shell's PID inside a `( ... )` subshell rather than
+# the subshell's own — load-bearing here for the same reason it is
+# load-bearing for the new-format lock's own pid field (see
+# _kyzn_write_lock_metadata): this guard's only correctness property is
+# "the recorded PID's liveness reflects the actual process holding it," and
+# a token alone cannot substitute for that, since a subshell inherits its
+# parent's variables — including any token — without becoming a different
+# process. Real `kyzn` invocations are never themselves running inside a
+# subshell, so $BASHPID and $$ agree there; the difference only matters for
+# exactly the kind of concurrent-holder simulation this compatibility
+# layer's own tests use.
+_kyzn_acquire_legacy_guard() {
+    local dir; dir="$(_kyzn_legacy_lock_path_for "$(project_root)")"
+    mkdir -p "$(dirname "$dir")" 2>/dev/null || true
+    if mkdir "$dir" 2>/dev/null; then
+        if ! _kyzn_write_legacy_pid "$dir"; then
+            # NEVER rm -rf here: the legacy format has no ownership token,
+            # so nothing distinguishes "still this attempt's own incomplete
+            # directory" from "a successor's live guard that has since
+            # reclaimed the same path." Old-version code treats a missing
+            # pid file as stale and reclaims it immediately (rm -rf then
+            # mkdir) — if an old process does exactly that in the window
+            # between our mkdir succeeding and this write failing, deleting
+            # $dir now would delete THAT successor's live guard instead of
+            # our own dead attempt. Leaving it in place is the only choice
+            # that cannot destroy state this process doesn't own; cleanup
+            # is deliberately manual.
+            log_error "Failed to write the legacy compatibility guard's pid record at:"
+            log_dim "  $dir"
+            log_dim "  This is left in place rather than removed: the legacy lock format has no"
+            log_dim "  ownership token, so there is no safe way to prove this directory still holds"
+            log_dim "  only this attempt's own incomplete record rather than a successor's live"
+            log_dim "  guard that has since reclaimed the same path. Manual inspection procedure:"
+            log_dim "  confirm no 'kyzn' process is running for this repository, then remove: rm -rf $dir"
+            return 1
+        fi
+        KYZN_LEGACY_GUARD_DIR="$dir"
+        return 0
+    fi
+
+    # Already exists — diagnose only, never touch it.
+    local pid
+    pid=$(cat "$dir/pid" 2>/dev/null) || true
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        log_error "An older KyZN version is already running on this repository (PID: $pid)."
+        log_dim "  Legacy lock: $dir"
+    elif [[ "$pid" =~ ^[0-9]+$ ]]; then
+        log_error "Found a dead-owner legacy KyZN lock at:"
+        log_dim "  $dir"
+        log_dim "  This is never reclaimed automatically. Manual inspection procedure: confirm no"
+        log_dim "  old-version 'kyzn' process is running for this repository, then remove: rm -rf $dir"
+    else
+        log_error "Found an incomplete or malformed legacy KyZN lock (missing, empty, or unreadable pid record) at:"
+        log_dim "  $dir"
+        log_dim "  This is never reclaimed automatically. Manual inspection procedure: confirm no"
+        log_dim "  old-version 'kyzn' process is running for this repository, then remove: rm -rf $dir"
+    fi
+    return 1
+}
+
+_kyzn_release_legacy_guard() {
+    [[ -n "${KYZN_LEGACY_GUARD_DIR:-}" ]] || return 0
+    local pid
+    # `|| true`, not just `2>/dev/null`: redirecting stderr silences the
+    # message but NOT cat's exit status, and under `set -e` an assignment
+    # from a failing command substitution — e.g. this guard's pid file
+    # already gone — aborts the entire calling script with no diagnostic
+    # at all. release_kyzn_lock must never be the reason a caller's `set -e`
+    # script dies outright, so every branch here tolerates a missing file.
+    pid=$(cat "$KYZN_LEGACY_GUARD_DIR/pid" 2>/dev/null) || true
+    if [[ "$pid" == "$BASHPID" ]]; then
+        rm -rf "$KYZN_LEGACY_GUARD_DIR"
+    fi
+    KYZN_LEGACY_GUARD_DIR=""
+}
+
+# Final step of a successful new-format acquisition, run from both the
+# fresh-mkdir and stale-reclaim branches below: verify no old-version
+# process is visibly holding the pre-upgrade lock anywhere in this
+# repository's worktrees, then claim this checkout's own legacy guard for
+# the duration of the hold. On failure the caller must remove the
+# new-format candidate it just created — this function never publishes
+# KYZN_LOCKDIR/KYZN_LOCK_TOKEN/KYZN_LOCK_COMMON_DIR itself.
+_kyzn_finalize_new_lock() {
+    _kyzn_legacy_lock_blocks && return 1
+    _kyzn_acquire_legacy_guard
+}
+
 acquire_kyzn_lock() {
     local label="${1:-improve}"
     ensure_kyzn_dirs
@@ -208,6 +545,10 @@ acquire_kyzn_lock() {
         if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_write_lock_metadata "$label" "$common_dir" "$token"; then
             log_error "Failed to write the KyZN lock record; lock initialization failed."
             log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+            rm -rf "$candidate_lockdir"
+            return 1
+        fi
+        if ! _kyzn_finalize_new_lock; then
             rm -rf "$candidate_lockdir"
             return 1
         fi
@@ -262,29 +603,155 @@ acquire_kyzn_lock() {
         return 1
     fi
 
-    # Stale — the recorded PID is a complete record but no longer alive. Reclaim.
+    # Stale — the recorded PID is a complete record but no longer alive.
+    # Reclaim via _kyzn_reclaim_stale_lock's atomic claim-verify-rename-
+    # recreate protocol: two processes that both observed this SAME stale
+    # record can never both succeed, and a delayed loser can never destroy
+    # the winner's freshly created lock (see that function's header).
+    #
+    # Called directly, never via `x=$(...)`: command substitution forks a
+    # subshell, and inside it $$ still resolves to the ORIGINATING shell
+    # (bash's documented behavior for both `( )` and `$( )`), while
+    # $BASHPID would instead resolve to that short-lived substitution
+    # subshell's own PID — one that exits the instant the substitution
+    # completes. Either way, a lock whose metadata pid is meant to name
+    # this acquisition's real, still-running process must be written by
+    # code running IN that process, not in a subshell spawned to capture
+    # its output. The token comes back through an out-variable instead.
     log_warn "Removing stale lock from a previous run (PID: $rec_pid, $rec_label)"
-    rm -rf "$candidate_lockdir"
-    if ! mkdir "$candidate_lockdir" 2>/dev/null; then
-        log_error "Another KyZN process grabbed the lock during recovery."
+    local reclaimed_token
+    if ! _kyzn_reclaim_stale_lock "$candidate_lockdir" "$common_dir" "$rec_pid" "$rec_token" "$label" reclaimed_token; then
         return 1
     fi
-    local token
-    if ! token="$(_kyzn_gen_lock_token)"; then
-        log_error "Failed to generate a lock ownership token; lock initialization failed."
-        log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
-        rm -rf "$candidate_lockdir"
-        return 1
-    fi
-    if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_write_lock_metadata "$label" "$common_dir" "$token"; then
-        log_error "Failed to write the KyZN lock record after reclaiming a stale lock; lock initialization failed."
-        log_dim "  Removing the incomplete lock so a retry can proceed cleanly."
+    if ! _kyzn_finalize_new_lock; then
         rm -rf "$candidate_lockdir"
         return 1
     fi
     KYZN_LOCKDIR="$candidate_lockdir"
-    KYZN_LOCK_TOKEN="$token"
+    KYZN_LOCK_TOKEN="$reclaimed_token"
     KYZN_LOCK_COMMON_DIR="$common_dir"
+    return 0
+}
+
+# Reclaim a stale lock without the read-then-delete race the previous
+# implementation had: if two processes both observe the same dead PID in
+# the same complete record, an unconditional `rm -rf` + `mkdir` lets a
+# delayed process delete the OTHER process's freshly created, live
+# replacement lock — both then report success, and both believe they
+# exclusively hold a lock the other is also mutating through.
+#
+# Protocol (claim -> verify -> rename -> recreate):
+#   1. Atomically claim this exact incarnation with a marker directory
+#      inside it. mkdir is atomic, so at most one process observing this
+#      same stale directory can win the claim; every other process's mkdir
+#      simply fails and it returns 1 without touching anything.
+#   2. The claimant re-reads the record and requires it to still be
+#      byte-identical (token, pid, common_dir) to what was originally
+#      inspected, and the PID still dead, before trusting it — the marker
+#      mkdir proves no one else can be running this same protocol against
+#      this directory, but does not by itself prove the record wasn't
+#      replaced by something outside this protocol (a manual operator, a
+#      pre-migration writer). A mismatch releases the marker and returns 1
+#      without further changes.
+#   3. Only after that verification does the claimant RENAME the whole
+#      claimed directory (marker included) into a quarantine PARENT it
+#      atomically created and exclusively owns via `mktemp -d` — never
+#      `mktemp -u`. `-u` only PRINTS a name without reserving it: between
+#      that print and the later `mv`, another actor can create something
+#      at that exact path, and `mv src existing-dir` then NESTS src inside
+#      it instead of renaming, silently misplacing this acquisition's data
+#      and making a later `rm -rf` on the presumed quarantine path delete
+#      state this acquisition never created. `mktemp -d` closes that
+#      window by creating the parent atomically; the claimed directory is
+#      then renamed to a FIXED child name inside that fresh, exclusively-
+#      owned parent — a target that cannot previously exist — and cleanup
+#      only ever removes that owned parent, never a bare guessed path.
+#   4. The claimant then competes for the now-vacant canonical path with a
+#      plain atomic `mkdir`, exactly like a brand-new acquisition. Losing
+#      this is a NORMAL fresh-acquisition loss (some other process legally
+#      raced in after the path was vacated) — the claimant must never
+#      touch that winner, only clean up its own quarantine parent.
+#   5. Every failure branch — claim, verify, rename, recreate, token
+#      generation, metadata write — cleans up only what this acquisition
+#      itself created (the marker, its own quarantine parent, its own
+#      fresh candidate) and never reports success.
+#
+# Sets the caller's out-variable (named by $6) to the new lock's token and
+# returns 0 on success. Leaves it untouched and returns 1 on any failure;
+# diagnostics go to stderr via log_error, matching the rest of this file.
+_kyzn_reclaim_stale_lock() {
+    local candidate_lockdir="$1" common_dir="$2" rec_pid="$3" rec_token="$4" label="$5"
+    local -n _reclaim_out_token="$6"
+
+    # 1. Atomically claim this exact incarnation.
+    if ! mkdir "$candidate_lockdir/.reclaim" 2>/dev/null; then
+        return 1
+    fi
+
+    # 2. Re-verify the record is exactly what was originally inspected and
+    # still dead before trusting the claim.
+    local cur_pid cur_common cur_token
+    # shellcheck disable=SC2034 # positional out-vars required by _kyzn_read_lock_metadata; only pid/common/token are compared below
+    local cur_label cur_source cur_time
+    if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_read_lock_metadata cur_pid cur_common cur_label cur_source cur_time cur_token ||
+       [[ "$cur_pid" != "$rec_pid" || "$cur_common" != "$common_dir" || "$cur_token" != "$rec_token" ]] ||
+       kill -0 "$cur_pid" 2>/dev/null; then
+        rmdir "$candidate_lockdir/.reclaim" 2>/dev/null
+        log_error "The stale lock record changed during reclaim; refusing to touch it."
+        return 1
+    fi
+
+    # 3. Atomically create an exclusively-owned quarantine parent, then
+    # rename the claimed directory to a fixed child inside it.
+    local quarantine_parent
+    quarantine_parent=$(mktemp -d "${candidate_lockdir}.quarantine.XXXXXX" 2>/dev/null)
+    if [[ -z "$quarantine_parent" ]]; then
+        rmdir "$candidate_lockdir/.reclaim" 2>/dev/null
+        log_error "Failed to create a quarantine directory during reclaim; lock initialization failed."
+        return 1
+    fi
+    # Defense in depth: mktemp -d is documented to return a fresh, empty,
+    # uniquely-named directory. If a broken or shadowed implementation
+    # somehow returns one that already has content, that content was never
+    # created by this acquisition — refuse and leave both it and the
+    # stale lock alone rather than assume ownership and rm -rf it away.
+    if [[ -n "$(ls -A "$quarantine_parent" 2>/dev/null)" ]]; then
+        rmdir "$candidate_lockdir/.reclaim" 2>/dev/null
+        log_error "The quarantine directory created for this reclaim was not empty; refusing to touch it."
+        log_dim "  $quarantine_parent"
+        return 1
+    fi
+    local quarantine="$quarantine_parent/lock"
+    if ! mv "$candidate_lockdir" "$quarantine" 2>/dev/null; then
+        rmdir "$candidate_lockdir/.reclaim" 2>/dev/null
+        rm -rf "$quarantine_parent"
+        log_error "Failed to quarantine the stale lock during reclaim; lock initialization failed."
+        return 1
+    fi
+
+    # 4. Compete for the now-vacant canonical path exactly like a fresh
+    # acquisition. Losing here means a different process legitimately
+    # raced in after the path was vacated — never touch its lock.
+    if ! mkdir "$candidate_lockdir" 2>/dev/null; then
+        rm -rf "$quarantine_parent"
+        log_error "Another KyZN process grabbed the lock during recovery."
+        return 1
+    fi
+
+    local token
+    if ! token="$(_kyzn_gen_lock_token)"; then
+        rm -rf "$candidate_lockdir" "$quarantine_parent"
+        log_error "Failed to generate a lock ownership token; lock initialization failed."
+        return 1
+    fi
+    if ! KYZN_LOCKDIR="$candidate_lockdir" _kyzn_write_lock_metadata "$label" "$common_dir" "$token"; then
+        rm -rf "$candidate_lockdir" "$quarantine_parent"
+        log_error "Failed to write the KyZN lock record after reclaiming a stale lock; lock initialization failed."
+        return 1
+    fi
+
+    rm -rf "$quarantine_parent"
+    _reclaim_out_token="$token"
     return 0
 }
 
@@ -294,13 +761,29 @@ acquire_kyzn_lock() {
 # complete one. Returns 0 only when the record is actually in place; every
 # failure (mktemp, jq, mv) returns 1 so the caller never treats a lock
 # directory with no metadata as a successful acquisition.
+#
+# Records $BASHPID, not $$. This field is NOT merely diagnostic: it is
+# read back by both the live/stale liveness decision (`kill -0 "$rec_pid"`
+# in acquire_kyzn_lock and in _kyzn_reclaim_stale_lock's re-verify step)
+# and by release_kyzn_lock's owner-bound release check. $$ stays pinned to
+# the ORIGINATING shell's PID inside a `( ... )` subshell rather than the
+# subshell's own — so a subshell that inherits an already-held lock's
+# KYZN_LOCKDIR/KYZN_LOCK_TOKEN variables (ordinary variable inheritance,
+# nothing special) would, if metadata recorded $$, also inherit a PID that
+# reads back as "$$" from ITS OWN perspective, satisfying release_kyzn_lock's
+# ownership check and deleting a lock a DIFFERENT, still-live process
+# actually holds — the random token does not prevent this, since the
+# subshell inherits the token too. $BASHPID is the actual PID of whichever
+# process is running this exact code, subshell or not, so a lock recorded
+# by a parent and a release attempted by its child subshell correctly
+# disagree.
 _kyzn_write_lock_metadata() {
     local label="$1" common_dir="$2" token="$3"
     local source_root
     source_root="$(invocation_root 2>/dev/null || echo "$common_dir")"
     local tmp_file
     tmp_file=$(mktemp "$KYZN_LOCKDIR/.meta.XXXXXX" 2>/dev/null) || return 1
-    if jq -n --arg common_dir "$common_dir" --arg pid "$$" --arg label "$label" \
+    if jq -n --arg common_dir "$common_dir" --arg pid "$BASHPID" --arg label "$label" \
         --arg source "$source_root" --arg time "$(timestamp)" --arg token "$token" \
         '{common_dir: $common_dir, pid: ($pid | tonumber), label: $label, source: $source, acquired_at: $time, token: $token}' \
         > "$tmp_file" 2>/dev/null; then
@@ -349,12 +832,13 @@ release_kyzn_lock() {
         KYZN_LOCKDIR=""
         KYZN_LOCK_TOKEN=""
         KYZN_LOCK_COMMON_DIR=""
+        _kyzn_release_legacy_guard
         return 0
     fi
 
     local rec_pid rec_common rec_label rec_source rec_time rec_token
     if _kyzn_read_lock_metadata rec_pid rec_common rec_label rec_source rec_time rec_token &&
-       [[ "$rec_token" == "$KYZN_LOCK_TOKEN" && "$rec_pid" == "$$" && "$rec_common" == "${KYZN_LOCK_COMMON_DIR:-}" ]]; then
+       [[ "$rec_token" == "$KYZN_LOCK_TOKEN" && "$rec_pid" == "$BASHPID" && "$rec_common" == "${KYZN_LOCK_COMMON_DIR:-}" ]]; then
         rm -rf "$KYZN_LOCKDIR"
     else
         log_warn "Skipping lock release: $KYZN_LOCKDIR no longer holds this acquisition's record."
@@ -364,6 +848,7 @@ release_kyzn_lock() {
     KYZN_LOCKDIR=""
     KYZN_LOCK_TOKEN=""
     KYZN_LOCK_COMMON_DIR=""
+    _kyzn_release_legacy_guard
     return 0
 }
 
