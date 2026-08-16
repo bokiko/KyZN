@@ -711,7 +711,16 @@ cmd_analyze() {
 
     if $fix; then
         require_unsafe_host_execution "analyze --fix" || return 1
-        require_clean_worktree "$allow_dirty" || return 1
+        # --allow-dirty is rejected outright for --fix (issue #21 stage 2):
+        # the fix phase now runs entirely inside an isolated worktree, so
+        # there is no isolation-safe way to carry the invocation checkout's
+        # own uncommitted edits into it. Report-only `analyze` is unaffected.
+        if $allow_dirty; then
+            log_error "--allow-dirty is not supported with 'analyze --fix'."
+            log_dim "  Commit or stash your changes, then re-run."
+            return 1
+        fi
+        require_clean_worktree false || return 1
     fi
 
     fix_budget="${fix_budget:-5.00}"
@@ -1365,22 +1374,96 @@ run_fix_phase() {
     # spending analysis budget, but the fix phase must also fail closed.
     require_unsafe_host_execution "fix phase" || return 1
 
-    # Concurrency lock (prevents two concurrent analyze-fix runs from corrupting working tree)
+    # Concurrency lock (prevents two concurrent analyze-fix runs from
+    # corrupting the same repository, including across linked worktrees).
     acquire_kyzn_lock "fix" || return 1
 
-    # Cleanup on exit — also calls analyze-phase cleanup to ensure pids/tmpfiles
-    # from the preceding analyze phase are cleaned up if interrupted here.
+    # ---------------------------------------------------------------------
+    # Isolated execution transaction (issue #21 stage 2). Everything that
+    # mutates — baseline verification, every fix batch, and the commits they
+    # produce — runs inside a disposable Git worktree registered under
+    # ~/.kyzn/worktrees/<run-id>/checkout. The invocation checkout (cwd at
+    # entry) is never staged into, committed to, reset, or checked out to a
+    # different ref by this function. Paths anchored to the invocation
+    # checkout are resolved up front, before the process ever `cd`s away.
+    # ---------------------------------------------------------------------
+    local invocation_root_dir reports_dir report_file
+    invocation_root_dir="$(project_root)"
+    reports_dir="$(_kyzn_reports_dir_path)"
+    report_file="$reports_dir/$run_id-analysis.md"
+
+    local source_commit
+    if ! source_commit=$(git -C "$invocation_root_dir" rev-parse HEAD 2>/dev/null); then
+        log_error "Could not resolve the current commit to pin the isolated execution transaction."
+        release_kyzn_lock
+        return 1
+    fi
+
+    # KYZN_FIX_WT_RUN_ID and KYZN_FIX_INVOCATION_ROOT are plain (non-local)
+    # globals: the EXIT/INT/TERM trap function below is NOT a closure — it
+    # is an ordinary global function, so once run_fix_phase returns, its
+    # `local invocation_root_dir` no longer exists. An EXIT trap does not
+    # fire on function return, only when the owning shell itself exits, so
+    # a `local` reference here would read as an unbound variable whenever
+    # that later exit happens in the same shell (e.g. the next test in the
+    # same process, or the CLI script finishing). Mirroring the value that
+    # survives into a global — exactly like release_kyzn_lock relies on
+    # KYZN_LOCKDIR rather than a local — keeps the trap correct however
+    # bash re-enters this scope.
+    KYZN_FIX_INVOCATION_ROOT="$invocation_root_dir"
+    KYZN_FIX_WT_RUN_ID=""
+    # Every explicit return path below performs its own cleanup (worktree
+    # disposition, then _kyzn_fix_finish) and disarms this trap before
+    # returning, so it only ever fires for a genuine interruption or
+    # process exit while run_fix_phase is still on the call stack. The
+    # DONE guard makes a second invocation (a signal arriving in the
+    # narrow window between an explicit cleanup and the trap disarm) a
+    # no-op instead of a second destructive cleanup.
+    KYZN_FIX_CLEANUP_DONE=false
     _kyzn_fix_cleanup() {
+        $KYZN_FIX_CLEANUP_DONE && return 0
+        KYZN_FIX_CLEANUP_DONE=true
         stop_progress 2>/dev/null
+        cd "$KYZN_FIX_INVOCATION_ROOT" 2>/dev/null || true
+        if [[ -n "${KYZN_FIX_WT_RUN_ID:-}" ]]; then
+            local _meta _phase
+            _meta=$(cat "$(_kyzn_wt_meta_file "$KYZN_FIX_WT_RUN_ID")" 2>/dev/null)
+            _phase=$(jq -r '.phase // empty' <<<"$_meta" 2>/dev/null)
+            if [[ "$_phase" == "batch-mutating" || "$_phase" == "publication" ]]; then
+                kyzn_wt_preserve "$KYZN_FIX_WT_RUN_ID" "interrupted" 2>/dev/null || true
+                log_warn "Interrupted — the isolated execution worktree was preserved for inspection."
+                log_warn "  kyzn worktrees list"
+                log_warn "  kyzn worktrees remove $KYZN_FIX_WT_RUN_ID"
+            else
+                kyzn_wt_remove_run "$KYZN_FIX_WT_RUN_ID" 2>/dev/null || true
+            fi
+        fi
         release_kyzn_lock
         _kyzn_analyze_cleanup 2>/dev/null || true
+    }
+    # _kyzn_fix_finish is the single exit gate for every explicit return
+    # path: disarm the trap FIRST (so a concurrent signal can't re-enter
+    # cleanup while it runs), then run the same idempotent cleanup body the
+    # trap would have run. Callers clear KYZN_FIX_WT_RUN_ID beforehand when
+    # they have already applied a specific worktree disposition (preserve
+    # with a reason, or remove) — _kyzn_fix_cleanup only acts on the
+    # worktree when that global is still set, so it is a plain lock
+    # release + analyze cleanup on every explicit path.
+    _kyzn_fix_finish() {
         trap - EXIT INT TERM
+        _kyzn_fix_cleanup
     }
     trap _kyzn_fix_cleanup EXIT INT TERM
 
-    # Pass the full report to give Claude rich context for fixes
-    local report_file
-    report_file="$(_kyzn_reports_dir_path)/$run_id-analysis.md"
+    if ! kyzn_wt_register "$invocation_root_dir" "$source_commit"; then
+        log_error "Could not register an isolated execution worktree for this run."
+        _kyzn_fix_finish
+        return 1
+    fi
+    KYZN_FIX_WT_RUN_ID="$KYZN_WT_RUN_ID"
+    local wt_run_id="$KYZN_FIX_WT_RUN_ID"
+    local checkout_dir
+    checkout_dir="$(kyzn_wt_checkout_dir "$wt_run_id")"
 
     # Filter findings by severity
     local min_rank
@@ -1411,13 +1494,47 @@ run_fix_phase() {
 
     if (( total_findings == 0 )); then
         log_info "No findings at or above $min_severity severity to fix."
+        kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
         return 0
     fi
 
     echo ""
     log_header "Fixing issues (min severity: $min_severity, $total_findings findings)"
 
-    # Step 1: Baseline test state — capture pre-existing failures
+    # ---- Analysis-phase materialization: baseline verify + project detect ----
+    log_step "Materializing isolated execution worktree..."
+    if ! kyzn_wt_materialize "$wt_run_id" "$source_commit"; then
+        log_error "Isolated execution unavailable: ${KYZN_WT_LAST_UNAVAILABLE:-could not materialize the execution worktree}"
+        log_error "Refusing to start analyze --fix for changes KyZN cannot isolate."
+        kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
+    fi
+    kyzn_wt_set_phase "$wt_run_id" analysis
+
+    if ! cd "$checkout_dir"; then
+        log_error "Could not enter the isolated execution worktree."
+        kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
+    fi
+    # Reset cached project globals (lib/core.sh) so they re-resolve against
+    # the isolated checkout instead of the invocation root.
+    # shellcheck disable=SC2034 # Read by project_root() in lib/core.sh.
+    KYZN_PROJECT_ROOT=""
+    # shellcheck disable=SC2034 # Read by project_workdir() in lib/core.sh.
+    KYZN_PROJECT_WORKDIR=""
+    # shellcheck disable=SC2034 # Read by project_workdir_error() in lib/core.sh.
+    KYZN_PROJECT_WORKDIR_ERROR=""
+    # shellcheck disable=SC2034 # Read by project_name() in lib/core.sh.
+    KYZN_PROJECT_NAME=""
+    detect_project_type
+    detect_project_features 2>/dev/null || true
+
     log_step "Capturing baseline test state..."
     local baseline_verify_ok=true
     local baseline_failures=""
@@ -1426,8 +1543,11 @@ run_fix_phase() {
     if verify_not_executed "$baseline_rc"; then
         log_error "Cannot verify this project: $KYZN_VERIFY_UNAVAILABLE_REASON"
         log_error "Refusing to open a PR for changes KyZN cannot verify."
-        log_dim "  Install the missing tool(s) and re-run, or use 'kyzn analyze' for a report-only pass."
-        release_kyzn_lock
+        cd "$invocation_root_dir" 2>/dev/null || true
+        kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+        log_warn "The isolated execution worktree was preserved for inspection (kyzn worktrees list)."
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
         return 1
     elif (( baseline_rc != 0 )); then
         baseline_verify_ok=false
@@ -1442,23 +1562,16 @@ run_fix_phase() {
         log_ok "Baseline tests passing"
     fi
 
-    # Step 2: Create branch (capture base for diff budget tracking)
-    local original_branch
-    original_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-    # shellcheck disable=SC2034 # Used by safe_checkout_back in execute.sh during fix cleanup.
-    KYZN_ORIGINAL_BRANCH="$original_branch"
-    local branch_base
-    branch_base=$(git rev-parse HEAD)
-    local run_suffix="${run_id##*-}"
-    local branch_name
-    branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
-    log_step "Creating branch: $branch_name"
-    safe_git checkout -b "$branch_name" || {
-        log_error "Failed to create branch"
-        return 1
-    }
+    local installed_packages=""
+    installed_packages=$(detect_installed_packages 2>/dev/null) || true
 
-    # Step 3: Split findings into severity batches
+    # The analysis materialization is discarded before batch one: no
+    # readiness-check, dependency-install, build, or baseline residue may
+    # enter the first batch's checkout.
+    cd "$invocation_root_dir" 2>/dev/null || true
+    kyzn_wt_discard "$wt_run_id"
+
+    # Split findings into severity batches
     local -a severity_tiers=()
     local crit_count high_count med_count low_count
     IFS=$'\t' read -r crit_count high_count med_count low_count <<< "$(echo "$all_selected" | jq -r '[
@@ -1484,35 +1597,36 @@ run_fix_phase() {
     local -a applied_tiers=()
 
     # Diff budget: analyze --fix uses a higher limit than improve (more files touched)
-    # Config override takes precedence, otherwise 5000 for analyze, hard ceiling 10000
     local diff_limit
     diff_limit=$(config_get '.preferences.analyze_diff_limit' '')
     if [[ -z "$diff_limit" ]]; then
         diff_limit=$(config_get '.preferences.diff_limit' '5000')
-        # Ensure analyze default is at least 5000 even if improve's limit is lower
         if [[ "$diff_limit" =~ ^[0-9]+$ ]] && (( diff_limit < 5000 )); then
             diff_limit=5000
         fi
     fi
-    # Validate diff_limit is a numeric integer before arithmetic operations
     [[ "$diff_limit" =~ ^[0-9]+$ ]] || { log_warn "Invalid diff_limit '$diff_limit' — using default 5000"; diff_limit=5000; }
-    # Hard ceiling
     if (( diff_limit > 10000 )); then diff_limit=10000; fi
     local cumulative_diff=0
     local fix_summaries=""
 
-    # Detect installed packages once (used in fix prompts for dependency awareness)
-    local installed_packages=""
-    installed_packages=$(detect_installed_packages 2>/dev/null) || true
+    # From here on, an interruption is preserved rather than silently
+    # discarded — see the trap above.
+    kyzn_wt_set_phase "$wt_run_id" batch-mutating
 
-    # Step 4: Fix each severity tier as a separate batch, commit incrementally
+    # Batch transaction: every batch starts from a freshly materialized
+    # detached worktree at the current accepted_head. On success the batch
+    # is committed, accepted_head advances (two-phase CAS), and the worktree
+    # is discarded and recreated before the next batch. On failure the
+    # worktree is simply discarded and recreated at the unchanged
+    # accepted_head — there is no rollback, because there is nothing in any
+    # user-visible checkout to roll back.
     for tier in "${severity_tiers[@]}"; do
         local tier_findings
         tier_findings=$(echo "$all_selected" | jq --arg sev "$tier" '[.[] | select(.severity == $sev)]')
         local tier_count
         tier_count=$(echo "$tier_findings" | jq 'length')
 
-        # Cap at 10 findings per batch to avoid overwhelming Claude
         if (( tier_count > 10 )); then
             tier_findings=$(echo "$tier_findings" | jq '.[0:10]')
             tier_count=10
@@ -1522,14 +1636,12 @@ run_fix_phase() {
         echo ""
         log_step "Batch: $tier ($tier_count issues)"
 
-        # Check diff budget headroom before starting this batch
         if (( cumulative_diff > diff_limit * 80 / 100 )); then
             log_warn "Diff budget ${cumulative_diff}/${diff_limit} lines (>80%) — skipping remaining batches"
             (( batches_skipped++ )) || true
             continue
         fi
 
-        # Budget per batch: proportional to findings count
         local batch_budget
         batch_budget=$(awk -v total="$fix_budget" -v batch="$tier_count" -v all="$total_findings" \
             'BEGIN { b = total * batch / all; if (b < 0.50) b = 0.50; printf "%.2f", b }')
@@ -1542,7 +1654,6 @@ run_fix_phase() {
             continue
         fi
 
-        # Load profile overlay based on dominant finding category
         local dominant_cat
         dominant_cat=$(echo "$tier_findings" | jq -r '
             [.[].category // "unknown"] | group_by(.) | sort_by(-length) | .[0][0] // ""
@@ -1550,9 +1661,33 @@ run_fix_phase() {
         local sys_prompt_file
         sys_prompt_file=$(get_system_prompt "$dominant_cat")
 
-        # Snapshot HEAD before batch so we can reset cleanly on failure
         local pre_batch_head
-        pre_batch_head=$(git rev-parse HEAD)
+        pre_batch_head=$(kyzn_wt_accepted_head "$wt_run_id")
+        if ! kyzn_wt_materialize "$wt_run_id" "$pre_batch_head"; then
+            log_error "Isolated execution unavailable for $tier batch: ${KYZN_WT_LAST_UNAVAILABLE:-could not materialize the execution worktree}"
+            [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+            kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+            KYZN_FIX_WT_RUN_ID=""
+            _kyzn_fix_finish
+            return 1
+        fi
+        if ! cd "$checkout_dir"; then
+            log_error "Could not enter the isolated execution worktree for $tier batch."
+            [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+            kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+            KYZN_FIX_WT_RUN_ID=""
+            _kyzn_fix_finish
+            return 1
+        fi
+        # shellcheck disable=SC2034 # Read by project_root() in lib/core.sh.
+        KYZN_PROJECT_ROOT=""
+        # shellcheck disable=SC2034 # Read by project_workdir() in lib/core.sh.
+        KYZN_PROJECT_WORKDIR=""
+        # shellcheck disable=SC2034 # Read by project_workdir_error() in lib/core.sh.
+        KYZN_PROJECT_WORKDIR_ERROR=""
+        # shellcheck disable=SC2034 # Read by project_name() in lib/core.sh.
+        KYZN_PROJECT_NAME=""
+        detect_project_type
 
         # Execute Claude for this batch
         local fix_stderr
@@ -1579,12 +1714,8 @@ run_fix_phase() {
             local exit_code=$?
             stop_progress
 
-            # Preserve diagnostics before anything else — the log file is this
-            # batch's only surviving record of why it crashed. It is never
-            # deleted, unlike the temp stderr capture below.
             local fix_log
-            ensure_kyzn_dirs
-            fix_log="$(_kyzn_reports_dir_path)/${run_id}-fix-${tier}.log"
+            fix_log="$reports_dir/${run_id}-fix-${tier}.log"
             {
                 echo "exit_code: $exit_code"
                 echo "---- stderr ----"
@@ -1604,6 +1735,8 @@ run_fix_phase() {
 
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
+            cd "$invocation_root_dir" 2>/dev/null || true
+            kyzn_wt_discard "$wt_run_id"
             continue
         }
         stop_progress
@@ -1614,7 +1747,6 @@ run_fix_phase() {
         total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$batch_cost" 'BEGIN { printf "%.2f", a + b }')
         log_ok "$tier fixes applied (cost: \$$batch_cost)"
 
-        # Extract Claude's summary of what was fixed (for PR body)
         local batch_summary
         batch_summary=$(echo "$fix_result" | jq -r '.result // empty' 2>/dev/null) || true
         if [[ -n "$batch_summary" ]]; then
@@ -1637,7 +1769,11 @@ run_fix_phase() {
             rm -f "$first_verify_out"
             log_error "Verification was not executed: $KYZN_VERIFY_UNAVAILABLE_REASON"
             log_error "Refusing to open a PR for changes KyZN cannot verify."
-            abort_unverified_run "$branch_name" true
+            [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+            cd "$invocation_root_dir" 2>/dev/null || true
+            kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+            KYZN_FIX_WT_RUN_ID=""
+            _kyzn_fix_finish
             return 1
         elif (( batch_verify_rc == 0 )); then
             cat "$first_verify_out"
@@ -1646,10 +1782,8 @@ run_fix_phase() {
             rm -f "$first_verify_out"
         else
             cat "$first_verify_out"
-            # Reflexion retry — capture errors, give Claude a second chance
             log_warn "$tier batch is still failing verification — attempting self-repair..."
 
-            # Use saved output from first verify_build run (avoids running tests twice)
             local verify_errors
             verify_errors=$(tail -50 "$first_verify_out")
             rm -f "$first_verify_out"
@@ -1657,9 +1791,6 @@ run_fix_phase() {
             local retry_budget
             retry_budget=$(awk -v b="$batch_budget" 'BEGIN { printf "%.2f", b / 2 }')
 
-            # Give the retry the same baseline context as the initial attempt —
-            # it is now expected to close those failures too, so withholding
-            # them would leave it repairing blind.
             local retry_baseline_context=""
             if [[ -n "$baseline_failures" ]]; then
                 retry_baseline_context="
@@ -1720,22 +1851,21 @@ ${retry_baseline_context}
                 total_fix_cost=$(awk -v a="$total_fix_cost" -v b="$retry_cost" 'BEGIN { printf "%.2f", a + b }')
             fi
 
-            # Branch explicitly on 0 / 1 / 2 — never collapse "not executed" into
-            # "failed" and rely on global status surviving later control flow.
             local retry_verify_rc=0
             verify_build || retry_verify_rc=$?
             if verify_not_executed "$retry_verify_rc"; then
                 log_error "Verification was not executed after self-repair: $KYZN_VERIFY_UNAVAILABLE_REASON"
                 log_error "Refusing to open a PR for changes KyZN cannot verify."
-                abort_unverified_run "$branch_name" true
+                [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+                cd "$invocation_root_dir" 2>/dev/null || true
+                kyzn_wt_preserve "$wt_run_id" "verification-unavailable"
+                KYZN_FIX_WT_RUN_ID=""
+                _kyzn_fix_finish
                 return 1
             elif (( retry_verify_rc == 0 )); then
                 log_ok "Self-repair succeeded for $tier batch"
                 batch_passed=true
             else
-                # Red after self-repair is a failed batch — same rule as the
-                # quick path: only a green final verification passes, and a red
-                # baseline buys no exemption.
                 log_error "$tier batch: verification still failing after self-repair"
                 if ! $baseline_verify_ok; then
                     log_dim "  The baseline was already red; that does not make a red result a pass."
@@ -1743,108 +1873,122 @@ ${retry_baseline_context}
             fi
         fi
 
+        # Before accepting: HEAD must still be exactly the pre-batch commit
+        # and still detached. A Claude-initiated checkout or commit fails
+        # closed — there is no rollback to fall back to; the whole checkout
+        # is discarded and recreated fresh either way.
         if $batch_passed; then
-            # Safety: verify we're still on the kyzn branch (Claude may have switched)
-            local current_branch
-            current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-            if [[ "$current_branch" != "$branch_name" ]]; then
-                log_warn "Branch switched to '$current_branch' — restoring '$branch_name'"
-                if ! safe_git checkout "$branch_name" 2>/dev/null; then
-                    # Branch may have been deleted or never created — recreate it
-                    if git rev-parse --verify "$branch_name" &>/dev/null; then
-                        safe_git checkout "$branch_name" 2>&1 || log_error "Failed to restore branch $branch_name"
-                    else
-                        log_warn "Branch $branch_name lost — recreating from current state"
-                        safe_git checkout -b "$branch_name" 2>/dev/null || log_error "Failed to recreate branch $branch_name"
+            local cur_head
+            cur_head=$(git rev-parse HEAD 2>/dev/null)
+            if git symbolic-ref -q HEAD >/dev/null 2>&1 || [[ "$cur_head" != "$pre_batch_head" ]]; then
+                log_error "$tier batch: HEAD is no longer the expected detached pre-batch commit (branch switch or commit by Claude) — rejecting batch."
+                batch_passed=false
+            fi
+        fi
+
+        if $batch_passed; then
+            stage_claude_changes
+            if git diff --cached --quiet 2>/dev/null; then
+                # A passing verification with nothing staged is a genuine
+                # no-op, not an applied batch — there is nothing to commit.
+                log_warn "$tier batch: verification passed but nothing was staged — not counting as an applied batch."
+                batch_passed=false
+            elif ! safe_git commit -m "KyZN($tier): fix $tier_count findings [run:$run_id]" 2>/dev/null; then
+                log_error "$tier batch: commit failed — rejecting batch."
+                batch_passed=false
+            else
+                # Before advancing accepted_head: the candidate commit must
+                # be a single, non-merge child of the exact pre-batch HEAD
+                # this batch started from — proof it was created from the
+                # expected detached commit and carries only the staged
+                # accepted tree, not residue from a foreign parent.
+                local new_head new_parent
+                new_head=$(git rev-parse HEAD 2>/dev/null)
+                new_parent=$(git rev-parse -q --verify HEAD^ 2>/dev/null)
+                if [[ -z "$new_head" || "$new_parent" != "$pre_batch_head" ]] || \
+                   git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+                    log_error "$tier batch: candidate commit is not a single child of the expected pre-batch HEAD — rejecting batch."
+                    batch_passed=false
+                elif ! kyzn_wt_advance_accepted_head "$wt_run_id" "$new_head"; then
+                    log_error "$tier batch: could not record the accepted commit — rejecting batch."
+                    batch_passed=false
+                else
+                    (( batches_applied++ )) || true
+                    applied_tiers+=("$tier")
+
+                    local _batch_numstat
+                    _batch_numstat=$(git diff --numstat "$source_commit" "$new_head" 2>/dev/null) || true
+                    if [[ -n "$_batch_numstat" ]]; then
+                        local _ba _bd
+                        _ba=$(echo "$_batch_numstat" | awk '{sum+=$1} END {print sum+0}')
+                        _bd=$(echo "$_batch_numstat" | awk '{sum+=$2} END {print sum+0}')
+                        cumulative_diff=$(( _ba + _bd ))
                     fi
+                    log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
                 fi
             fi
+        fi
 
-            # Commit this batch immediately — preserves work even if later batches fail
-            stage_claude_changes
-            safe_git commit -m "KyZN($tier): fix $tier_count findings [run:$run_id]" 2>/dev/null || true
-            (( batches_applied++ )) || true
-            applied_tiers+=("$tier")
-
-            # Update cumulative diff tracking (from branch base, not HEAD)
-            local _branch_numstat
-            _branch_numstat=$(git diff --numstat "$branch_base"...HEAD 2>/dev/null) || true
-            if [[ -n "$_branch_numstat" ]]; then
-                local _ba _bd
-                _ba=$(echo "$_branch_numstat" | awk '{sum+=$1} END {print sum+0}')
-                _bd=$(echo "$_branch_numstat" | awk '{sum+=$2} END {print sum+0}')
-                cumulative_diff=$(( _ba + _bd ))
-            fi
-            log_dim "  Diff budget: ${cumulative_diff}/${diff_limit} lines"
-        else
-            log_error "$tier batch still broken after retry — reverting batch"
-            # Save user's local config before cleaning (gitignored, would be lost)
-            local _saved_local=""
-            local _local_config_file
-            _local_config_file=$(_kyzn_local_config_path)
-            [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
-            safe_git reset --hard "$pre_batch_head" 2>/dev/null
-            # Restore saved files
-            if [[ -n "$_saved_local" ]]; then
-                mkdir -p "$(_kyzn_dir_path)"
-                echo "$_saved_local" > "$_local_config_file"
-            fi
-            ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
+        if ! $batch_passed; then
+            log_error "$tier batch still broken — discarding batch (no rollback: the isolated worktree is simply recreated at the last accepted commit)"
             (( batches_failed++ )) || true
         fi
 
-        # Clean up combined prompt file if it was a temp file
         [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
+
+        cd "$invocation_root_dir" 2>/dev/null || true
+        kyzn_wt_discard "$wt_run_id"
     done
 
-    # Step 5: Check if any batches succeeded
+    # Check if any batches succeeded
     if (( batches_applied == 0 )); then
         log_error "All fix batches failed. No changes to commit."
-        safe_checkout_back
-        safe_git branch -D "$branch_name" 2>/dev/null || true
-        release_kyzn_lock
+        kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
         return 1
     fi
 
-    # Step 6: Summary
     echo ""
+    local final_accepted_head
+    final_accepted_head=$(kyzn_wt_accepted_head "$wt_run_id")
     local diff_stat
-    diff_stat=$(git diff --stat "${branch_name}~${batches_applied}..${branch_name}" 2>/dev/null \
-        || git diff --stat "main..HEAD" 2>/dev/null \
-        || echo "No diff available")
+    diff_stat=$(git -C "$invocation_root_dir" diff --stat "$source_commit" "$final_accepted_head" 2>/dev/null || echo "No diff available")
 
     log_ok "Fix phase complete: $batches_applied batches applied, $batches_failed failed, $batches_skipped skipped"
     log_info "Total cost: \$$total_fix_cost | Diff: $cumulative_diff lines"
     echo "$diff_stat"
 
-    # Step 7: Push and create PR
-    # Safety: never push directly to main/master
-    local push_branch
-    push_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-    if [[ "$push_branch" == "main" || "$push_branch" == "master" ]]; then
-        log_warn "On $push_branch instead of kyzn branch — recovering"
-        if git rev-parse --verify "$branch_name" &>/dev/null; then
-            safe_git checkout "$branch_name" 2>/dev/null
-        else
-            # Branch lost — create it from current HEAD (which has the fix commits)
-            log_warn "Branch $branch_name lost — creating from current commits"
-            safe_git checkout -b "$branch_name" 2>/dev/null || {
-                log_error "Cannot create branch $branch_name"
-                release_kyzn_lock
-                return 1
-            }
-            # Reset main back to before our commits so PR has a clean diff
-            local reset_target="HEAD~${batches_applied}"
-            safe_git branch -f "$push_branch" "$reset_target" 2>/dev/null || true
-        fi
+    kyzn_wt_set_phase "$wt_run_id" publication
+
+    # Publish: branch, push, and PR are all created from accepted_head — never
+    # from a batch worktree's live checkout, never from the invocation
+    # checkout. The invocation checkout's current branch is never switched.
+    local run_suffix branch_name
+    run_suffix="${run_id##*-}"
+    branch_name="kyzn/$(date +%Y%m%d)-analyze-fix-${run_suffix}"
+
+    log_step "Creating branch: $branch_name"
+    if ! safe_git -C "$invocation_root_dir" branch "$branch_name" "$final_accepted_head" 2>/dev/null; then
+        log_error "Failed to create branch $branch_name from the accepted commit."
+        kyzn_wt_preserve "$wt_run_id" "branch-creation-failed"
+        log_warn "Recovery: the accepted commit is retained at $(kyzn_wt_ref_name "$wt_run_id") ($final_accepted_head)."
+        log_warn "  kyzn worktrees list / kyzn worktrees remove $wt_run_id"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
     fi
 
     log_step "Pushing and creating PR..."
-    safe_git push -u origin HEAD 2>/dev/null || {
-        log_warn "Push failed — changes are committed locally on $branch_name"
-        release_kyzn_lock
-        return 0
-    }
+    if ! safe_git -C "$invocation_root_dir" push -u origin "$branch_name" 2>/dev/null; then
+        log_error "Push failed — changes are committed locally on $branch_name"
+        kyzn_wt_preserve "$wt_run_id" "push-failed" "$branch_name"
+        log_warn "Recovery: local branch '$branch_name' holds the accepted changes."
+        log_warn "  kyzn worktrees list / kyzn worktrees remove $wt_run_id"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
+    fi
 
     # Build applied tiers string for PR body
     local tiers_str
@@ -1874,9 +2018,10 @@ echo "$fix_summaries"
 fi)
 
 ### Approach
-Findings were batched by severity tier (CRITICAL → HIGH → MEDIUM → LOW).
-Each batch was verified and committed independently — if a batch broke tests,
-self-repair was attempted. Failed batches were reverted to protect passing code.
+Findings were batched by severity tier (CRITICAL → HIGH → MEDIUM → LOW). Each batch ran
+and was verified inside an isolated, disposable Git worktree — your working tree was
+never modified. A failed batch was discarded and retried fresh from the last accepted
+commit; there is no rollback, because there was nothing in your checkout to roll back.
 Diff budget was tracked incrementally to prevent waste.
 
 ---
@@ -1884,15 +2029,33 @@ Diff budget was tracked incrementally to prevent waste.
 EOF
     )
 
-    gh pr create \
+    if ! gh pr create \
+        --head "$branch_name" \
         --title "KyZN: fix $(IFS=+; echo "${applied_tiers[*]}") findings ($run_id)" \
-        --body "$pr_body" \
-        2>/dev/null || log_warn "PR creation failed — push succeeded, create PR manually"
+        --body "$pr_body" 2>/dev/null; then
+        log_error "PR creation failed — push succeeded, create PR manually"
+        kyzn_wt_preserve "$wt_run_id" "pr-creation-failed" "$branch_name" "$branch_name"
+        log_warn "Recovery: remote branch '$branch_name' holds the accepted changes."
+        log_warn "  kyzn worktrees list / kyzn worktrees remove $wt_run_id"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
+    fi
 
-    release_kyzn_lock
+    if ! kyzn_wt_remove_run "$wt_run_id"; then
+        log_error "PR created, but cleanup of run $wt_run_id failed — its metadata/checkout/ref may still be retained."
+        log_warn "Recovery: the PR is open on '$branch_name'; the run's leftover state does not affect it."
+        log_warn "  kyzn worktrees list / kyzn worktrees remove $wt_run_id"
+        KYZN_FIX_WT_RUN_ID=""
+        _kyzn_fix_finish
+        return 1
+    fi
+    KYZN_FIX_WT_RUN_ID=""
 
     echo ""
     log_info "Review the PR, then:"
     echo -e "  ${CYAN}kyzn approve $run_id${RESET}   — sign off"
     echo -e "  ${CYAN}kyzn reject $run_id${RESET}    — discard"
+    _kyzn_fix_finish
+    return 0
 }

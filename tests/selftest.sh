@@ -4371,10 +4371,15 @@ _workflow_mocks() {
     cat > "$cb/git" <<'SH'
 #!/usr/bin/env bash
 # Passthrough wrapper: intercepts push/merge, delegates everything else.
+# -c and -C both take a following argument (a config override / a target
+# directory respectively) and must be skipped as a pair, exactly like the
+# isolated-worktree publication path's own `git -C "$invocation_root_dir"
+# push ...` calls — otherwise the directory argument to -C is mistaken for
+# the subcommand and this wrapper never intercepts the push at all.
 args=("$@"); sub=""; i=0
 while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
-        -c) i=$((i+2)) ;;
+        -c|-C) i=$((i+2)) ;;
         -*) i=$((i+1)) ;;
         *)  sub="${args[$i]}"; break ;;
     esac
@@ -4460,6 +4465,31 @@ YAML
     PATH="$cb"
 }
 
+# Isolated-worktree tests source_repo is a fresh mktemp -d per sandbox, so it
+# uniquely identifies the run_fix_phase invocation that just ran against
+# $SANDBOX — even though $KYZN_GLOBAL_DIR/worktrees/ is shared process-wide
+# across every test in this file. Prints the run ID (empty if none found).
+# Metadata's source_repo is recorded via project_root() -> `git rev-parse
+# --show-toplevel`, which is physically resolved. Under a symlinked TMPDIR,
+# $SANDBOX itself still carries the symlink spelling, so it must be
+# canonicalized the same way before comparison — no basename/suffix/textual
+# fallback, since that could match the wrong run.
+_wt_run_id_for_sandbox() {
+    local sandbox="$1" canon_sandbox d rid src
+    canon_sandbox=$(cd "$sandbox" 2>/dev/null && pwd -P) || return 1
+    [[ -n "$canon_sandbox" ]] || return 1
+    for d in "$KYZN_GLOBAL_DIR"/worktrees/*/; do
+        [[ -d "$d" ]] || continue
+        rid="$(basename "$d")"
+        src=$(jq -r '.source_repo // empty' "$d/metadata.json" 2>/dev/null)
+        if [[ "$src" == "$canon_sandbox" ]]; then
+            printf '%s\n' "$rid"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Scripted "Claude" edit that makes TypeScript verification unavailable:
 # adds a tsconfig.json to a project with no local compiler, plus other changes.
 _write_mutate_script() {
@@ -4505,6 +4535,7 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc orig log
 
@@ -4785,6 +4816,8 @@ SH
     else
         fail "analyze/baseline: lock released" "lock directory still present"
     fi
+    local d_wt_run_id; d_wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null) || d_wt_run_id=""
+    [[ -n "$d_wt_run_id" ]] && kyzn_wt_remove_run "$d_wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     cleanup_sandbox
 
@@ -4811,13 +4844,25 @@ SH
     assert_not_contains "analyze/batch: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/batch: original branch has no new commits" \
         "$orig_sha" "$(git rev-parse "$orig")"
-    assert_eq "analyze/batch: kyzn branch kept for inspection" \
-        "1" "$(git branch --list 'kyzn/*' | grep -c 'kyzn/')"
-    if [[ -f tsconfig.json ]]; then
-        pass "analyze/batch: Claude's files preserved for inspection"
+    # No branch is ever created before a batch succeeds — Claude's edits
+    # live only in the isolated, disposable worktree, which is preserved
+    # (not deleted) for inspection when the run cannot be verified.
+    assert_eq "analyze/batch: no kyzn branch created" "" "$(git branch --list 'kyzn/*')"
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX") || wt_run_id=""
+    if [[ -n "$wt_run_id" ]]; then
+        pass "analyze/batch: isolated worktree run is retained for inspection"
+    else
+        fail "analyze/batch: isolated worktree run is retained for inspection" "no run found for $SANDBOX"
+    fi
+    assert_eq "analyze/batch: preserved as verification-unavailable" \
+        "verification-unavailable" \
+        "$(jq -r '.preservation_reason // empty' "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/metadata.json" 2>/dev/null)"
+    if [[ -f "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/checkout/tsconfig.json" ]]; then
+        pass "analyze/batch: Claude's files preserved for inspection in the isolated checkout"
     else
         fail "analyze/batch: preserved files" "KyZN deleted files it should have left alone"
     fi
+    kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     unset CLAUDE_MUTATE
     cleanup_sandbox
@@ -4912,11 +4957,13 @@ SH
     assert_exit_code "analyze/self-repair: aborts non-zero" 1 "$rc"
     assert_not_contains "analyze/self-repair: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/self-repair: no commit on the original branch" "$h_sha" "$(git rev-parse "$orig")"
-    if [[ -f tsconfig.json ]]; then
-        pass "analyze/self-repair: retry changes preserved"
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX") || wt_run_id=""
+    if [[ -f "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/checkout/tsconfig.json" ]]; then
+        pass "analyze/self-repair: retry changes preserved in the isolated checkout"
     else
         fail "analyze/self-repair: preserved files" "KyZN deleted files it should have left alone"
     fi
+    kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     unset CLAUDE_MUTATE BREAK_TESTS_FLAG
     cleanup_sandbox
@@ -5649,6 +5696,7 @@ test_red_final_verification_never_ships() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log cb
 
@@ -5770,8 +5818,8 @@ SH
         out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
         assert_contains "analyze/$m: still failing after self-repair" \
             "$out" "verification still failing after self-repair"
-        assert_contains "analyze/$m: the batch is reverted" \
-            "$out" "still broken after retry — reverting batch"
+        assert_contains "analyze/$m: the batch is discarded (no rollback — recreated fresh)" \
+            "$out" "still broken — discarding batch"
         assert_not_contains "analyze/$m: nothing pushed or PR'd" "$log" "FORBIDDEN"
         assert_exit_code "analyze/$m: aborts non-zero" 1 "$rc"
         PATH="$saved_path"; cleanup_sandbox
@@ -5925,6 +5973,7 @@ test_fix_prompts_permit_reaching_green() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log prompt retry_prompt
     local findings='[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]'
@@ -6840,6 +6889,7 @@ test_fix_batch_claude_failure_writes_diagnostics() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log run_id fix_log findings
 
@@ -7956,6 +8006,16 @@ EOF
         fail "direction A: cmd_improve released the lock on its own completion" "lock directory still present"
     fi
 
+    # A batch that verifies green but stages nothing is correctly no longer
+    # counted as applied (see lib/analyze.sh's no-op detection) — give this
+    # attempt a real, minimal mutation so it has something to commit.
+    local wt_mutate="$tmp_sig_dir/wt_mutate.sh"
+    cat > "$wt_mutate" <<'SH'
+#!/usr/bin/env bash
+echo "# kyzn touched this" >> scripts/run.sh
+SH
+    chmod +x "$wt_mutate"
+
     (
         cd "$wt_dir"
         unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
@@ -7963,6 +8023,8 @@ EOF
         detect_project_type >/dev/null 2>&1
         WORKFLOW_LOG="$tmp_sig_dir/attemptA2-workflow.log"
         : > "$WORKFLOW_LOG"
+        CLAUDE_MUTATE="$wt_mutate"
+        export CLAUDE_MUTATE
         _attempt2_rc=0
         run_fix_phase "$tmp_sig_dir/findingsA.json" CRITICAL "20260813-crosswtA2" "1.00" &>/dev/null || _attempt2_rc=$?
         echo "$_attempt2_rc" > "$tmp_sig_dir/attemptA2.rc"
@@ -8887,6 +8949,730 @@ SH
 }
 
 # ---------------------------------------------------------------------------
+# Isolated analyze --fix execution transaction (issue #21 stage 2)
+# ---------------------------------------------------------------------------
+
+test_worktree_register_materialize_discard() {
+    log_header "97. worktree registry: register, materialize, discard"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    rc=0
+    kyzn_wt_register "$SANDBOX" "$src_sha" || rc=$?
+    assert_exit_code "register succeeds" 0 "$rc"
+    local run_id="$KYZN_WT_RUN_ID"
+    local run_id_format_rc=1
+    [[ "$run_id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]+$ ]] && run_id_format_rc=0
+    assert_eq "register: run ID matches validate_run_id format" "0" "$run_id_format_rc"
+
+    local meta_file="$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json"
+    if [[ -f "$meta_file" ]]; then
+        pass "register: metadata.json created"
+    else
+        fail "register: metadata.json created" "missing at $meta_file"
+    fi
+    local mode; mode=$(stat -c '%a' "$meta_file" 2>/dev/null || stat -f '%Lp' "$meta_file" 2>/dev/null)
+    assert_eq "register: metadata.json is mode 600" "600" "$mode"
+
+    local json; json=$(cat "$meta_file")
+    assert_eq "register: schema_version 1" "1" "$(jq -r '.schema_version' <<<"$json")"
+    assert_eq "register: phase registered" "registered" "$(jq -r '.phase' <<<"$json")"
+    assert_eq "register: checkout_state absent" "absent" "$(jq -r '.checkout_state' <<<"$json")"
+    assert_eq "register: status active" "active" "$(jq -r '.status' <<<"$json")"
+    assert_eq "register: accepted_head is the pinned source commit" "$src_sha" "$(jq -r '.accepted_head' <<<"$json")"
+    assert_eq "register: owner_pid is this process" "$BASHPID" "$(jq -r '.owner_pid' <<<"$json")"
+    assert_eq "register: ref_name is derived from run id" "refs/kyzn/runs/$run_id/accepted" "$(jq -r '.ref_name' <<<"$json")"
+
+    local ref_sha; ref_sha=$(git -C "$SANDBOX" rev-parse --verify -q "refs/kyzn/runs/$run_id/accepted" 2>/dev/null)
+    assert_eq "register: private ref created at the pinned commit" "$src_sha" "$ref_sha"
+
+    rc=0
+    kyzn_wt_materialize "$run_id" "$src_sha" || rc=$?
+    assert_exit_code "materialize succeeds" 0 "$rc"
+    local checkout_dir; checkout_dir=$(kyzn_wt_checkout_dir "$run_id")
+    if [[ -f "$checkout_dir/scripts/run.sh" ]]; then
+        pass "materialize: pinned tree content is present in the checkout"
+    else
+        fail "materialize: pinned tree content is present in the checkout" "scripts/run.sh missing"
+    fi
+    assert_eq "materialize: checkout_state materialized" "materialized" \
+        "$(jq -r '.checkout_state' <<<"$(cat "$meta_file")")"
+    local checkout_head; checkout_head=$(git -C "$checkout_dir" rev-parse HEAD)
+    assert_eq "materialize: checkout HEAD is the pinned commit" "$src_sha" "$checkout_head"
+    rc=0
+    git -C "$checkout_dir" symbolic-ref -q HEAD >/dev/null 2>&1 && rc=1
+    assert_exit_code "materialize: checkout HEAD is detached" 0 "$rc"
+
+    kyzn_wt_discard "$run_id"
+    assert_eq "discard: checkout_state absent again" "absent" \
+        "$(jq -r '.checkout_state' <<<"$(cat "$meta_file")")"
+    if [[ -d "$checkout_dir" ]]; then
+        fail "discard: checkout directory removed" "still present at $checkout_dir"
+    else
+        pass "discard: checkout directory removed"
+    fi
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout_dir" && rc=1
+    assert_exit_code "discard: no longer registered with git" 0 "$rc"
+
+    kyzn_wt_remove_run "$run_id"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        fail "remove_run: run directory removed" "still present"
+    else
+        pass "remove_run: run directory removed"
+    fi
+    rc=0
+    git -C "$SANDBOX" rev-parse --verify -q "refs/kyzn/runs/$run_id/accepted" >/dev/null 2>&1 && rc=1
+    assert_exit_code "remove_run: private ref deleted" 0 "$rc"
+
+    cleanup_sandbox
+}
+
+test_worktree_advance_accepted_head_cas() {
+    log_header "98. worktree accepted-head: two-phase CAS advance"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run_id" "$src_sha"
+    local checkout_dir; checkout_dir=$(kyzn_wt_checkout_dir "$run_id")
+
+    (
+        cd "$checkout_dir"
+        echo "batch change" >> scripts/run.sh
+        git -c user.email=t@t -c user.name=t add -A
+        git -c user.email=t@t -c user.name=t commit -q -m "batch commit"
+    )
+    local new_sha; new_sha=$(git -C "$checkout_dir" rev-parse HEAD)
+
+    rc=0
+    kyzn_wt_advance_accepted_head "$run_id" "$new_sha" || rc=$?
+    assert_exit_code "advance_accepted_head succeeds" 0 "$rc"
+    assert_eq "accepted_head function reflects the new commit" "$new_sha" "$(kyzn_wt_accepted_head "$run_id")"
+
+    local ref_sha; ref_sha=$(git -C "$SANDBOX" rev-parse --verify -q "$(kyzn_wt_ref_name "$run_id")")
+    assert_eq "private ref moved to the new accepted commit" "$new_sha" "$ref_sha"
+
+    local pending; pending=$(jq -r '.pending_head' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json")")
+    assert_eq "pending_head cleared after a successful CAS" "null" "$pending"
+
+    kyzn_wt_discard "$run_id"
+    kyzn_wt_remove_run "$run_id"
+    cleanup_sandbox
+}
+
+test_worktree_cli_list_and_remove() {
+    log_header "99. kyzn worktrees list / remove"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+    kyzn_wt_preserve "$run_id" "verification-unavailable"
+
+    local list_out; list_out=$(cmd_worktrees list 2>&1)
+    assert_contains "worktrees list: shows the run id" "$list_out" "$run_id"
+    assert_contains "worktrees list: shows the preservation reason" "$list_out" "verification-unavailable"
+
+    rc=0
+    cmd_worktrees remove "../../etc" &>/dev/null || rc=$?
+    assert_exit_code "worktrees remove: rejects a path-like run id" 1 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        pass "worktrees remove: invalid run id touched nothing"
+    else
+        fail "worktrees remove: invalid run id touched nothing" "the real run directory disappeared"
+    fi
+
+    rc=0
+    cmd_worktrees remove "$run_id" &>/dev/null || rc=$?
+    assert_exit_code "worktrees remove: succeeds for a preserved run" 0 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        fail "worktrees remove: run directory gone" "still present"
+    else
+        pass "worktrees remove: run directory gone"
+    fi
+
+    cleanup_sandbox
+}
+
+test_worktree_remove_refuses_live_active_owner() {
+    log_header "100. kyzn worktrees remove refuses an active run with a live owner"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    rc=0
+    cmd_worktrees remove "$run_id" &>/dev/null || rc=$?
+    assert_exit_code "remove refuses an active run whose owner_pid is this live process" 1 "$rc"
+    if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
+        pass "the active run directory survives the refused removal"
+    else
+        fail "the active run directory survives the refused removal" "it was deleted anyway"
+    fi
+
+    kyzn_wt_remove_run "$run_id"
+    cleanup_sandbox
+}
+
+test_analyze_fix_rejects_allow_dirty_outright() {
+    log_header "101. analyze --fix rejects --allow-dirty outright (issue #21 stage 2)"
+
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    create_sandbox node
+    echo 'dirty edit' >> src/index.js
+    local dirty_before; dirty_before=$(git status --porcelain)
+
+    _KYZN_UNSAFE_HOST_EXECUTION_ALLOWED=true
+    _KYZN_UNSAFE_HOST_EXECUTION_WARNED=true
+
+    rc=0
+    local out; out=$(cmd_analyze --fix --allow-dirty --auto 2>&1) || rc=$?
+    assert_exit_code "analyze --fix --allow-dirty is refused" 1 "$rc"
+    assert_contains "refusal names --allow-dirty as unsupported" "$out" "--allow-dirty is not supported"
+
+    local dirty_after; dirty_after=$(git status --porcelain)
+    assert_eq "the dirty edit is completely untouched" "$dirty_before" "$dirty_after"
+    assert_eq "no kyzn branch was created" "" "$(git branch --list 'kyzn/*')"
+    # Scoped to THIS sandbox's own registration, not the shared process-wide
+    # $KYZN_GLOBAL_DIR/worktrees/ — other tests in this same selftest run
+    # legitimately leave their own preserved runs behind for inspection, so
+    # asserting the whole directory is empty would coincidentally pass only
+    # because run order happened to have registered nothing else yet.
+    if [[ -n "$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null)" ]]; then
+        fail "no execution worktree was ever registered" "a run was registered for this sandbox"
+    else
+        pass "no execution worktree was ever registered"
+    fi
+
+    cleanup_sandbox
+}
+
+test_analyze_fix_removed_machinery_is_absent() {
+    log_header "102. removed-not-ported: rollback machinery is gone from run_fix_phase"
+
+    local fix_body
+    fix_body=$(awk '/^run_fix_phase\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
+
+    assert_not_contains "run_fix_phase never does 'reset --hard'" "$fix_body" "reset --hard"
+    assert_not_contains "run_fix_phase never calls safe_checkout_back" "$fix_body" "safe_checkout_back"
+    assert_not_contains "run_fix_phase never saves/restores .kyzn/local.yaml around a batch" \
+        "$fix_body" "_saved_local"
+    assert_not_contains "run_fix_phase never re-runs ensure_kyzn_dirs to repair a wiped tree" \
+        "$fix_body" "re-create .kyzn/"
+    assert_contains "run_fix_phase discards and recreates the isolated worktree instead" \
+        "$fix_body" "kyzn_wt_discard"
+}
+
+test_wt_run_id_for_sandbox_symlinked_tmpdir() {
+    log_header "103. _wt_run_id_for_sandbox: symlinked TMPDIR, missing entry, set -e safety"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    # project_root() (what production passes as source_repo) resolves via
+    # `git rev-parse --show-toplevel`, which is physically resolved. Model
+    # that here explicitly rather than assuming $SANDBOX itself is already
+    # canonical -- it may or may not be, depending on the platform's own
+    # TMPDIR. Then hand the helper a symlink-spelled path pointing at that
+    # same directory, exactly what a symlinked TMPDIR does to $SANDBOX in a
+    # real run.
+    local canon_sandbox; canon_sandbox=$(cd "$SANDBOX" && pwd -P)
+    local symlinked_sandbox; symlinked_sandbox="${canon_sandbox}-symlink-$$"
+    ln -s "$canon_sandbox" "$symlinked_sandbox"
+
+    if [[ "$symlinked_sandbox" != "$canon_sandbox" ]]; then
+        pass "sandbox path carries the symlink spelling"
+    else
+        fail "sandbox path carries the symlink spelling" "symlink path equals the canonical path"
+    fi
+
+    KYZN_WT_RUN_ID=""
+    rc=0
+    kyzn_wt_register "$canon_sandbox" "$src_sha" || rc=$?
+    assert_exit_code "fixture: register succeeds against the physical path" 0 "$rc"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    local found_rid="unset" helper_rc=0
+    found_rid=$(_wt_run_id_for_sandbox "$symlinked_sandbox") || helper_rc=$?
+    assert_exit_code "helper resolves a symlink-spelled sandbox to its physically recorded run" 0 "$helper_rc"
+    assert_eq "helper returns the correct run id" "$run_id" "$found_rid"
+
+    kyzn_wt_remove_run "$run_id" 2>/dev/null || true
+    rm -f "$symlinked_sandbox"
+
+    # A genuinely missing entry: canonicalizable, but no run was ever
+    # registered against it.
+    local missing_dir; missing_dir=$(mktemp -d)
+    local missing_rid="unset" missing_rc=0
+    missing_rid=$(_wt_run_id_for_sandbox "$missing_dir") || missing_rc=$?
+    assert_exit_code "missing entry: helper returns 1" 1 "$missing_rc"
+    assert_eq "missing entry: helper prints nothing" "" "$missing_rid"
+    rm -rf "$missing_dir"
+
+    # An uncanonicalizable sandbox: the path does not exist at all, so
+    # `cd ... && pwd -P` itself fails.
+    local bogus_dir; bogus_dir="$canon_sandbox/does-not-exist-$$"
+    local bogus_rid="unset" bogus_rc=0
+    bogus_rid=$(_wt_run_id_for_sandbox "$bogus_dir") || bogus_rc=$?
+    assert_exit_code "uncanonicalizable sandbox: helper returns 1" 1 "$bogus_rc"
+    assert_eq "uncanonicalizable sandbox: helper prints nothing" "" "$bogus_rid"
+
+    cleanup_sandbox
+
+    # Every assertion above ran under the file's global `set -euo pipefail`.
+    # Reaching this line proves none of the guarded assignments above (which
+    # mirror the exact pattern used by run_fix_phase's own test callers)
+    # silently terminated the suite the way the unguarded original did.
+    pass "test function reached its final assertion under set -euo pipefail"
+}
+
+test_worktree_discard_fail_closed() {
+    log_header "104. worktree discard: fail-closed enumeration and removal"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    local saved_path="$PATH"
+    local real_git; real_git=$(command -v git)
+    local real_mv; real_mv=$(command -v mv)
+
+    # A fake `git` that fails ONLY for `worktree <fail_sub>` (skipping any
+    # leading -c/-C option pairs, matching safe_git's prefix), forwarding
+    # everything else — including every other worktree subcommand — to the
+    # real git.
+    _wt_fake_git_fail() {
+        local dir="$1" fail_sub="$2"
+        mkdir -p "$dir"
+        cat > "$dir/git" <<FAKE
+#!/usr/bin/env bash
+args=("\$@")
+i=0
+while [[ \$i -lt \${#args[@]} ]]; do
+    case "\${args[\$i]}" in
+        -c|-C) i=\$((i+2)) ;;
+        *) break ;;
+    esac
+done
+if [[ "\${args[\$i]:-}" == "worktree" && "\${args[\$((i+1))]:-}" == "$fail_sub" ]]; then
+    exit 1
+fi
+exec "$real_git" "\$@"
+FAKE
+        chmod +x "$dir/git"
+    }
+
+    # A fake `git` whose `worktree list` succeeds via the real git the
+    # first time and fails every time after — proving a caller invokes
+    # enumeration exactly once instead of e.g. once to check status and
+    # again via a process substitution to parse it.
+    _wt_fake_git_count_then_fail() {
+        local dir="$1" fail_sub="$2" count_file="$3"
+        mkdir -p "$dir"
+        cat > "$dir/git" <<FAKE
+#!/usr/bin/env bash
+args=("\$@")
+i=0
+while [[ \$i -lt \${#args[@]} ]]; do
+    case "\${args[\$i]}" in
+        -c|-C) i=\$((i+2)) ;;
+        *) break ;;
+    esac
+done
+if [[ "\${args[\$i]:-}" == "worktree" && "\${args[\$((i+1))]:-}" == "$fail_sub" ]]; then
+    n=0
+    [[ -f "$count_file" ]] && n=\$(cat "$count_file")
+    n=\$((n + 1))
+    echo "\$n" > "$count_file"
+    if [[ "\$n" -gt 1 ]]; then
+        exit 1
+    fi
+fi
+exec "$real_git" "\$@"
+FAKE
+        chmod +x "$dir/git"
+    }
+
+    # A fake `git` whose `worktree list -z` succeeds (rc 0) but emits a
+    # truncated record with no trailing NUL — the "git said success but the
+    # bytes are unusable" case, distinct from a nonzero exit.
+    _wt_fake_git_malformed_list() {
+        local dir="$1"
+        mkdir -p "$dir"
+        cat > "$dir/git" <<FAKE
+#!/usr/bin/env bash
+args=("\$@")
+i=0
+while [[ \$i -lt \${#args[@]} ]]; do
+    case "\${args[\$i]}" in
+        -c|-C) i=\$((i+2)) ;;
+        *) break ;;
+    esac
+done
+if [[ "\${args[\$i]:-}" == "worktree" && "\${args[\$((i+1))]:-}" == "list" ]]; then
+    printf 'worktree /some/other/path-not-terminated'
+    exit 0
+fi
+exec "$real_git" "\$@"
+FAKE
+        chmod +x "$dir/git"
+    }
+
+    # A fake `mv` that fails only the final rename of an atomic metadata
+    # write (`mv -f <tmp> .../metadata.json`), letting every filesystem/Git
+    # side effect of discard complete normally so the failure lands
+    # exactly on the last "record checkout_state=absent" step.
+    _wt_fake_mv_fail_metadata() {
+        local dir="$1"
+        mkdir -p "$dir"
+        cat > "$dir/mv" <<FAKE
+#!/usr/bin/env bash
+last="\${@: -1}"
+case "\$last" in
+    */metadata.json) exit 1 ;;
+esac
+exec "$real_mv" "\$@"
+FAKE
+        chmod +x "$dir/mv"
+    }
+
+    # Noise: an unrelated worktree of the same source repo whose path
+    # contains a literal newline, present for the rest of this test. A
+    # newline-delimited relay of `git worktree list` output (the prior
+    # implementation) would silently split this into bogus entries and
+    # could corrupt matching against the real target.
+    local nl_parent="$SANDBOX-nl-parent"
+    mkdir -p "$nl_parent"
+    local nl_dir="$nl_parent/"$'weird\nname'
+    local have_nl_noise=false
+    if git worktree add -q -b wt-nl-noise "$nl_dir" >/dev/null 2>&1 && [[ -d "$nl_dir" ]]; then
+        have_nl_noise=true
+    fi
+
+    # --- Control run: an ordinary registered+materialized run used to
+    # prove every injected failure below touches ONLY the run under test. ---
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local control_id="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$control_id" "$src_sha"
+    local control_meta="$KYZN_GLOBAL_DIR/worktrees/$control_id/metadata.json"
+    local control_checkout; control_checkout=$(kyzn_wt_checkout_dir "$control_id")
+    local control_meta_before; control_meta_before=$(cat "$control_meta")
+    local control_script_before; control_script_before=$(cat "$control_checkout/scripts/run.sh")
+
+    # === 1. Enumeration (`worktree list`) failure: no raw deletion, the
+    # checkout and its Git registration both survive, state never becomes
+    # "absent". ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run1="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run1" "$src_sha"
+    local checkout1; checkout1=$(kyzn_wt_checkout_dir "$run1")
+    local meta1="$KYZN_GLOBAL_DIR/worktrees/$run1/metadata.json"
+
+    local fake_dir1; fake_dir1=$(mktemp -d)
+    _wt_fake_git_fail "$fake_dir1" "list"
+    PATH="$fake_dir1:$saved_path"
+    rc=0
+    kyzn_wt_discard "$run1" >/dev/null 2>&1 || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "enumeration failure: discard fails closed" 1 "$rc"
+    if [[ -d "$checkout1" ]]; then
+        pass "enumeration failure: checkout directory survives"
+    else
+        fail "enumeration failure: checkout directory survives" "deleted despite a failed enumeration"
+    fi
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout1" && rc=1
+    assert_exit_code "enumeration failure: checkout registration survives" 1 "$rc"
+    local state1; state1=$(jq -r '.checkout_state' <<<"$(cat "$meta1")")
+    assert_not_contains "enumeration failure: checkout_state is never recorded as absent" "$state1" "absent"
+    kyzn_wt_discard "$run1" >/dev/null 2>&1 || true
+    kyzn_wt_remove_run "$run1" >/dev/null 2>&1 || true
+
+    # === 2. Enumeration is invoked exactly once per discard call. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run2="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run2" "$src_sha"
+    local checkout2; checkout2=$(kyzn_wt_checkout_dir "$run2")
+
+    local fake_dir2; fake_dir2=$(mktemp -d)
+    local count_file2; count_file2=$(mktemp)
+    rm -f "$count_file2"
+    _wt_fake_git_count_then_fail "$fake_dir2" "list" "$count_file2"
+    PATH="$fake_dir2:$saved_path"
+    rc=0
+    kyzn_wt_discard "$run2" >/dev/null 2>&1 || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "single-enumeration: discard succeeds with only one worktree-list call available" 0 "$rc"
+    assert_eq "single-enumeration: git worktree list invoked exactly once" "1" "$(cat "$count_file2" 2>/dev/null)"
+    if [[ -d "$checkout2" ]]; then
+        fail "single-enumeration: checkout directory removed" "still present"
+    else
+        pass "single-enumeration: checkout directory removed"
+    fi
+    rm -f "$count_file2"
+    kyzn_wt_remove_run "$run2" >/dev/null 2>&1 || true
+
+    # === 3. Malformed/truncated NUL porcelain (git exits 0 but the record
+    # is not NUL-terminated): fails closed, deletes nothing. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run3="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run3" "$src_sha"
+    local checkout3; checkout3=$(kyzn_wt_checkout_dir "$run3")
+    local meta3="$KYZN_GLOBAL_DIR/worktrees/$run3/metadata.json"
+
+    local fake_dir3; fake_dir3=$(mktemp -d)
+    _wt_fake_git_malformed_list "$fake_dir3"
+    PATH="$fake_dir3:$saved_path"
+    rc=0
+    kyzn_wt_discard "$run3" >/dev/null 2>&1 || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "malformed porcelain: discard fails closed" 1 "$rc"
+    if [[ -d "$checkout3" ]]; then
+        pass "malformed porcelain: checkout directory survives"
+    else
+        fail "malformed porcelain: checkout directory survives" "deleted despite malformed enumeration output"
+    fi
+    local state3; state3=$(jq -r '.checkout_state' <<<"$(cat "$meta3")")
+    assert_not_contains "malformed porcelain: checkout_state is never recorded as absent" "$state3" "absent"
+    kyzn_wt_discard "$run3" >/dev/null 2>&1 || true
+    kyzn_wt_remove_run "$run3" >/dev/null 2>&1 || true
+
+    # === 4. `git worktree remove --force` failure: no raw-deletion
+    # fallback, checkout and registration both survive. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run4="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run4" "$src_sha"
+    local checkout4; checkout4=$(kyzn_wt_checkout_dir "$run4")
+    local meta4="$KYZN_GLOBAL_DIR/worktrees/$run4/metadata.json"
+
+    local fake_dir4; fake_dir4=$(mktemp -d)
+    _wt_fake_git_fail "$fake_dir4" "remove"
+    PATH="$fake_dir4:$saved_path"
+    rc=0
+    kyzn_wt_discard "$run4" >/dev/null 2>&1 || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "removal failure: discard fails closed" 1 "$rc"
+    if [[ -d "$checkout4" ]]; then
+        pass "removal failure: checkout directory survives (no rm -rf fallback)"
+    else
+        fail "removal failure: checkout directory survives (no rm -rf fallback)" "deleted despite failed Git removal"
+    fi
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout4" && rc=1
+    assert_exit_code "removal failure: checkout registration survives" 1 "$rc"
+    local state4; state4=$(jq -r '.checkout_state' <<<"$(cat "$meta4")")
+    assert_not_contains "removal failure: checkout_state is never recorded as absent" "$state4" "absent"
+    kyzn_wt_discard "$run4" >/dev/null 2>&1 || true
+    kyzn_wt_remove_run "$run4" >/dev/null 2>&1 || true
+
+    # === 5. A dangling checkout symlink is present-but-untrusted: never
+    # treated as absent, never removed. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run5="$KYZN_WT_RUN_ID"
+    local checkout5; checkout5=$(kyzn_wt_checkout_dir "$run5")
+    # Registration leaves checkout_state="absent" by default — set it to a
+    # non-absent value first so the assertion below actually proves discard
+    # never OVERWRITES a real state to "absent", rather than finding it
+    # already there from registration and asserting nothing.
+    _kyzn_wt_set_checkout_state "$run5" registering
+    ln -s "/nonexistent/kyzn-test-target-$$" "$checkout5"
+    rc=0
+    kyzn_wt_discard "$run5" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "dangling symlink: discard fails closed" 1 "$rc"
+    if [[ -L "$checkout5" ]]; then
+        pass "dangling symlink: the symlink itself is left in place"
+    else
+        fail "dangling symlink: the symlink itself is left in place" "removed or replaced"
+    fi
+    local state5; state5=$(jq -r '.checkout_state' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run5/metadata.json")")
+    assert_not_contains "dangling symlink: checkout_state is never recorded as absent" "$state5" "absent"
+    rm -f "$checkout5"
+    rm -rf "$(_kyzn_wt_run_dir "$run5")"
+
+    # === 6. A checkout symlink retargeted OUTSIDE the canonical parent is
+    # equally present-but-untrusted, and its target is left untouched. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run6="$KYZN_WT_RUN_ID"
+    local checkout6; checkout6=$(kyzn_wt_checkout_dir "$run6")
+    local swap_target="$SANDBOX-swap-target"
+    mkdir -p "$swap_target"
+    echo "marker" > "$swap_target/marker.txt"
+    ln -s "$swap_target" "$checkout6"
+    rc=0
+    kyzn_wt_discard "$run6" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "symlink swap: discard fails closed" 1 "$rc"
+    assert_file_exists "symlink swap: the swapped-in target directory is untouched" "$swap_target/marker.txt"
+    rm -f "$checkout6"
+    rm -rf "$swap_target"
+    rm -rf "$(_kyzn_wt_run_dir "$run6")"
+
+    # === 7. Canonicalization failure (the checkout entry exists but
+    # cannot be entered) fails closed without recording "absent". ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run7="$KYZN_WT_RUN_ID"
+    local checkout7; checkout7=$(kyzn_wt_checkout_dir "$run7")
+    _kyzn_wt_set_checkout_state "$run7" registering
+    mkdir -p "$checkout7"
+    chmod 000 "$checkout7"
+    rc=0
+    kyzn_wt_discard "$run7" >/dev/null 2>&1 || rc=$?
+    chmod 700 "$checkout7"
+    assert_exit_code "canonicalization failure: discard fails closed" 1 "$rc"
+    local state7; state7=$(jq -r '.checkout_state' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run7/metadata.json")")
+    assert_not_contains "canonicalization failure: checkout_state is never recorded as absent" "$state7" "absent"
+    rm -rf "$(_kyzn_wt_run_dir "$run7")"
+
+    # === 8. Genuinely absent checkout (nothing was ever materialized):
+    # a clean no-op that records "absent". ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run8="$KYZN_WT_RUN_ID"
+    rc=0
+    kyzn_wt_discard "$run8" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "genuinely absent: discard is a clean no-op" 0 "$rc"
+    local state8; state8=$(jq -r '.checkout_state' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run8/metadata.json")")
+    assert_eq "genuinely absent: checkout_state is absent" "absent" "$state8"
+    kyzn_wt_remove_run "$run8" >/dev/null 2>&1 || true
+
+    # === 9. An unregistered partial checkout is raw-deletable ONLY when
+    # its recorded checkout_state proves it is this run's own owned,
+    # still-registering partial materialization (the crash-recovery case:
+    # the process died between `checkout_state=registering` and a
+    # completed `git worktree add`). ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run9="$KYZN_WT_RUN_ID"
+    local checkout9; checkout9=$(kyzn_wt_checkout_dir "$run9")
+    mkdir -p "$checkout9"
+    echo "partial" > "$checkout9/partial-file"
+    _kyzn_wt_set_checkout_state "$run9" registering
+    rc=0
+    kyzn_wt_discard "$run9" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "authorized partial checkout: discard succeeds" 0 "$rc"
+    if [[ -e "$checkout9" ]]; then
+        fail "authorized partial checkout: the partial directory is removed" "still present"
+    else
+        pass "authorized partial checkout: the partial directory is removed"
+    fi
+    local state9; state9=$(jq -r '.checkout_state' <<<"$(cat "$KYZN_GLOBAL_DIR/worktrees/$run9/metadata.json")")
+    assert_eq "authorized partial checkout: checkout_state is absent" "absent" "$state9"
+    kyzn_wt_remove_run "$run9" >/dev/null 2>&1 || true
+
+    # === 10. The SAME unregistered-directory shape, but with a
+    # checkout_state that does not prove an owned partial checkout, is
+    # refused rather than deleted. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run10="$KYZN_WT_RUN_ID"
+    local checkout10; checkout10=$(kyzn_wt_checkout_dir "$run10")
+    mkdir -p "$checkout10"
+    echo "partial" > "$checkout10/partial-file"
+    _kyzn_wt_set_checkout_state "$run10" materialized
+    rc=0
+    kyzn_wt_discard "$run10" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "refused partial checkout: discard fails closed" 1 "$rc"
+    if [[ -e "$checkout10" ]]; then
+        pass "refused partial checkout: the directory survives"
+    else
+        fail "refused partial checkout: the directory survives" "deleted despite an unproven state"
+    fi
+    rm -rf "$(_kyzn_wt_run_dir "$run10")"
+
+    # === 11. A successful removal whose final checkout_state=absent write
+    # fails still reports failure, naming the retained inconsistency,
+    # rather than silently claiming success. ===
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run11="$KYZN_WT_RUN_ID"
+    kyzn_wt_materialize "$run11" "$src_sha"
+    local checkout11; checkout11=$(kyzn_wt_checkout_dir "$run11")
+
+    local fake_dir11; fake_dir11=$(mktemp -d)
+    _wt_fake_mv_fail_metadata "$fake_dir11"
+    PATH="$fake_dir11:$saved_path"
+    rc=0
+    out=$(kyzn_wt_discard "$run11" 2>&1) || rc=$?
+    PATH="$saved_path"
+    assert_exit_code "final metadata write failure: discard returns non-zero" 1 "$rc"
+    assert_contains "final metadata write failure: the retained inconsistency is named" "$out" "inconsistent"
+    if [[ -d "$checkout11" ]]; then
+        fail "final metadata write failure: filesystem/Git cleanup still completed" "checkout directory still present"
+    else
+        pass "final metadata write failure: filesystem/Git cleanup still completed"
+    fi
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout11" && rc=1
+    assert_exit_code "final metadata write failure: Git registration is also gone" 0 "$rc"
+    # Self-heals on a later, unhindered discard (checkout is already gone).
+    kyzn_wt_discard "$run11" >/dev/null 2>&1 || true
+    kyzn_wt_remove_run "$run11" >/dev/null 2>&1 || true
+
+    # === 12. Invalid run ID is rejected outright, before any filesystem
+    # or Git inspection. ===
+    rc=0
+    kyzn_wt_discard "../../etc" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "invalid run id: discard refuses outright" 1 "$rc"
+
+    # === 13. No broad `git worktree prune` invocation anywhere in
+    # `_kyzn_wt_discard`. ===
+    local discard_body
+    discard_body=$(awk '/^_kyzn_wt_discard\(\)/,/^}/' "$KYZN_ROOT/lib/worktree.sh")
+    assert_not_contains "discard never invokes a broad 'git worktree prune'" "$discard_body" "worktree prune"
+
+    # === 14. Throughout every injected failure above, the unrelated
+    # control run's metadata and checkout content are byte-identical. ===
+    assert_eq "control run: metadata is unchanged" "$control_meta_before" "$(cat "$control_meta")"
+    assert_eq "control run: checkout content is unchanged" "$control_script_before" "$(cat "$control_checkout/scripts/run.sh")"
+    rc=0
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $control_checkout" && rc=1
+    assert_exit_code "control run: still registered with git throughout" 1 "$rc"
+    kyzn_wt_discard "$control_id" >/dev/null 2>&1 || true
+    kyzn_wt_remove_run "$control_id" >/dev/null 2>&1 || true
+
+    if $have_nl_noise; then
+        git worktree remove --force "$nl_dir" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$nl_parent"
+    PATH="$saved_path"
+    unset -f _wt_fake_git_fail _wt_fake_git_count_then_fail _wt_fake_git_malformed_list _wt_fake_mv_fail_metadata
+
+    cleanup_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 main() {
@@ -9031,6 +9817,14 @@ main() {
     test_lock_reclaim_serialized_concurrency
     test_lock_reclaim_injected_failures
     test_lock_legacy_compat
+    test_worktree_register_materialize_discard
+    test_worktree_advance_accepted_head_cas
+    test_worktree_cli_list_and_remove
+    test_worktree_remove_refuses_live_active_owner
+    test_analyze_fix_rejects_allow_dirty_outright
+    test_analyze_fix_removed_machinery_is_absent
+    test_wt_run_id_for_sandbox_symlinked_tmpdir
+    test_worktree_discard_fail_closed
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
