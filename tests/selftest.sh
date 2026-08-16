@@ -4469,13 +4469,20 @@ YAML
 # uniquely identifies the run_fix_phase invocation that just ran against
 # $SANDBOX — even though $KYZN_GLOBAL_DIR/worktrees/ is shared process-wide
 # across every test in this file. Prints the run ID (empty if none found).
+# Metadata's source_repo is recorded via project_root() -> `git rev-parse
+# --show-toplevel`, which is physically resolved. Under a symlinked TMPDIR,
+# $SANDBOX itself still carries the symlink spelling, so it must be
+# canonicalized the same way before comparison — no basename/suffix/textual
+# fallback, since that could match the wrong run.
 _wt_run_id_for_sandbox() {
-    local sandbox="$1" d rid src
+    local sandbox="$1" canon_sandbox d rid src
+    canon_sandbox=$(cd "$sandbox" 2>/dev/null && pwd -P) || return 1
+    [[ -n "$canon_sandbox" ]] || return 1
     for d in "$KYZN_GLOBAL_DIR"/worktrees/*/; do
         [[ -d "$d" ]] || continue
         rid="$(basename "$d")"
         src=$(jq -r '.source_repo // empty' "$d/metadata.json" 2>/dev/null)
-        if [[ "$src" == "$sandbox" ]]; then
+        if [[ "$src" == "$canon_sandbox" ]]; then
             printf '%s\n' "$rid"
             return 0
         fi
@@ -4809,7 +4816,7 @@ SH
     else
         fail "analyze/baseline: lock released" "lock directory still present"
     fi
-    local d_wt_run_id; d_wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null)
+    local d_wt_run_id; d_wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null) || d_wt_run_id=""
     [[ -n "$d_wt_run_id" ]] && kyzn_wt_remove_run "$d_wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     cleanup_sandbox
@@ -4841,7 +4848,7 @@ SH
     # live only in the isolated, disposable worktree, which is preserved
     # (not deleted) for inspection when the run cannot be verified.
     assert_eq "analyze/batch: no kyzn branch created" "" "$(git branch --list 'kyzn/*')"
-    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX")
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX") || wt_run_id=""
     if [[ -n "$wt_run_id" ]]; then
         pass "analyze/batch: isolated worktree run is retained for inspection"
     else
@@ -4950,7 +4957,7 @@ SH
     assert_exit_code "analyze/self-repair: aborts non-zero" 1 "$rc"
     assert_not_contains "analyze/self-repair: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/self-repair: no commit on the original branch" "$h_sha" "$(git rev-parse "$orig")"
-    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX")
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX") || wt_run_id=""
     if [[ -f "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/checkout/tsconfig.json" ]]; then
         pass "analyze/self-repair: retry changes preserved in the isolated checkout"
     else
@@ -9180,6 +9187,70 @@ test_analyze_fix_removed_machinery_is_absent() {
         "$fix_body" "kyzn_wt_discard"
 }
 
+test_wt_run_id_for_sandbox_symlinked_tmpdir() {
+    log_header "103. _wt_run_id_for_sandbox: symlinked TMPDIR, missing entry, set -e safety"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    # project_root() (what production passes as source_repo) resolves via
+    # `git rev-parse --show-toplevel`, which is physically resolved. Model
+    # that here explicitly rather than assuming $SANDBOX itself is already
+    # canonical -- it may or may not be, depending on the platform's own
+    # TMPDIR. Then hand the helper a symlink-spelled path pointing at that
+    # same directory, exactly what a symlinked TMPDIR does to $SANDBOX in a
+    # real run.
+    local canon_sandbox; canon_sandbox=$(cd "$SANDBOX" && pwd -P)
+    local symlinked_sandbox; symlinked_sandbox="${canon_sandbox}-symlink-$$"
+    ln -s "$canon_sandbox" "$symlinked_sandbox"
+
+    if [[ "$symlinked_sandbox" != "$canon_sandbox" ]]; then
+        pass "sandbox path carries the symlink spelling"
+    else
+        fail "sandbox path carries the symlink spelling" "symlink path equals the canonical path"
+    fi
+
+    KYZN_WT_RUN_ID=""
+    rc=0
+    kyzn_wt_register "$canon_sandbox" "$src_sha" || rc=$?
+    assert_exit_code "fixture: register succeeds against the physical path" 0 "$rc"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    local found_rid="unset" helper_rc=0
+    found_rid=$(_wt_run_id_for_sandbox "$symlinked_sandbox") || helper_rc=$?
+    assert_exit_code "helper resolves a symlink-spelled sandbox to its physically recorded run" 0 "$helper_rc"
+    assert_eq "helper returns the correct run id" "$run_id" "$found_rid"
+
+    kyzn_wt_remove_run "$run_id" 2>/dev/null || true
+    rm -f "$symlinked_sandbox"
+
+    # A genuinely missing entry: canonicalizable, but no run was ever
+    # registered against it.
+    local missing_dir; missing_dir=$(mktemp -d)
+    local missing_rid="unset" missing_rc=0
+    missing_rid=$(_wt_run_id_for_sandbox "$missing_dir") || missing_rc=$?
+    assert_exit_code "missing entry: helper returns 1" 1 "$missing_rc"
+    assert_eq "missing entry: helper prints nothing" "" "$missing_rid"
+    rm -rf "$missing_dir"
+
+    # An uncanonicalizable sandbox: the path does not exist at all, so
+    # `cd ... && pwd -P` itself fails.
+    local bogus_dir; bogus_dir="$canon_sandbox/does-not-exist-$$"
+    local bogus_rid="unset" bogus_rc=0
+    bogus_rid=$(_wt_run_id_for_sandbox "$bogus_dir") || bogus_rc=$?
+    assert_exit_code "uncanonicalizable sandbox: helper returns 1" 1 "$bogus_rc"
+    assert_eq "uncanonicalizable sandbox: helper prints nothing" "" "$bogus_rid"
+
+    cleanup_sandbox
+
+    # Every assertion above ran under the file's global `set -euo pipefail`.
+    # Reaching this line proves none of the guarded assignments above (which
+    # mirror the exact pattern used by run_fix_phase's own test callers)
+    # silently terminated the suite the way the unguarded original did.
+    pass "test function reached its final assertion under set -euo pipefail"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -9331,6 +9402,7 @@ main() {
     test_worktree_remove_refuses_live_active_owner
     test_analyze_fix_rejects_allow_dirty_outright
     test_analyze_fix_removed_machinery_is_absent
+    test_wt_run_id_for_sandbox_symlinked_tmpdir
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then
