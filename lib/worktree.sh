@@ -390,17 +390,42 @@ kyzn_wt_materialize() {
 
 # Verify the checkout is exactly the one this module registered (canonical
 # parent containment + real git registration) before removing it. A
-# checkout directory that genuinely does not exist is "absent"; a checkout
-# directory that exists but could not be canonicalized/inspected is NOT —
-# that is an unverified state, reported as a failure, never guessed at.
+# checkout directory that genuinely does not exist AND has no symlink entry
+# at that path is "absent"; anything else that could not be positively
+# confirmed as either absent or this run's own verified, git-registered
+# checkout is NOT guessed at — it fails closed and returns non-zero,
+# `checkout_state` is left exactly as found, and nothing is deleted.
 _kyzn_wt_discard() {
     local run_id="$1"
+    validate_run_id "$run_id" || { log_error "Refusing to discard: invalid run ID '$run_id'."; return 1; }
+
     local run_dir checkout_dir source_repo canon_parent
     run_dir="$(_kyzn_wt_run_dir "$run_id")"
     checkout_dir="$(_kyzn_wt_checkout_dir "$run_id")"
-    [[ -d "$checkout_dir" ]] || { _kyzn_wt_set_checkout_state "$run_id" absent 2>/dev/null || true; return 0; }
+
+    # Genuinely absent: no directory entry AND no symlink entry (dangling
+    # or not) at the checkout path. `-d` alone would misreport a dangling
+    # symlink as absent (it dereferences and the target is missing) — that
+    # would silently discard the "present but untrusted" case below.
+    if [[ ! -e "$checkout_dir" && ! -L "$checkout_dir" ]]; then
+        _kyzn_wt_set_checkout_state "$run_id" absent 2>/dev/null || true
+        return 0
+    fi
+
+    # A symlink at the checkout path — dangling, retargeted, or pointing
+    # somewhere legitimate — is present-but-untrusted. It is never
+    # dereferenced for canonicalization, never treated as absent, and never
+    # a raw-deletion target: fail closed and let an operator inspect it.
+    if [[ -L "$checkout_dir" ]]; then
+        log_error "Run $run_id's checkout path is a symlink — refusing to remove it or treat it as absent: $checkout_dir"
+        return 1
+    fi
 
     canon_parent="$(_kyzn_wt_ensure_root)"
+    [[ -n "$canon_parent" ]] || {
+        log_error "Could not canonicalize the worktrees root — refusing to guess run $run_id's checkout state."
+        return 1
+    }
     local real_checkout
     real_checkout=$(cd "$checkout_dir" 2>/dev/null && pwd -P) || {
         log_error "Could not canonicalize the checkout path for run $run_id — refusing to guess its state."
@@ -411,15 +436,45 @@ _kyzn_wt_discard() {
         *) log_error "Refusing to remove a worktree path outside the canonical parent: $real_checkout"; return 1 ;;
     esac
 
-    source_repo=$(jq -r '.source_repo // empty' <<<"$(cat "$(_kyzn_wt_meta_file "$run_id")" 2>/dev/null)" 2>/dev/null)
-    [[ -n "$source_repo" ]] || return 1
+    local meta_json
+    meta_json=$(cat "$(_kyzn_wt_meta_file "$run_id")" 2>/dev/null)
+    source_repo=$(jq -r '.source_repo // empty' <<<"$meta_json" 2>/dev/null)
+    [[ -n "$source_repo" ]] || {
+        log_error "Run $run_id has no readable source_repo in metadata — refusing to guess removal authority."
+        return 1
+    }
 
     _kyzn_wt_set_checkout_state "$run_id" removing
 
-    # NUL-safe: `git worktree list --porcelain -z` separates fields with a
-    # single NUL and entries with a second, consecutive NUL (an empty
-    # field) — never parsed with newline-based grep, which breaks on any
-    # worktree path containing a newline.
+    # Enumerate registered worktrees EXACTLY ONCE, into an owned temp file,
+    # with that exact invocation's exit status checked directly. A
+    # process-substitution relay (the prior implementation) hides a failed
+    # `git worktree list` behind an empty loop — indistinguishable from "not
+    # registered" — which would wrongly authorize raw deletion of a
+    # checkout Git still has registered. Any enumeration, temp-file, or
+    # parse failure here deletes nothing and returns non-zero; checkout_state
+    # stays "removing" rather than being guessed at as "absent".
+    local enum_file
+    enum_file=$(mktemp) || {
+        log_error "Could not create a temporary file to enumerate worktree registrations for run $run_id — refusing to remove anything."
+        return 1
+    }
+    if ! git -C "$source_repo" worktree list --porcelain -z > "$enum_file" 2>/dev/null; then
+        rm -f "$enum_file"
+        log_error "Could not enumerate worktree registrations for run $run_id — refusing to remove anything without proof of registration state."
+        return 1
+    fi
+    # Well-formed non-empty `--porcelain -z` output always ends on a NUL
+    # record terminator. A file that doesn't fails closed as malformed or
+    # truncated rather than being parsed as if it were complete — a
+    # truncated read could otherwise drop exactly the record that proves
+    # this checkout is still registered.
+    if [[ -s "$enum_file" ]] && [[ -n "$(tail -c1 "$enum_file" | tr -d '\0')" ]]; then
+        rm -f "$enum_file"
+        log_error "Worktree registration listing for run $run_id looks malformed or truncated — refusing to remove anything."
+        return 1
+    fi
+
     local registered=false field cur_path=""
     while IFS= read -r -d '' field; do
         if [[ -z "$field" ]]; then
@@ -433,7 +488,8 @@ _kyzn_wt_discard() {
             registered=true
             break
         fi
-    done < <(git -C "$source_repo" worktree list --porcelain -z 2>/dev/null)
+    done < "$enum_file"
+    rm -f "$enum_file"
 
     if $registered; then
         # No fallback to `rm -rf` on a failed Git removal: a failed
@@ -445,9 +501,31 @@ _kyzn_wt_discard() {
             return 1
         fi
     else
+        # Raw filesystem deletion of a checkout Git enumeration just proved
+        # UNREGISTERED is authorized only for this run's own validated,
+        # canonically contained, non-symlinked partial checkout — never a
+        # metadata-supplied path, and only when the recorded checkout_state
+        # itself proves this is an owned, still-registering partial
+        # materialization (the crash-recovery case), not some other state
+        # that happens to have lost its Git registration unexpectedly.
+        local checkout_state
+        checkout_state=$(jq -r '.checkout_state // empty' <<<"$meta_json" 2>/dev/null)
+        if [[ "$checkout_state" != "registering" ]]; then
+            log_error "Run $run_id's checkout is unregistered with Git but its recorded state ('${checkout_state:-<unreadable>}') does not prove an owned partial checkout — refusing to delete."
+            return 1
+        fi
+        if [[ -L "$run_dir" || -L "$checkout_dir" ]]; then
+            log_error "Refusing to delete run $run_id's checkout: a symlink was found where a real directory was expected."
+            return 1
+        fi
         rm -rf "$real_checkout"
     fi
-    _kyzn_wt_set_checkout_state "$run_id" absent
+
+    if ! _kyzn_wt_set_checkout_state "$run_id" absent; then
+        log_error "Run $run_id: the checkout was removed, but recording checkout_state=absent failed — metadata is now inconsistent with reality. Inspect and correct $(_kyzn_wt_meta_file "$run_id") manually."
+        return 1
+    fi
+    return 0
 }
 
 # Discard the current checkout (if any) and materialize a fresh one at the
