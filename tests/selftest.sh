@@ -4371,10 +4371,15 @@ _workflow_mocks() {
     cat > "$cb/git" <<'SH'
 #!/usr/bin/env bash
 # Passthrough wrapper: intercepts push/merge, delegates everything else.
+# -c and -C both take a following argument (a config override / a target
+# directory respectively) and must be skipped as a pair, exactly like the
+# isolated-worktree publication path's own `git -C "$invocation_root_dir"
+# push ...` calls — otherwise the directory argument to -C is mistaken for
+# the subcommand and this wrapper never intercepts the push at all.
 args=("$@"); sub=""; i=0
 while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
-        -c) i=$((i+2)) ;;
+        -c|-C) i=$((i+2)) ;;
         -*) i=$((i+1)) ;;
         *)  sub="${args[$i]}"; break ;;
     esac
@@ -4460,6 +4465,24 @@ YAML
     PATH="$cb"
 }
 
+# Isolated-worktree tests source_repo is a fresh mktemp -d per sandbox, so it
+# uniquely identifies the run_fix_phase invocation that just ran against
+# $SANDBOX — even though $KYZN_GLOBAL_DIR/worktrees/ is shared process-wide
+# across every test in this file. Prints the run ID (empty if none found).
+_wt_run_id_for_sandbox() {
+    local sandbox="$1" d rid src
+    for d in "$KYZN_GLOBAL_DIR"/worktrees/*/; do
+        [[ -d "$d" ]] || continue
+        rid="$(basename "$d")"
+        src=$(jq -r '.source_repo // empty' "$d/metadata.json" 2>/dev/null)
+        if [[ "$src" == "$sandbox" ]]; then
+            printf '%s\n' "$rid"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Scripted "Claude" edit that makes TypeScript verification unavailable:
 # adds a tsconfig.json to a project with no local compiler, plus other changes.
 _write_mutate_script() {
@@ -4505,6 +4528,7 @@ test_workflow_gate_blocks_pr_when_unverifiable() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc orig log
 
@@ -4785,6 +4809,8 @@ SH
     else
         fail "analyze/baseline: lock released" "lock directory still present"
     fi
+    local d_wt_run_id; d_wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null)
+    [[ -n "$d_wt_run_id" ]] && kyzn_wt_remove_run "$d_wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     cleanup_sandbox
 
@@ -4811,13 +4837,25 @@ SH
     assert_not_contains "analyze/batch: nothing pushed, merged, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/batch: original branch has no new commits" \
         "$orig_sha" "$(git rev-parse "$orig")"
-    assert_eq "analyze/batch: kyzn branch kept for inspection" \
-        "1" "$(git branch --list 'kyzn/*' | grep -c 'kyzn/')"
-    if [[ -f tsconfig.json ]]; then
-        pass "analyze/batch: Claude's files preserved for inspection"
+    # No branch is ever created before a batch succeeds — Claude's edits
+    # live only in the isolated, disposable worktree, which is preserved
+    # (not deleted) for inspection when the run cannot be verified.
+    assert_eq "analyze/batch: no kyzn branch created" "" "$(git branch --list 'kyzn/*')"
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX")
+    if [[ -n "$wt_run_id" ]]; then
+        pass "analyze/batch: isolated worktree run is retained for inspection"
+    else
+        fail "analyze/batch: isolated worktree run is retained for inspection" "no run found for $SANDBOX"
+    fi
+    assert_eq "analyze/batch: preserved as verification-unavailable" \
+        "verification-unavailable" \
+        "$(jq -r '.preservation_reason // empty' "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/metadata.json" 2>/dev/null)"
+    if [[ -f "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/checkout/tsconfig.json" ]]; then
+        pass "analyze/batch: Claude's files preserved for inspection in the isolated checkout"
     else
         fail "analyze/batch: preserved files" "KyZN deleted files it should have left alone"
     fi
+    kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     unset CLAUDE_MUTATE
     cleanup_sandbox
@@ -4912,11 +4950,13 @@ SH
     assert_exit_code "analyze/self-repair: aborts non-zero" 1 "$rc"
     assert_not_contains "analyze/self-repair: nothing committed, pushed, or PR'd" "$log" "FORBIDDEN"
     assert_eq "analyze/self-repair: no commit on the original branch" "$h_sha" "$(git rev-parse "$orig")"
-    if [[ -f tsconfig.json ]]; then
-        pass "analyze/self-repair: retry changes preserved"
+    local wt_run_id; wt_run_id=$(_wt_run_id_for_sandbox "$SANDBOX")
+    if [[ -f "$KYZN_GLOBAL_DIR/worktrees/$wt_run_id/checkout/tsconfig.json" ]]; then
+        pass "analyze/self-repair: retry changes preserved in the isolated checkout"
     else
         fail "analyze/self-repair: preserved files" "KyZN deleted files it should have left alone"
     fi
+    kyzn_wt_remove_run "$wt_run_id" 2>/dev/null || true
     PATH="$saved_path"
     unset CLAUDE_MUTATE BREAK_TESTS_FLAG
     cleanup_sandbox
@@ -5649,6 +5689,7 @@ test_red_final_verification_never_ships() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log cb
 
@@ -5770,8 +5811,8 @@ SH
         out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
         assert_contains "analyze/$m: still failing after self-repair" \
             "$out" "verification still failing after self-repair"
-        assert_contains "analyze/$m: the batch is reverted" \
-            "$out" "still broken after retry — reverting batch"
+        assert_contains "analyze/$m: the batch is discarded (no rollback — recreated fresh)" \
+            "$out" "still broken — discarding batch"
         assert_not_contains "analyze/$m: nothing pushed or PR'd" "$log" "FORBIDDEN"
         assert_exit_code "analyze/$m: aborts non-zero" 1 "$rc"
         PATH="$saved_path"; cleanup_sandbox
@@ -5925,6 +5966,7 @@ test_fix_prompts_permit_reaching_green() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log prompt retry_prompt
     local findings='[{"severity":"CRITICAL","category":"security","title":"t","description":"d","file":"src/index.js","fix":"f"}]'
@@ -6840,6 +6882,7 @@ test_fix_batch_claude_failure_writes_diagnostics() {
     source "$KYZN_ROOT/lib/report.sh"
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
+    source "$KYZN_ROOT/lib/worktree.sh"
 
     local saved_path="$PATH" rc out log run_id fix_log findings
 
@@ -7956,6 +7999,16 @@ EOF
         fail "direction A: cmd_improve released the lock on its own completion" "lock directory still present"
     fi
 
+    # A batch that verifies green but stages nothing is correctly no longer
+    # counted as applied (see lib/analyze.sh's no-op detection) — give this
+    # attempt a real, minimal mutation so it has something to commit.
+    local wt_mutate="$tmp_sig_dir/wt_mutate.sh"
+    cat > "$wt_mutate" <<'SH'
+#!/usr/bin/env bash
+echo "# kyzn touched this" >> scripts/run.sh
+SH
+    chmod +x "$wt_mutate"
+
     (
         cd "$wt_dir"
         unset KYZN_PROJECT_ROOT KYZN_PROJECT_WORKDIR KYZN_PROJECT_TYPE KYZN_PROJECT_SUBDIR \
@@ -7963,6 +8016,8 @@ EOF
         detect_project_type >/dev/null 2>&1
         WORKFLOW_LOG="$tmp_sig_dir/attemptA2-workflow.log"
         : > "$WORKFLOW_LOG"
+        CLAUDE_MUTATE="$wt_mutate"
+        export CLAUDE_MUTATE
         _attempt2_rc=0
         run_fix_phase "$tmp_sig_dir/findingsA.json" CRITICAL "20260813-crosswtA2" "1.00" &>/dev/null || _attempt2_rc=$?
         echo "$_attempt2_rc" > "$tmp_sig_dir/attemptA2.rc"
@@ -8902,7 +8957,9 @@ test_worktree_register_materialize_discard() {
     kyzn_wt_register "$SANDBOX" "$src_sha" || rc=$?
     assert_exit_code "register succeeds" 0 "$rc"
     local run_id="$KYZN_WT_RUN_ID"
-    assert_eq "register: run ID matches validate_run_id format" "0" "$([[ "$run_id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]+$ ]]; echo $?)"
+    local run_id_format_rc=1
+    [[ "$run_id" =~ ^[0-9]{8}-[0-9]{6}-[a-f0-9]+$ ]] && run_id_format_rc=0
+    assert_eq "register: run ID matches validate_run_id format" "0" "$run_id_format_rc"
 
     local meta_file="$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json"
     if [[ -f "$meta_file" ]]; then
@@ -8940,7 +8997,7 @@ test_worktree_register_materialize_discard() {
     assert_eq "materialize: checkout HEAD is the pinned commit" "$src_sha" "$checkout_head"
     rc=0
     git -C "$checkout_dir" symbolic-ref -q HEAD >/dev/null 2>&1 && rc=1
-    assert_exit_code "materialize: checkout HEAD is detached" 1 "$rc"
+    assert_exit_code "materialize: checkout HEAD is detached" 0 "$rc"
 
     kyzn_wt_discard "$run_id"
     assert_eq "discard: checkout_state absent again" "absent" \
@@ -8952,7 +9009,7 @@ test_worktree_register_materialize_discard() {
     fi
     rc=0
     git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout_dir" && rc=1
-    assert_exit_code "discard: no longer registered with git" 1 "$rc"
+    assert_exit_code "discard: no longer registered with git" 0 "$rc"
 
     kyzn_wt_remove_run "$run_id"
     if [[ -d "$KYZN_GLOBAL_DIR/worktrees/$run_id" ]]; then
@@ -8962,7 +9019,7 @@ test_worktree_register_materialize_discard() {
     fi
     rc=0
     git -C "$SANDBOX" rev-parse --verify -q "refs/kyzn/runs/$run_id/accepted" >/dev/null 2>&1 && rc=1
-    assert_exit_code "remove_run: private ref deleted" 1 "$rc"
+    assert_exit_code "remove_run: private ref deleted" 0 "$rc"
 
     cleanup_sandbox
 }
@@ -9093,8 +9150,13 @@ test_analyze_fix_rejects_allow_dirty_outright() {
     local dirty_after; dirty_after=$(git status --porcelain)
     assert_eq "the dirty edit is completely untouched" "$dirty_before" "$dirty_after"
     assert_eq "no kyzn branch was created" "" "$(git branch --list 'kyzn/*')"
-    if [[ -d "$KYZN_GLOBAL_DIR/worktrees" ]] && [[ -n "$(ls -A "$KYZN_GLOBAL_DIR/worktrees" 2>/dev/null)" ]]; then
-        fail "no execution worktree was ever registered" "worktrees directory is non-empty"
+    # Scoped to THIS sandbox's own registration, not the shared process-wide
+    # $KYZN_GLOBAL_DIR/worktrees/ — other tests in this same selftest run
+    # legitimately leave their own preserved runs behind for inspection, so
+    # asserting the whole directory is empty would coincidentally pass only
+    # because run order happened to have registered nothing else yet.
+    if [[ -n "$(_wt_run_id_for_sandbox "$SANDBOX" 2>/dev/null)" ]]; then
+        fail "no execution worktree was ever registered" "a run was registered for this sandbox"
     else
         pass "no execution worktree was ever registered"
     fi

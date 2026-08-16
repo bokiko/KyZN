@@ -165,13 +165,21 @@ kyzn_wt_register() {
     done
     [[ -n "$run_id" ]] || return 1
 
+    # $BASHPID must be captured HERE, in the shell that actually owns this
+    # run, not inside the `meta=$( ... )` substitution below — a command
+    # substitution forks a subshell, and $BASHPID inside it would be that
+    # subshell's (already-exited-by-the-time-anyone-reads-it) PID rather
+    # than the real owning process. See release_kyzn_lock's identical
+    # concern in lib/core.sh for why owner PID correctness matters.
+    local owner_pid="$BASHPID"
+
     local ref_name meta
     ref_name="$(_kyzn_wt_ref_name "$run_id")"
     meta=$(jq -n \
         --arg run_id "$run_id" \
         --arg git_common_dir "$common_dir" \
         --arg source_repo "$source_repo" \
-        --arg owner_pid "$BASHPID" \
+        --arg owner_pid "$owner_pid" \
         --arg ref_name "$ref_name" \
         --arg accepted_head "$source_commit" \
         --arg now "$(timestamp)" \
@@ -213,35 +221,72 @@ kyzn_wt_register() {
 # Checkout-execution boundary
 # ---------------------------------------------------------------------------
 
+# Batched, NUL-safe `filter` attribute lookup for every tracked path in
+# HEAD, evaluated in the checkout's own git context (so includeIf
+# gitdir:/worktree config is honored). Writes NUL-terminated
+# <path>\0<attribute>\0<value>\0 triples to $2. Returns 1 (nothing written,
+# or a partial/undefined file) the moment either `ls-tree` or `check-attr`
+# fails — callers MUST treat that as "inspection failed", never as "no
+# attributed paths", since a swallowed failure here is indistinguishable
+# from a clean repository with no filters configured.
+_kyzn_wt_filter_attr_pairs() {
+    local checkout_dir="$1" out_file="$2"
+    local tmp_paths
+    tmp_paths=$(mktemp) || return 1
+    if ! git -C "$checkout_dir" ls-tree -r --name-only -z HEAD > "$tmp_paths" 2>/dev/null; then
+        rm -f "$tmp_paths"
+        return 1
+    fi
+    if ! git -C "$checkout_dir" check-attr --stdin -z filter < "$tmp_paths" > "$out_file" 2>/dev/null; then
+        rm -f "$tmp_paths"
+        return 1
+    fi
+    rm -f "$tmp_paths"
+    return 0
+}
+
 # Enumerate non-LFS smudge/process filters that would fire for the pinned
-# tree, evaluated in the NEWLY REGISTERED worktree's own git context (so
-# includeIf gitdir:/worktree config is honored). Prints the first offending
-# filter name and returns 1 if one is found; returns 0 (silent) if the only
-# configured filter driver is "lfs" or none is configured.
+# tree. Prints the first offending filter name and returns 1 if one is
+# found. Returns 2 (fail closed, no name printed) if the attribute scan or
+# any `git config --get` read could not be completed — never silently
+# treated as "no filters." Returns 0 (silent) only when the scan and every
+# config read genuinely completed and found nothing but "lfs"/unset.
 _kyzn_wt_inspect_filters() {
     local checkout_dir="$1"
+    local tmp_attrs
+    tmp_attrs=$(mktemp) || return 2
+    if ! _kyzn_wt_filter_attr_pairs "$checkout_dir" "$tmp_attrs"; then
+        rm -f "$tmp_attrs"
+        return 2
+    fi
+
     local -a names=()
-    local value
-    # `git check-attr --stdin -z filter` emits one NUL-delimited
-    # <path>\0<attribute>\0<value>\0 triple per input path (one attribute
-    # requested, so exactly one triple per path) — a single batched call
-    # rather than one `check-attr` process per tracked file.
-    while IFS= read -r -d '' value; do
-        [[ -n "$value" && "$value" != "unspecified" && "$value" != "unset" && "$value" != "lfs" ]] || continue
-        local seen=false n
-        for n in "${names[@]:-}"; do [[ "$n" == "$value" ]] && seen=true && break; done
-        $seen || names+=("$value")
-    done < <(
-        git -C "$checkout_dir" ls-tree -r --name-only -z HEAD 2>/dev/null \
-            | git -C "$checkout_dir" check-attr --stdin -z filter 2>/dev/null \
-            | awk 'BEGIN{RS="\0"; ORS=""} {i++; if (i%3==0) print $0 "\0"}'
-    )
+    local field i=0 value
+    while IFS= read -r -d '' field; do
+        if (( i % 3 == 2 )); then
+            value="$field"
+            if [[ -n "$value" && "$value" != "unspecified" && "$value" != "unset" && "$value" != "lfs" ]]; then
+                local seen=false n
+                for n in "${names[@]:-}"; do [[ "$n" == "$value" ]] && seen=true && break; done
+                $seen || names+=("$value")
+            fi
+        fi
+        (( i++ )) || true
+    done < "$tmp_attrs"
+    rm -f "$tmp_attrs"
 
     local nm
     for nm in "${names[@]:-}"; do
-        local smudge process
-        smudge=$(git -C "$checkout_dir" config --get "filter.$nm.smudge" 2>/dev/null)
-        process=$(git -C "$checkout_dir" config --get "filter.$nm.process" 2>/dev/null)
+        local smudge process smudge_rc=0 process_rc=0
+        smudge=$(git -C "$checkout_dir" config --get "filter.$nm.smudge" 2>/dev/null) || smudge_rc=$?
+        process=$(git -C "$checkout_dir" config --get "filter.$nm.process" 2>/dev/null) || process_rc=$?
+        # git config --get: rc 0 = value present, rc 1 = key not set
+        # (benign — filter has no smudge/process configured), rc > 1 = a
+        # real read failure (bad config file, etc.) that must fail closed.
+        if (( smudge_rc > 1 || process_rc > 1 )); then
+            printf '%s\n' "$nm"
+            return 2
+        fi
         if [[ -n "$smudge" || -n "$process" ]]; then
             printf '%s\n' "$nm"
             return 1
@@ -275,8 +320,13 @@ kyzn_wt_materialize() {
     fi
     _kyzn_wt_set_checkout_state "$run_id" registered
 
-    local bad_filter
-    if ! bad_filter=$(_kyzn_wt_inspect_filters "$checkout_dir"); then
+    local bad_filter filter_rc=0
+    bad_filter=$(_kyzn_wt_inspect_filters "$checkout_dir") || filter_rc=$?
+    if (( filter_rc == 2 )); then
+        KYZN_WT_LAST_UNAVAILABLE="could not inspect the checkout's filter configuration — refusing to materialize"
+        _kyzn_wt_discard "$run_id"
+        return 1
+    elif (( filter_rc == 1 )); then
         KYZN_WT_LAST_UNAVAILABLE="repository configures a non-LFS checkout filter ('$bad_filter') — isolated execution is unavailable"
         _kyzn_wt_discard "$run_id"
         return 1
@@ -302,25 +352,47 @@ kyzn_wt_materialize() {
 
     # Unresolved LFS pointers: any tracked path attributed filter=lfs whose
     # materialized content is still a pointer file (smudge was disabled).
-    local lfs_path
-    while IFS= read -r -d '' lfs_path; do
-        [[ -f "$checkout_dir/$lfs_path" ]] || continue
-        if head -c 40 "$checkout_dir/$lfs_path" 2>/dev/null | grep -q '^version https://git-lfs'; then
-            # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh.
-            KYZN_WT_LAST_UNAVAILABLE="repository uses Git LFS; required objects are not materialized in isolated execution"
-            return 1
-        fi
-    done < <(
-        git -C "$checkout_dir" ls-tree -r --name-only -z HEAD 2>/dev/null \
-            | git -C "$checkout_dir" check-attr --stdin filter 2>/dev/null \
-            | awk -F': ' '$3=="lfs"{print $1}' | tr '\n' '\0'
-    )
+    # NUL-safe end to end (path, attribute name, and value are all read as
+    # NUL-delimited fields) so paths containing newlines, colons, tabs, or
+    # spaces are handled correctly. A failed attribute scan fails closed —
+    # it is never treated as "no LFS paths".
+    local tmp_attrs
+    tmp_attrs=$(mktemp) || {
+        KYZN_WT_LAST_UNAVAILABLE="could not inspect Git LFS attributes — refusing to materialize"
+        return 1
+    }
+    if ! _kyzn_wt_filter_attr_pairs "$checkout_dir" "$tmp_attrs"; then
+        rm -f "$tmp_attrs"
+        KYZN_WT_LAST_UNAVAILABLE="could not inspect Git LFS attributes — refusing to materialize"
+        return 1
+    fi
+    local field i=0 lfs_path="" value
+    while IFS= read -r -d '' field; do
+        case $(( i % 3 )) in
+            0) lfs_path="$field" ;;
+            2)
+                value="$field"
+                if [[ "$value" == "lfs" && -f "$checkout_dir/$lfs_path" ]] && \
+                   head -c 40 "$checkout_dir/$lfs_path" 2>/dev/null | grep -q '^version https://git-lfs'; then
+                    rm -f "$tmp_attrs"
+                    # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh.
+                    KYZN_WT_LAST_UNAVAILABLE="repository uses Git LFS; required objects are not materialized in isolated execution"
+                    return 1
+                fi
+                ;;
+        esac
+        (( i++ )) || true
+    done < "$tmp_attrs"
+    rm -f "$tmp_attrs"
 
     return 0
 }
 
 # Verify the checkout is exactly the one this module registered (canonical
-# parent containment + real git registration) before removing it.
+# parent containment + real git registration) before removing it. A
+# checkout directory that genuinely does not exist is "absent"; a checkout
+# directory that exists but could not be canonicalized/inspected is NOT —
+# that is an unverified state, reported as a failure, never guessed at.
 _kyzn_wt_discard() {
     local run_id="$1"
     local run_dir checkout_dir source_repo canon_parent
@@ -330,7 +402,10 @@ _kyzn_wt_discard() {
 
     canon_parent="$(_kyzn_wt_ensure_root)"
     local real_checkout
-    real_checkout=$(cd "$checkout_dir" 2>/dev/null && pwd -P) || { _kyzn_wt_set_checkout_state "$run_id" absent 2>/dev/null || true; return 0; }
+    real_checkout=$(cd "$checkout_dir" 2>/dev/null && pwd -P) || {
+        log_error "Could not canonicalize the checkout path for run $run_id — refusing to guess its state."
+        return 1
+    }
     case "$real_checkout" in
         "$canon_parent/$run_id/checkout") ;;
         *) log_error "Refusing to remove a worktree path outside the canonical parent: $real_checkout"; return 1 ;;
@@ -340,8 +415,35 @@ _kyzn_wt_discard() {
     [[ -n "$source_repo" ]] || return 1
 
     _kyzn_wt_set_checkout_state "$run_id" removing
-    if git -C "$source_repo" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $real_checkout"; then
-        safe_git -C "$source_repo" worktree remove --force "$real_checkout" 2>/dev/null || rm -rf "$real_checkout"
+
+    # NUL-safe: `git worktree list --porcelain -z` separates fields with a
+    # single NUL and entries with a second, consecutive NUL (an empty
+    # field) — never parsed with newline-based grep, which breaks on any
+    # worktree path containing a newline.
+    local registered=false field cur_path=""
+    while IFS= read -r -d '' field; do
+        if [[ -z "$field" ]]; then
+            cur_path=""
+            continue
+        fi
+        case "$field" in
+            "worktree "*) cur_path="${field#worktree }" ;;
+        esac
+        if [[ "$cur_path" == "$real_checkout" ]]; then
+            registered=true
+            break
+        fi
+    done < <(git -C "$source_repo" worktree list --porcelain -z 2>/dev/null)
+
+    if $registered; then
+        # No fallback to `rm -rf` on a failed Git removal: a failed
+        # removal preserves state (checkout_state stays "removing") and
+        # returns non-zero rather than silently authorizing raw deletion
+        # of a path Git still has registered.
+        if ! safe_git -C "$source_repo" worktree remove --force "$real_checkout" 2>/dev/null; then
+            log_error "Could not remove the isolated worktree registration for run $run_id — leaving it in place."
+            return 1
+        fi
     else
         rm -rf "$real_checkout"
     fi
@@ -397,7 +499,12 @@ kyzn_wt_reconcile_pending() {
     local json source_repo ref_name accepted pending cur
     json="$(_kyzn_wt_read_metadata "$run_id")" || return 1
     source_repo=$(jq -r '.source_repo' <<<"$json")
-    ref_name=$(jq -r '.ref_name' <<<"$json")
+    # Derived from the validated run ID, never trusted from metadata as the
+    # value handed to Git — metadata's own ref_name is already checked
+    # against this same derivation inside _kyzn_wt_read_metadata, but the
+    # value that actually reaches `git rev-parse`/`update-ref` here must
+    # come from the derivation itself, not a JSON field.
+    ref_name="$(_kyzn_wt_ref_name "$run_id")"
     accepted=$(jq -r '.accepted_head' <<<"$json")
     pending=$(jq -r '.pending_head // empty' <<<"$json")
     [[ -n "$pending" ]] || return 0
@@ -597,7 +704,7 @@ _kyzn_wt_cmd_remove() {
             rm -rf "$derived_dir"
             log_warn "Source repository was inaccessible — removed only this run's KyZN-owned metadata/checkout."
             log_warn "  Git administrative metadata (worktree registration, private ref) could not be updated."
-            log_warn "  Possible orphaned entries: run 'git worktree prune' and inspect refs/kyzn/runs/$run_id/accepted in the source repository."
+            log_warn "  Possible orphaned entries: inspect 'git worktree list' for this run's checkout path ($derived_dir/checkout) and refs/kyzn/runs/$run_id/accepted in the source repository — remove only that specific entry, not a broad 'git worktree prune'."
         else
             log_error "Run $run_id's directory failed containment validation — refusing to remove anything."
             rc=1
