@@ -4465,6 +4465,28 @@ YAML
     PATH="$cb"
 }
 
+# `git worktree list --porcelain` reports PHYSICALLY RESOLVED paths, while
+# fixture variables carry whatever spelling the checkout was created with.
+# Under a symlinked TMPDIR those differ — on macOS /var is a symlink to
+# /private/var, so a checkout created as /var/folders/... is listed as
+# /private/var/folders/..., and an exact `grep -qxF` against the unresolved
+# spelling never matches. That breaks "is it still registered?" assertions
+# outright AND makes "is it gone?" assertions pass vacuously, so resolve
+# both sides before comparing. The leaf may already be deleted (that is
+# exactly what the "no longer registered" checks assert), so canonicalize
+# the parent — which survives until remove_run — and re-append the
+# basename, rather than cd-ing into the leaf itself.
+_wt_canon_checkout_path() {
+    local p="$1" parent base resolved
+    parent=$(dirname "$p")
+    base=$(basename "$p")
+    if resolved=$(cd "$parent" 2>/dev/null && pwd -P); then
+        printf '%s/%s\n' "$resolved" "$base"
+    else
+        printf '%s\n' "$p"
+    fi
+}
+
 # Isolated-worktree tests source_repo is a fresh mktemp -d per sandbox, so it
 # uniquely identifies the run_fix_phase invocation that just ran against
 # $SANDBOX — even though $KYZN_GLOBAL_DIR/worktrees/ is shared process-wide
@@ -9015,7 +9037,7 @@ test_worktree_register_materialize_discard() {
         pass "discard: checkout directory removed"
     fi
     rc=0
-    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout_dir" && rc=1
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(_wt_canon_checkout_path "$checkout_dir")" && rc=1
     assert_exit_code "discard: no longer registered with git" 0 "$rc"
 
     kyzn_wt_remove_run "$run_id"
@@ -9408,7 +9430,7 @@ FAKE
         fail "enumeration failure: checkout directory survives" "deleted despite a failed enumeration"
     fi
     rc=0
-    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout1" && rc=1
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(_wt_canon_checkout_path "$checkout1")" && rc=1
     assert_exit_code "enumeration failure: checkout registration survives" 1 "$rc"
     local state1; state1=$(jq -r '.checkout_state' <<<"$(cat "$meta1")")
     assert_not_contains "enumeration failure: checkout_state is never recorded as absent" "$state1" "absent"
@@ -9488,7 +9510,7 @@ FAKE
         fail "removal failure: checkout directory survives (no rm -rf fallback)" "deleted despite failed Git removal"
     fi
     rc=0
-    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout4" && rc=1
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(_wt_canon_checkout_path "$checkout4")" && rc=1
     assert_exit_code "removal failure: checkout registration survives" 1 "$rc"
     local state4; state4=$(jq -r '.checkout_state' <<<"$(cat "$meta4")")
     assert_not_contains "removal failure: checkout_state is never recorded as absent" "$state4" "absent"
@@ -9634,7 +9656,7 @@ FAKE
         pass "final metadata write failure: filesystem/Git cleanup still completed"
     fi
     rc=0
-    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $checkout11" && rc=1
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(_wt_canon_checkout_path "$checkout11")" && rc=1
     assert_exit_code "final metadata write failure: Git registration is also gone" 0 "$rc"
     # Self-heals on a later, unhindered discard (checkout is already gone).
     kyzn_wt_discard "$run11" >/dev/null 2>&1 || true
@@ -9657,7 +9679,7 @@ FAKE
     assert_eq "control run: metadata is unchanged" "$control_meta_before" "$(cat "$control_meta")"
     assert_eq "control run: checkout content is unchanged" "$control_script_before" "$(cat "$control_checkout/scripts/run.sh")"
     rc=0
-    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $control_checkout" && rc=1
+    git -C "$SANDBOX" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(_wt_canon_checkout_path "$control_checkout")" && rc=1
     assert_exit_code "control run: still registered with git throughout" 1 "$rc"
     kyzn_wt_discard "$control_id" >/dev/null 2>&1 || true
     kyzn_wt_remove_run "$control_id" >/dev/null 2>&1 || true
