@@ -338,22 +338,27 @@ check_dangerous_files() {
 # Safety: enforce hard ceilings on config values
 # ---------------------------------------------------------------------------
 enforce_config_ceilings() {
-    declare -n _var_budget="$1" _var_turns="$2" _var_diff_limit="$3"
+    local _var_budget=$1 _var_turns=$2 _var_diff_limit=$3
 
     # Hard ceilings (cannot be overridden by config)
     local max_budget=25 max_turns=100 max_diff=10000
 
-    if (( $(awk -v b="${_var_budget}" -v m="$max_budget" 'BEGIN {print (b > m) ? 1 : 0}') )); then
-        log_warn "Budget ${_var_budget} exceeds max ($max_budget). Capping."
-        _var_budget="$max_budget"
+    local _cur_budget _cur_turns _cur_diff
+    _cur_budget="${!_var_budget}"
+    _cur_turns="${!_var_turns}"
+    _cur_diff="${!_var_diff_limit}"
+
+    if (( $(awk -v b="$_cur_budget" -v m="$max_budget" 'BEGIN {print (b > m) ? 1 : 0}') )); then
+        log_warn "Budget $_cur_budget exceeds max ($max_budget). Capping."
+        printf -v "$_var_budget" '%s' "$max_budget"
     fi
-    if (( $(awk -v b="${_var_turns}" -v m="$max_turns" 'BEGIN {print (b > m) ? 1 : 0}') )); then
-        log_warn "Max turns ${_var_turns} exceeds max ($max_turns). Capping."
-        _var_turns="$max_turns"
+    if (( $(awk -v b="$_cur_turns" -v m="$max_turns" 'BEGIN {print (b > m) ? 1 : 0}') )); then
+        log_warn "Max turns $_cur_turns exceeds max ($max_turns). Capping."
+        printf -v "$_var_turns" '%s' "$max_turns"
     fi
-    if (( $(awk -v b="${_var_diff_limit}" -v m="$max_diff" 'BEGIN {print (b > m) ? 1 : 0}') )); then
-        log_warn "Diff limit ${_var_diff_limit} exceeds max ($max_diff). Capping."
-        _var_diff_limit="$max_diff"
+    if (( $(awk -v b="$_cur_diff" -v m="$max_diff" 'BEGIN {print (b > m) ? 1 : 0}') )); then
+        log_warn "Diff limit $_cur_diff exceeds max ($max_diff). Capping."
+        printf -v "$_var_diff_limit" '%s' "$max_diff"
     fi
 }
 
