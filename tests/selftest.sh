@@ -9672,6 +9672,174 @@ FAKE
     cleanup_sandbox
 }
 
+test_worktree_materialize_refuses_smudge_filter() {
+    log_header "105. worktree materialize: non-LFS smudge filter is refused before checkout"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+
+    # A repository that attributes a tracked path to a non-LFS filter whose
+    # smudge command executes arbitrary code. `checkout-index` runs smudge
+    # filters, so materializing this tree without refusing it first is
+    # arbitrary code execution from a malicious repository -- exactly what
+    # the isolated worktree exists to contain.
+    local marker="$SANDBOX-smudge-marker"
+    rm -f "$marker"
+    printf '*.bin filter=evil\n' > .gitattributes
+    printf 'payload\n' > a.bin
+    git config "filter.evil.smudge" "sh -c 'touch $marker; cat'"
+    git add -A
+    git commit -qm "add filtered path"
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    rc=0
+    kyzn_wt_register "$SANDBOX" "$src_sha" || rc=$?
+    assert_exit_code "fixture: register succeeds" 0 "$rc"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    rc=0
+    kyzn_wt_materialize "$run_id" "$src_sha" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "materialize refuses a repo with a non-LFS smudge filter" 1 "$rc"
+    assert_contains "the refusal names the offending filter" \
+        "$KYZN_WT_LAST_UNAVAILABLE" "non-LFS checkout filter"
+
+    if [[ -e "$marker" ]]; then
+        fail "the smudge filter never executed" "marker created at $marker -- filter ran during materialization"
+    else
+        pass "the smudge filter never executed"
+    fi
+
+    local checkout_dir; checkout_dir=$(kyzn_wt_checkout_dir "$run_id")
+    if [[ -d "$checkout_dir" ]]; then
+        fail "the refused checkout is discarded" "still present at $checkout_dir"
+    else
+        pass "the refused checkout is discarded"
+    fi
+
+    rm -f "$marker"
+    kyzn_wt_remove_run "$run_id" >/dev/null 2>&1 || true
+    cleanup_sandbox
+}
+
+test_worktree_metadata_read_failure_is_detected() {
+    log_header "106. worktree metadata: a failed read never degrades to an empty value"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    KYZN_WT_RUN_ID=""
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+    local meta_file="$KYZN_GLOBAL_DIR/worktrees/$run_id/metadata.json"
+
+    # `jq -r '.x' <<<""` exits 0 and prints nothing, so a reader that tests
+    # only the jq pipeline turns an unreadable record into an empty string
+    # rather than an error. Empty is not inert here: `git -C ""` silently
+    # operates on the CURRENT directory, so an empty source_repo would
+    # retarget ref updates at whatever checkout the caller is sitting in.
+    printf 'not valid json at all' > "$meta_file"
+
+    rc=0
+    kyzn_wt_accepted_head "$run_id" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "accepted_head reports a corrupt record as failure" 1 "$rc"
+    local head_out; head_out=$(kyzn_wt_accepted_head "$run_id" 2>/dev/null || true)
+    assert_eq "accepted_head prints nothing for a corrupt record" "" "$head_out"
+
+    rc=0
+    kyzn_wt_materialize "$run_id" "$src_sha" >/dev/null 2>&1 || rc=$?
+    assert_exit_code "materialize refuses a corrupt record" 1 "$rc"
+
+    # The decisive assertion: advancing against a corrupt record must not
+    # fall through to the current directory. Run it from inside a DIFFERENT
+    # git repo and prove no ref was written there.
+    local bystander="$SANDBOX-bystander"
+    rm -rf "$bystander"
+    git init -q "$bystander"
+    git -C "$bystander" config user.email t@t
+    git -C "$bystander" config user.name t
+    git -C "$bystander" commit -q --allow-empty -m seed
+    local before_refs; before_refs=$(git -C "$bystander" for-each-ref --format='%(refname)' | sort)
+
+    rc=0
+    ( cd "$bystander" && kyzn_wt_advance_accepted_head "$run_id" "$src_sha" ) >/dev/null 2>&1 || rc=$?
+    assert_exit_code "advance_accepted_head refuses a corrupt record" 1 "$rc"
+    local after_refs; after_refs=$(git -C "$bystander" for-each-ref --format='%(refname)' | sort)
+    assert_eq "advance_accepted_head wrote no ref into the current directory's repo" \
+        "$before_refs" "$after_refs"
+
+    rm -rf "$bystander"
+    rm -rf "$(_kyzn_wt_run_dir "$run_id")"
+    cleanup_sandbox
+}
+
+test_fix_phase_discard_failure_is_non_fatal() {
+    log_header "107. fix phase: a failed worktree discard warns instead of aborting the run"
+
+    # kyzn_wt_discard fails closed on recoverable conditions. Under
+    # `set -euo pipefail` a BARE call aborts the whole process mid-loop —
+    # right after a green batch — so already-accepted batches never reach
+    # commit/push/PR. Both halves of that are asserted here: the shell
+    # semantics, and that lib/analyze.sh contains no bare call.
+
+    # --- 1. The semantics, pinned. Note that `A || { B; }` does NOT
+    # exempt B from set -e: the brace group is the command following the
+    # final ||, so a failure inside it still exits. Only an explicit
+    # guard on the call itself is safe. ---
+    local probe
+    probe=$(mktemp)
+    cat > "$probe" <<'PROBE'
+set -euo pipefail
+discard() { return 1; }
+for i in 1 2; do discard; done
+echo "REACHED_END"
+PROBE
+    local out; out=$(bash "$probe" 2>/dev/null || true)
+    assert_not_contains "bare discard under set -e aborts the loop" "$out" "REACHED_END"
+
+    cat > "$probe" <<'PROBE'
+set -euo pipefail
+discard() { return 1; }
+for i in 1 2; do false || { discard; echo "in group $i"; continue; }; done
+echo "REACHED_END"
+PROBE
+    out=$(bash "$probe" 2>/dev/null || true)
+    assert_not_contains "a discard inside '|| { }' is NOT exempt from set -e either" "$out" "REACHED_END"
+
+    cat > "$probe" <<'PROBE'
+set -euo pipefail
+discard() { return 1; }
+discard_or_warn() { discard && return 0; echo "warned"; return 0; }
+for i in 1 2; do discard_or_warn; done
+echo "REACHED_END"
+PROBE
+    out=$(bash "$probe" 2>/dev/null || true)
+    assert_contains "the guarded form lets the loop run to completion" "$out" "REACHED_END"
+    assert_contains "the guarded form still reports the failure" "$out" "warned"
+    rm -f "$probe"
+
+    # --- 2. No bare call survives in the fix phase. ---
+    local fix_body
+    fix_body=$(awk '/^run_fix_phase\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
+    # A call is "guarded" only if its own exit status is consumed on the
+    # same line (`&&`/`||`). Anything else is a bare statement that set -e
+    # will act on.
+    local bare_calls
+    bare_calls=$(printf '%s\n' "$fix_body" \
+        | grep -E '^[[:space:]]*kyzn_wt_discard[[:space:]]' \
+        | grep -cvE '(\&\&|\|\|)' || true)
+    assert_eq "run_fix_phase contains no unguarded kyzn_wt_discard call" "0" "$bare_calls"
+    assert_contains "run_fix_phase disposes of worktrees through the guarded helper" \
+        "$fix_body" "_kyzn_fix_discard_or_warn"
+
+    # --- 3. INT/TERM must stop the run, not just clean up and continue:
+    # the handler releases the repository lock and disposes of the
+    # worktree, so a resumed loop would run unlocked. ---
+    assert_contains "INT handler exits after cleanup" "$fix_body" "_kyzn_fix_cleanup; exit 130"
+    assert_contains "TERM handler exits after cleanup" "$fix_body" "_kyzn_fix_cleanup; exit 143"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -9825,6 +9993,9 @@ main() {
     test_analyze_fix_removed_machinery_is_absent
     test_wt_run_id_for_sandbox_symlinked_tmpdir
     test_worktree_discard_fail_closed
+    test_worktree_materialize_refuses_smudge_filter
+    test_worktree_metadata_read_failure_is_detected
+    test_fix_phase_discard_failure_is_non_fatal
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

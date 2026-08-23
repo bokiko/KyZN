@@ -1453,7 +1453,33 @@ run_fix_phase() {
         trap - EXIT INT TERM
         _kyzn_fix_cleanup
     }
-    trap _kyzn_fix_cleanup EXIT INT TERM
+    # kyzn_wt_discard fails closed (returns 1) on several recoverable
+    # conditions — an enumeration that could not be completed, a removal
+    # Git refused, a checkout that could not be canonicalized. Under
+    # `set -e` a bare call would abort the process mid-loop, right after a
+    # green batch, so the branch/push/PR for already-accepted batches
+    # would never be created. Warn instead and let the loop continue: the
+    # retained checkout makes the next iteration's kyzn_wt_materialize
+    # fail, which the existing "isolated execution unavailable" path
+    # already handles by preserving the run for inspection.
+    _kyzn_fix_discard_or_warn() {
+        local _run_id="$1"
+        kyzn_wt_discard "$_run_id" && return 0
+        log_warn "Could not discard the isolated execution worktree — it is retained for inspection."
+        log_warn "  kyzn worktrees list"
+        log_warn "  kyzn worktrees remove $_run_id"
+        return 0
+    }
+    # EXIT runs the cleanup body only — the shell is already leaving. INT
+    # and TERM must additionally *stop*: the cleanup releases the
+    # repository lock and disposes of the worktree, so letting the batch
+    # loop resume afterwards would materialize the next tier with no lock
+    # held and with KYZN_FIX_CLEANUP_DONE already true, making the real
+    # EXIT cleanup a no-op. Exiting here re-enters _kyzn_fix_cleanup via
+    # the EXIT trap, which the DONE guard makes harmless.
+    trap _kyzn_fix_cleanup EXIT
+    trap '_kyzn_fix_cleanup; exit 130' INT
+    trap '_kyzn_fix_cleanup; exit 143' TERM
 
     if ! kyzn_wt_register "$invocation_root_dir" "$source_commit"; then
         log_error "Could not register an isolated execution worktree for this run."
@@ -1569,7 +1595,7 @@ run_fix_phase() {
     # readiness-check, dependency-install, build, or baseline residue may
     # enter the first batch's checkout.
     cd "$invocation_root_dir" 2>/dev/null || true
-    kyzn_wt_discard "$wt_run_id"
+    _kyzn_fix_discard_or_warn "$wt_run_id"
 
     # Split findings into severity batches
     local -a severity_tiers=()
@@ -1736,7 +1762,7 @@ run_fix_phase() {
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
             cd "$invocation_root_dir" 2>/dev/null || true
-            kyzn_wt_discard "$wt_run_id"
+            _kyzn_fix_discard_or_warn "$wt_run_id"
             continue
         }
         stop_progress
@@ -1937,8 +1963,23 @@ ${retry_baseline_context}
         [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "$sys_prompt_file" 2>/dev/null
 
         cd "$invocation_root_dir" 2>/dev/null || true
-        kyzn_wt_discard "$wt_run_id"
+        _kyzn_fix_discard_or_warn "$wt_run_id"
     done
+
+    # The batch loop re-resolved these against the checkout on the way in;
+    # the checkout is now gone, so re-resolve them against the invocation
+    # root on the way out. Anything downstream that resolves a project path
+    # (history files, report paths) would otherwise silently operate on a
+    # deleted directory.
+    # shellcheck disable=SC2034 # Read by project_root() in lib/core.sh.
+    KYZN_PROJECT_ROOT=""
+    # shellcheck disable=SC2034 # Read by project_workdir() in lib/core.sh.
+    KYZN_PROJECT_WORKDIR=""
+    # shellcheck disable=SC2034 # Read by project_workdir_error() in lib/core.sh.
+    KYZN_PROJECT_WORKDIR_ERROR=""
+    # shellcheck disable=SC2034 # Read by project_name() in lib/core.sh.
+    KYZN_PROJECT_NAME=""
+    detect_project_type
 
     # Check if any batches succeeded
     if (( batches_applied == 0 )); then

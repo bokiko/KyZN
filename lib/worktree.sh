@@ -229,6 +229,14 @@ kyzn_wt_register() {
 # fails — callers MUST treat that as "inspection failed", never as "no
 # attributed paths", since a swallowed failure here is indistinguishable
 # from a clean repository with no filters configured.
+#
+# Attributes are read with `--cached`, i.e. from the INDEX, for two
+# reasons. First, correctness: callers inspect before the working tree is
+# populated, and a `check-attr` that consults only the (empty) working tree
+# reports `unspecified` for every path and silently finds nothing. Second,
+# trust: the index is filled from the pinned tree, so a `.gitattributes`
+# left lying in the checkout directory cannot override what is scanned.
+# The index MUST already be populated (`read-tree`) before calling this.
 _kyzn_wt_filter_attr_pairs() {
     local checkout_dir="$1" out_file="$2"
     local tmp_paths
@@ -237,7 +245,7 @@ _kyzn_wt_filter_attr_pairs() {
         rm -f "$tmp_paths"
         return 1
     fi
-    if ! git -C "$checkout_dir" check-attr --stdin -z filter < "$tmp_paths" > "$out_file" 2>/dev/null; then
+    if ! git -C "$checkout_dir" check-attr --cached --stdin -z filter < "$tmp_paths" > "$out_file" 2>/dev/null; then
         rm -f "$tmp_paths"
         return 1
     fi
@@ -296,18 +304,28 @@ _kyzn_wt_inspect_filters() {
 }
 
 # Register the worktree in git with --no-checkout (no hook, no filter runs
-# at this step), then, only after filter inspection passes, materialize the
-# working tree via read-tree + checkout-index — an index-level operation
-# that never invokes hooks, with LFS smudge disabled and any other filter's
-# smudge/process already refused by the inspection step above.
+# at this step), populate the index with read-tree (index-only — still no
+# hook, no filter), inspect the filters that index attributes, and only if
+# that passes write the working tree via checkout-index — an index-level
+# operation that never invokes hooks, with LFS smudge disabled and any
+# other filter's smudge/process already refused by the inspection step.
 #
 # Prints an "unavailable reason" string and returns 1 if isolated execution
 # cannot proceed (non-LFS filter, unresolved LFS pointer, submodules).
 # Returns 0 and sets KYZN_WT_LAST_UNAVAILABLE="" on success.
 kyzn_wt_materialize() {
     local run_id="$1" commit="$2"
-    local source_repo checkout_dir
-    source_repo=$(jq -r '.source_repo' <<<"$(_kyzn_wt_read_metadata "$run_id")") || return 1
+    local source_repo checkout_dir json
+    # Capture the metadata into a variable and test THAT. Testing the
+    # pipeline instead (`x=$(jq … <<<"$(read_metadata)") || return 1`)
+    # only ever sees jq's status: a failed read feeds jq an empty string,
+    # jq exits 0, and source_repo silently becomes "". `git -C ""` is a
+    # no-op that operates on the current directory, so an empty
+    # source_repo would target whatever directory the caller happens to
+    # be in — during the batch loop, the isolated checkout itself.
+    json="$(_kyzn_wt_read_metadata "$run_id")" || return 1
+    source_repo=$(jq -r '.source_repo' <<<"$json") || return 1
+    [[ -n "$source_repo" && "$source_repo" != "null" ]] || return 1
     checkout_dir="$(_kyzn_wt_checkout_dir "$run_id")"
     # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh.
     KYZN_WT_LAST_UNAVAILABLE=""
@@ -319,6 +337,19 @@ kyzn_wt_materialize() {
         return 1
     fi
     _kyzn_wt_set_checkout_state "$run_id" registered
+
+    _kyzn_wt_set_checkout_state "$run_id" materializing
+    # Populate the index from the pinned tree FIRST. `read-tree` without
+    # `-u` is an index-only operation: it writes no working-tree file and
+    # therefore runs no smudge/process filter and no hook. Filter
+    # inspection below reads this index — running it any earlier scans an
+    # empty index, reports `unspecified` for every path, and passes any
+    # repository no matter what filters it configures.
+    if ! GIT_LFS_SKIP_SMUDGE=1 safe_git -C "$checkout_dir" read-tree "$commit" 2>/dev/null; then
+        KYZN_WT_LAST_UNAVAILABLE="failed to read the pinned commit into the isolated worktree index"
+        _kyzn_wt_discard "$run_id"
+        return 1
+    fi
 
     local bad_filter filter_rc=0
     bad_filter=$(_kyzn_wt_inspect_filters "$checkout_dir") || filter_rc=$?
@@ -334,16 +365,17 @@ kyzn_wt_materialize() {
 
     # Submodules are not populated by `git worktree add` at all — checked
     # against the pinned tree object, since the working tree has no files
-    # yet (materialization happens below).
+    # yet (checkout-index runs below).
     if git -C "$checkout_dir" cat-file -e "HEAD:.gitmodules" 2>/dev/null; then
         KYZN_WT_LAST_UNAVAILABLE="repository uses submodules, which git worktree add does not populate"
         _kyzn_wt_discard "$run_id"
         return 1
     fi
 
-    _kyzn_wt_set_checkout_state "$run_id" materializing
-    if ! GIT_LFS_SKIP_SMUDGE=1 safe_git -C "$checkout_dir" read-tree "$commit" 2>/dev/null || \
-       ! GIT_LFS_SKIP_SMUDGE=1 safe_git -C "$checkout_dir" checkout-index -a -f 2>/dev/null; then
+    # Only now write the working tree. This is the step that would run a
+    # smudge/process filter, and it is unreachable unless the inspection
+    # above genuinely completed and found nothing but "lfs"/unset.
+    if ! GIT_LFS_SKIP_SMUDGE=1 safe_git -C "$checkout_dir" checkout-index -a -f 2>/dev/null; then
         KYZN_WT_LAST_UNAVAILABLE="failed to materialize the pinned commit into the isolated worktree"
         _kyzn_wt_discard "$run_id"
         return 1
@@ -356,14 +388,21 @@ kyzn_wt_materialize() {
     # NUL-delimited fields) so paths containing newlines, colons, tabs, or
     # spaces are handled correctly. A failed attribute scan fails closed —
     # it is never treated as "no LFS paths".
+    # Every refusal from here on discards the checkout, exactly like the
+    # refusals above: returning 1 while leaving checkout_state=materialized
+    # and a live `git worktree` registration would strand a full repository
+    # copy under ~/.kyzn/worktrees/ on every run, each needing a manual
+    # `kyzn worktrees remove`.
     local tmp_attrs
     tmp_attrs=$(mktemp) || {
         KYZN_WT_LAST_UNAVAILABLE="could not inspect Git LFS attributes — refusing to materialize"
+        _kyzn_wt_discard "$run_id"
         return 1
     }
     if ! _kyzn_wt_filter_attr_pairs "$checkout_dir" "$tmp_attrs"; then
         rm -f "$tmp_attrs"
         KYZN_WT_LAST_UNAVAILABLE="could not inspect Git LFS attributes — refusing to materialize"
+        _kyzn_wt_discard "$run_id"
         return 1
     fi
     local field i=0 lfs_path="" value
@@ -377,6 +416,7 @@ kyzn_wt_materialize() {
                     rm -f "$tmp_attrs"
                     # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh.
                     KYZN_WT_LAST_UNAVAILABLE="repository uses Git LFS; required objects are not materialized in isolated execution"
+                    _kyzn_wt_discard "$run_id"
                     return 1
                 fi
                 ;;
@@ -541,14 +581,25 @@ kyzn_wt_recreate() {
 # Accepted-head transaction anchor — two-phase CAS
 # ---------------------------------------------------------------------------
 
+# Returns non-zero (printing nothing) when the metadata could not be read
+# or carries no accepted_head. Testing the jq pipeline alone would mask a
+# failed read as an empty-but-successful result.
 kyzn_wt_accepted_head() {
-    jq -r '.accepted_head' <<<"$(_kyzn_wt_read_metadata "$1")" 2>/dev/null
+    local json head
+    json="$(_kyzn_wt_read_metadata "$1")" || return 1
+    head=$(jq -r '.accepted_head' <<<"$json" 2>/dev/null) || return 1
+    [[ -n "$head" && "$head" != "null" ]] || return 1
+    printf '%s\n' "$head"
 }
 
 kyzn_wt_ref_name() { _kyzn_wt_ref_name "$1"; }
 kyzn_wt_checkout_dir() { _kyzn_wt_checkout_dir "$1"; }
 kyzn_wt_set_phase() { _kyzn_wt_set_phase "$1" "$2"; }
-kyzn_wt_phase() { jq -r '.phase // empty' <<<"$(_kyzn_wt_read_metadata "$1")" 2>/dev/null; }
+kyzn_wt_phase() {
+    local json
+    json="$(_kyzn_wt_read_metadata "$1")" || return 1
+    jq -r '.phase // empty' <<<"$json" 2>/dev/null
+}
 kyzn_wt_discard() { _kyzn_wt_discard "$1"; }
 
 # Advance accepted_head from its current value to $2 (a commit reachable via
@@ -556,8 +607,12 @@ kyzn_wt_discard() { _kyzn_wt_discard "$1"; }
 # is discarded.
 kyzn_wt_advance_accepted_head() {
     local run_id="$1" candidate="$2"
-    local source_repo old ref_name
-    source_repo=$(jq -r '.source_repo' <<<"$(_kyzn_wt_read_metadata "$run_id")") || return 1
+    local source_repo old ref_name json
+    json="$(_kyzn_wt_read_metadata "$run_id")" || return 1
+    source_repo=$(jq -r '.source_repo' <<<"$json") || return 1
+    # An empty source_repo would make every `git -C "$source_repo"` below
+    # silently operate on the current directory instead.
+    [[ -n "$source_repo" && "$source_repo" != "null" ]] || return 1
     old=$(kyzn_wt_accepted_head "$run_id") || return 1
     ref_name="$(_kyzn_wt_ref_name "$run_id")"
 
