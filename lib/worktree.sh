@@ -440,21 +440,28 @@ kyzn_wt_materialize() {
         fi
     fi
 
-    # Detect likely missing in-tree dependencies. If package.json / requirements.txt /
-    # Cargo.toml / go.mod exists but the corresponding dependency directory is absent,
-    # dependencies likely need installation. Report as unavailable so installation
-    # can be opted into explicitly, not silently treated as a red build.
-    if [[ -f "$checkout_dir/package.json" && ! -d "$checkout_dir/node_modules" ]]; then
-        KYZN_WT_LAST_UNAVAILABLE="package.json present but node_modules absent — dependencies likely need installation (enable verification.install_deps)"
-        _kyzn_wt_discard "$run_id"
-        return 1
+    # Detect likely missing in-tree dependencies. Only block if dependency
+    # installation is NOT enabled; when install_deps is true, verify_build
+    # will install them and the check becomes a red-build signal, not unavailable.
+    local install_deps_enabled=false
+    if [[ "$(config_get '.verification.install_deps' 'false')" == "true" ]] || \
+       [[ "${KYZN_VERIFY_INSTALL_DEPS:-}" == "true" ]]; then
+        install_deps_enabled=true
     fi
-    if [[ ( -f "$checkout_dir/requirements.txt" || -f "$checkout_dir/pyproject.toml" ) && ! -d "$checkout_dir/.venv" && ! -d "$checkout_dir/venv" ]]; then
-        # Python: only unavailable if neither .venv nor venv exist (some projects use venv)
-        # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh
-        KYZN_WT_LAST_UNAVAILABLE="Python project with dependencies but no .venv or venv — dependencies likely need installation (enable verification.install_deps)"
-        _kyzn_wt_discard "$run_id"
-        return 1
+
+    if ! $install_deps_enabled; then
+        if [[ -f "$checkout_dir/package.json" && ! -d "$checkout_dir/node_modules" ]]; then
+            KYZN_WT_LAST_UNAVAILABLE="package.json present but node_modules absent — dependencies likely need installation (enable verification.install_deps)"
+            _kyzn_wt_discard "$run_id"
+            return 1
+        fi
+        if [[ ( -f "$checkout_dir/requirements.txt" || -f "$checkout_dir/pyproject.toml" ) && ! -d "$checkout_dir/.venv" && ! -d "$checkout_dir/venv" ]]; then
+            # Python: only unavailable if neither .venv nor venv exist (some projects use venv)
+            # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh
+            KYZN_WT_LAST_UNAVAILABLE="Python project with dependencies but no .venv or venv — dependencies likely need installation (enable verification.install_deps)"
+            _kyzn_wt_discard "$run_id"
+            return 1
+        fi
     fi
 
     return 0

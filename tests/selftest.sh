@@ -4437,6 +4437,8 @@ preferences:
   max_turns: 5
   diff_limit: 10000
   on_build_fail: $on_build_fail
+verification:
+  install_deps: true
 focus:
   priorities: [security]
 YAML

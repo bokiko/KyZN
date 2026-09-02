@@ -1460,14 +1460,6 @@ run_fix_phase() {
             return 1
         fi
     fi
-    # If execution context not already set up (direct caller), set it up now.
-    # cmd_analyze --fix sets this up early, before detection/measurement.
-    if [[ -z "${KYZN_FIX_WT_RUN_ID:-}" ]]; then
-        if ! _kyzn_setup_isolated_execution; then
-            release_kyzn_lock
-            return 1
-        fi
-    fi
 
     local wt_run_id="$KYZN_FIX_WT_RUN_ID"
     local invocation_root_dir="$KYZN_FIX_INVOCATION_ROOT"
