@@ -725,7 +725,34 @@ cmd_analyze() {
 
     fix_budget="${fix_budget:-5.00}"
 
-    # Detect project
+    # For --fix: set up isolated execution context BEFORE detection/measurement/analysis
+    # (issue #21 stage 2 transaction ordering). Report-only analyze continues from invocation root.
+    if $fix; then
+        acquire_kyzn_lock "analyze-fix" || return 1
+        if ! _kyzn_setup_isolated_execution; then
+            release_kyzn_lock
+            return 1
+        fi
+        # cd into execution root so detection/measurement/profiling/analysis all run there
+        if ! cd "$KYZN_FIX_EXECUTION_ROOT"; then
+            log_error "Could not enter isolated execution worktree."
+            kyzn_wt_remove_run "$KYZN_FIX_WT_RUN_ID" 2>/dev/null || true
+            KYZN_FIX_WT_RUN_ID=""
+            release_kyzn_lock
+            return 1
+        fi
+        # Reset cached project globals so they resolve against execution root
+        # shellcheck disable=SC2034
+        KYZN_PROJECT_ROOT=""
+        # shellcheck disable=SC2034
+        KYZN_PROJECT_WORKDIR=""
+        # shellcheck disable=SC2034
+        KYZN_PROJECT_WORKDIR_ERROR=""
+        # shellcheck disable=SC2034
+        KYZN_PROJECT_NAME=""
+    fi
+
+    # Detect project (from execution root if --fix, invocation root otherwise)
     detect_project_type
     detect_project_features
     print_detection
@@ -1227,13 +1254,29 @@ cmd_analyze() {
         log_ok "Report exported to $export_path"
     fi
 
-    # If no findings, we're done
+    # If no findings, clean up isolated context if we set one up
     if (( finding_count == 0 )); then
+        if [[ -n "${KYZN_FIX_WT_RUN_ID:-}" ]]; then
+            cd "$KYZN_FIX_INVOCATION_ROOT" 2>/dev/null || true
+            kyzn_wt_remove_run "$KYZN_FIX_WT_RUN_ID" 2>/dev/null || true
+            KYZN_FIX_WT_RUN_ID=""
+            release_kyzn_lock
+        fi
         return 0
     fi
 
     # Fix phase: only runs when --fix flag is set (i.e. 'kyzn fix' or 'kyzn analyze --fix')
     if $fix; then
+        # Dispose the analysis checkout before batch one (issue #21 stage 2).
+        # Analysis ran in execution_root and wrote findings. Now discard that
+        # checkout so batch one gets a fresh materialization, with no analysis
+        # residue (build outputs, installed deps, generated files).
+        cd "$KYZN_FIX_INVOCATION_ROOT" 2>/dev/null || true
+        if ! kyzn_wt_discard "$KYZN_FIX_WT_RUN_ID"; then
+            log_warn "Could not discard analysis checkout — it is retained for inspection."
+            log_warn "  kyzn worktrees list"
+            log_warn "  kyzn worktrees remove $KYZN_FIX_WT_RUN_ID"
+        fi
         run_fix_phase "$findings_file" "$min_severity" "$run_id" "$fix_budget"
     elif ! $auto; then
         echo ""
@@ -1360,6 +1403,37 @@ generate_detailed_report() {
 }
 
 # ---------------------------------------------------------------------------
+# Set up isolated execution context for analyze --fix
+# Called early by cmd_analyze --fix, or by run_fix_phase for direct callers.
+# Sets KYZN_FIX_WT_RUN_ID, KYZN_FIX_INVOCATION_ROOT, KYZN_FIX_EXECUTION_ROOT.
+# Returns 0 on success with those globals set, 1 on failure with cleanup done.
+# ---------------------------------------------------------------------------
+_kyzn_setup_isolated_execution() {
+    local invocation_root
+    invocation_root="$(project_root)"
+    
+    local source_commit
+    if ! source_commit=$(git -C "$invocation_root" rev-parse HEAD 2>/dev/null); then
+        log_error "Could not resolve the current commit to pin the isolated execution transaction."
+        return 1
+    fi
+
+    # shellcheck disable=SC2034 # Cross-file out-params
+    KYZN_FIX_INVOCATION_ROOT="$invocation_root"
+    KYZN_FIX_WT_RUN_ID=""
+    KYZN_FIX_EXECUTION_ROOT=""
+    
+    if ! kyzn_wt_register "$invocation_root" "$source_commit"; then
+        log_error "Could not register an isolated execution worktree for this run."
+        return 1
+    fi
+    KYZN_FIX_WT_RUN_ID="$KYZN_WT_RUN_ID"
+    KYZN_FIX_EXECUTION_ROOT="$(kyzn_wt_checkout_dir "$KYZN_FIX_WT_RUN_ID")"
+    
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run the fix phase (Sonnet implements findings) — batched with reflexion
 # ---------------------------------------------------------------------------
 run_fix_phase() {
@@ -1377,48 +1451,39 @@ run_fix_phase() {
     # Concurrency lock (prevents two concurrent analyze-fix runs from
     # corrupting the same repository, including across linked worktrees).
     acquire_kyzn_lock "fix" || return 1
+    
+    # If execution context not already set up (direct caller), set it up now.
+    # cmd_analyze --fix sets this up early, before detection/measurement.
+    if [[ -z "${KYZN_FIX_WT_RUN_ID:-}" ]]; then
+        if ! _kyzn_setup_isolated_execution; then
+            release_kyzn_lock
+            return 1
+        fi
+    fi
+    # If execution context not already set up (direct caller), set it up now.
+    # cmd_analyze --fix sets this up early, before detection/measurement.
+    if [[ -z "${KYZN_FIX_WT_RUN_ID:-}" ]]; then
+        if ! _kyzn_setup_isolated_execution; then
+            release_kyzn_lock
+            return 1
+        fi
+    fi
 
-    # ---------------------------------------------------------------------
-    # Isolated execution transaction (issue #21 stage 2). Everything that
-    # mutates — baseline verification, every fix batch, and the commits they
-    # produce — runs inside a disposable Git worktree registered under
-    # ~/.kyzn/worktrees/<run-id>/checkout. The invocation checkout (cwd at
-    # entry) is never staged into, committed to, reset, or checked out to a
-    # different ref by this function. Paths anchored to the invocation
-    # checkout are resolved up front, before the process ever `cd`s away.
-    # ---------------------------------------------------------------------
-    local invocation_root_dir reports_dir report_file
-    invocation_root_dir="$(project_root)"
+    local wt_run_id="$KYZN_FIX_WT_RUN_ID"
+    local invocation_root_dir="$KYZN_FIX_INVOCATION_ROOT"
+    local checkout_dir="$KYZN_FIX_EXECUTION_ROOT"
+    local reports_dir report_file
     reports_dir="$(_kyzn_reports_dir_path)"
     report_file="$reports_dir/$run_id-analysis.md"
 
     local source_commit
-    if ! source_commit=$(git -C "$invocation_root_dir" rev-parse HEAD 2>/dev/null); then
-        log_error "Could not resolve the current commit to pin the isolated execution transaction."
+    source_commit=$(kyzn_wt_accepted_head "$wt_run_id") || {
+        log_error "Could not resolve the pinned source commit."
         release_kyzn_lock
         return 1
-    fi
+    }
 
-    # KYZN_FIX_WT_RUN_ID and KYZN_FIX_INVOCATION_ROOT are plain (non-local)
-    # globals: the EXIT/INT/TERM trap function below is NOT a closure — it
-    # is an ordinary global function, so once run_fix_phase returns, its
-    # `local invocation_root_dir` no longer exists. An EXIT trap does not
-    # fire on function return, only when the owning shell itself exits, so
-    # a `local` reference here would read as an unbound variable whenever
-    # that later exit happens in the same shell (e.g. the next test in the
-    # same process, or the CLI script finishing). Mirroring the value that
-    # survives into a global — exactly like release_kyzn_lock relies on
-    # KYZN_LOCKDIR rather than a local — keeps the trap correct however
-    # bash re-enters this scope.
-    KYZN_FIX_INVOCATION_ROOT="$invocation_root_dir"
-    KYZN_FIX_WT_RUN_ID=""
-    # Every explicit return path below performs its own cleanup (worktree
-    # disposition, then _kyzn_fix_finish) and disarms this trap before
-    # returning, so it only ever fires for a genuine interruption or
-    # process exit while run_fix_phase is still on the call stack. The
-    # DONE guard makes a second invocation (a signal arriving in the
-    # narrow window between an explicit cleanup and the trap disarm) a
-    # no-op instead of a second destructive cleanup.
+    # KYZN_FIX_CLEANUP_DONE guards against double cleanup from concurrent signals
     KYZN_FIX_CLEANUP_DONE=false
     _kyzn_fix_cleanup() {
         $KYZN_FIX_CLEANUP_DONE && return 0
@@ -1480,16 +1545,6 @@ run_fix_phase() {
     trap _kyzn_fix_cleanup EXIT
     trap '_kyzn_fix_cleanup; exit 130' INT
     trap '_kyzn_fix_cleanup; exit 143' TERM
-
-    if ! kyzn_wt_register "$invocation_root_dir" "$source_commit"; then
-        log_error "Could not register an isolated execution worktree for this run."
-        _kyzn_fix_finish
-        return 1
-    fi
-    KYZN_FIX_WT_RUN_ID="$KYZN_WT_RUN_ID"
-    local wt_run_id="$KYZN_FIX_WT_RUN_ID"
-    local checkout_dir
-    checkout_dir="$(kyzn_wt_checkout_dir "$wt_run_id")"
 
     # Filter findings by severity
     local min_rank
