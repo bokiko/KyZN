@@ -9862,6 +9862,66 @@ PROBE
     assert_contains "TERM handler exits after cleanup" "$fix_body" "_kyzn_fix_cleanup; exit 143"
 }
 
+test_worktree_missing_deps_unavailable() {
+    log_header "108. worktree materialize: missing node_modules reports unavailable, not red build"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    
+    # Create a package.json but no node_modules
+    echo '{"name":"test","version":"1.0.0"}' > package.json
+    git add package.json && git commit -m "add package.json"
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    # Should fail with unavailable, not succeed
+    if kyzn_wt_materialize "$run_id" "$src_sha"; then
+        fail "materialize should have detected missing node_modules" "succeeded"
+    fi
+
+    assert_contains "unavailable reason mentions node_modules" \
+        "$KYZN_WT_LAST_UNAVAILABLE" "node_modules"
+    assert_contains "unavailable reason mentions dependencies" \
+        "$KYZN_WT_LAST_UNAVAILABLE" "dependencies"
+
+    # Cleanup
+    kyzn_wt_remove_run "$run_id" 2>/dev/null || true
+    cleanup_sandbox
+}
+
+test_worktree_gitignored_runtime_input_detected() {
+    log_header "109. worktree materialize: missing .env reports unavailable with specific reason"
+
+    source "$KYZN_ROOT/lib/worktree.sh"
+    create_sandbox generic
+    
+    # Create a .env file that is gitignored
+    echo ".env" >> .gitignore
+    echo "SECRET=test" > .env
+    git add .gitignore && git commit -m "add gitignore"
+    local src_sha; src_sha=$(git rev-parse HEAD)
+
+    # .env is not tracked, so it won't be in the worktree
+    kyzn_wt_register "$SANDBOX" "$src_sha"
+    local run_id="$KYZN_WT_RUN_ID"
+
+    # Should fail with specific unavailable reason
+    if kyzn_wt_materialize "$run_id" "$src_sha"; then
+        fail "materialize should have detected missing .env" "succeeded"
+    fi
+
+    assert_contains "unavailable reason mentions .env" \
+        "$KYZN_WT_LAST_UNAVAILABLE" ".env"
+    assert_contains "unavailable reason mentions runtime-input" \
+        "$KYZN_WT_LAST_UNAVAILABLE" "runtime-input"
+
+    # Cleanup
+    kyzn_wt_remove_run "$run_id" 2>/dev/null || true
+    cleanup_sandbox
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -10018,6 +10078,8 @@ main() {
     test_worktree_materialize_refuses_smudge_filter
     test_worktree_metadata_read_failure_is_detected
     test_fix_phase_discard_failure_is_non_fatal
+    test_worktree_missing_deps_unavailable
+    test_worktree_gitignored_runtime_input_detected
 
     # Stress tests
     if [[ "$mode" == "--full" || "$mode" == "--stress" ]]; then

@@ -451,6 +451,7 @@ kyzn_wt_materialize() {
     fi
     if [[ ( -f "$checkout_dir/requirements.txt" || -f "$checkout_dir/pyproject.toml" ) && ! -d "$checkout_dir/.venv" && ! -d "$checkout_dir/venv" ]]; then
         # Python: only unavailable if neither .venv nor venv exist (some projects use venv)
+        # shellcheck disable=SC2034 # Cross-file out-param: read by callers in lib/analyze.sh
         KYZN_WT_LAST_UNAVAILABLE="Python project with dependencies but no .venv or venv — dependencies likely need installation (enable verification.install_deps)"
         _kyzn_wt_discard "$run_id"
         return 1
