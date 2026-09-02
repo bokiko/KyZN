@@ -629,20 +629,24 @@ kyzn_wt_advance_accepted_head() {
 # Must be called under the repository lock before resuming or removing a run.
 kyzn_wt_reconcile_pending() {
     local run_id="$1"
-    local json source_repo ref_name accepted pending cur
+    local json source_repo accepted pending cur derived_ref meta_ref
     json="$(_kyzn_wt_read_metadata "$run_id")" || return 1
     source_repo=$(jq -r '.source_repo' <<<"$json")
-    # Derived from the validated run ID, never trusted from metadata as the
-    # value handed to Git — metadata's own ref_name is already checked
-    # against this same derivation inside _kyzn_wt_read_metadata, but the
-    # value that actually reaches `git rev-parse`/`update-ref` here must
-    # come from the derivation itself, not a JSON field.
-    ref_name="$(_kyzn_wt_ref_name "$run_id")"
+    # The ref name is ALWAYS derived from the validated run ID, never read
+    # from metadata and trusted directly. The metadata value is checked
+    # against the derived value for consistency, but only the derived value
+    # is ever passed to Git commands.
+    derived_ref="$(_kyzn_wt_ref_name "$run_id")"
+    meta_ref=$(jq -r '.ref_name' <<<"$json")
+    if [[ "$meta_ref" != "$derived_ref" ]]; then
+        log_error "Run $run_id: metadata ref_name does not match derived name — refusing to reconcile."
+        return 1
+    fi
     accepted=$(jq -r '.accepted_head' <<<"$json")
     pending=$(jq -r '.pending_head // empty' <<<"$json")
     [[ -n "$pending" ]] || return 0
 
-    cur=$(git -C "$source_repo" rev-parse --verify -q "$ref_name" 2>/dev/null) || return 1
+    cur=$(git -C "$source_repo" rev-parse --verify -q "$derived_ref" 2>/dev/null) || return 1
     if [[ "$cur" == "$accepted" ]]; then
         _kyzn_wt_update_metadata "$run_id" '.pending_head = null'
     elif [[ "$cur" == "$pending" ]]; then
