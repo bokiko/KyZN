@@ -425,6 +425,37 @@ kyzn_wt_materialize() {
     done < "$tmp_attrs"
     rm -f "$tmp_attrs"
 
+    # Detect gitignored runtime-input files present in invocation but absent
+    # in execution. KyZN does not infer necessity — a missing .env might be
+    # required or might be unused. Report it as unavailable with a specific
+    # reason so the user can decide.
+    local invocation_root
+    invocation_root=$(jq -r '.source_repo' <<<"$json") || invocation_root=""
+    if [[ -n "$invocation_root" && -f "$invocation_root/.env" && ! -f "$checkout_dir/.env" ]]; then
+        # Verify .env is actually gitignored in invocation root
+        if git -C "$invocation_root" check-ignore -q ".env" 2>/dev/null; then
+            KYZN_WT_LAST_UNAVAILABLE="gitignored runtime-input file (.env) present in invocation checkout but absent from isolated execution — KyZN does not infer whether it is required"
+            _kyzn_wt_discard "$run_id"
+            return 1
+        fi
+    fi
+
+    # Detect likely missing in-tree dependencies. If package.json / requirements.txt /
+    # Cargo.toml / go.mod exists but the corresponding dependency directory is absent,
+    # dependencies likely need installation. Report as unavailable so installation
+    # can be opted into explicitly, not silently treated as a red build.
+    if [[ -f "$checkout_dir/package.json" && ! -d "$checkout_dir/node_modules" ]]; then
+        KYZN_WT_LAST_UNAVAILABLE="package.json present but node_modules absent — dependencies likely need installation (enable verification.install_deps)"
+        _kyzn_wt_discard "$run_id"
+        return 1
+    fi
+    if [[ ( -f "$checkout_dir/requirements.txt" || -f "$checkout_dir/pyproject.toml" ) && ! -d "$checkout_dir/.venv" && ! -d "$checkout_dir/venv" ]]; then
+        # Python: only unavailable if neither .venv nor venv exist (some projects use venv)
+        KYZN_WT_LAST_UNAVAILABLE="Python project with dependencies but no .venv or venv — dependencies likely need installation (enable verification.install_deps)"
+        _kyzn_wt_discard "$run_id"
+        return 1
+    fi
+
     return 0
 }
 
