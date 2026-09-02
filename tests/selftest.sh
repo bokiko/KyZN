@@ -7813,9 +7813,13 @@ test_lock_call_order_wiring() {
     fix_body=$(awk '/^run_fix_phase\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
     assert_contains "acquire_kyzn_lock \"fix\" is inside run_fix_phase" "$fix_body" 'acquire_kyzn_lock "fix"'
 
+    # cmd_analyze --fix now acquires the lock BEFORE detection/measurement/analysis
+    # (issue #21 stage 2 transaction ordering), so it IS present in cmd_analyze.
+    # The key assertion is that run_fix_phase retains its own acquisition for
+    # direct callers (tests).
     local analyze_body
     analyze_body=$(awk '/^cmd_analyze\(\)/,/^}/' "$KYZN_ROOT/lib/analyze.sh")
-    assert_not_contains "cmd_analyze itself never calls acquire_kyzn_lock directly" "$analyze_body" "acquire_kyzn_lock"
+    assert_contains "cmd_analyze --fix acquires the lock early (transaction ordering)" "$analyze_body" "acquire_kyzn_lock"
 
     local measure_body
     measure_body=$(awk '/^cmd_measure\(\)/,/^}/' "$KYZN_ROOT/lib/measure.sh")
