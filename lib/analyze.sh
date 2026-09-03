@@ -1602,6 +1602,21 @@ run_fix_phase() {
             [[ -n "$_stderr_tail" ]] && log_dim "$_stderr_tail"
             rm -f "$fix_stderr"
 
+            # Reset worktree to pre-batch state to prevent AI edits from leaking
+            # into subsequent batches. Mirror the verify-failure path pattern.
+            log_dim "  Reverting worktree to pre-batch state..."
+            local _saved_local=""
+            local _local_config_file
+            _local_config_file=$(_kyzn_local_config_path)
+            [[ -f "$_local_config_file" ]] && _saved_local=$(cat "$_local_config_file")
+            safe_git reset --hard "$pre_batch_head" 2>/dev/null
+            # Restore saved files
+            if [[ -n "$_saved_local" ]]; then
+                mkdir -p "$(_kyzn_dir_path)"
+                echo "$_saved_local" > "$_local_config_file"
+            fi
+            ensure_kyzn_dirs  # re-create .kyzn/ structure if wiped
+
             [[ "${sys_prompt_file:-}" != "$KYZN_ROOT/templates/system-prompt.md" ]] && rm -f "${sys_prompt_file:-}" 2>/dev/null
             (( batches_failed++ )) || true
             continue
@@ -1800,6 +1815,22 @@ ${retry_baseline_context}
     # Step 5: Check if any batches succeeded
     if (( batches_applied == 0 )); then
         log_error "All fix batches failed. No changes to commit."
+        
+        # Safety: refuse to switch branches if worktree is dirty — a failed
+        # batch may have left uncommitted AI changes. Switching would carry
+        # them onto the user's original branch. Leave the kyzn/ branch in
+        # place for inspection instead of deleting it.
+        if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            log_error "Worktree is dirty after failed batches — refusing to switch branches."
+            log_error "The kyzn/ branch has been left in place for inspection."
+            log_info "Uncommitted changes:"
+            git status --short | head -20 | while IFS= read -r line; do
+                log_dim "  $line"
+            done
+            release_kyzn_lock
+            return 1
+        fi
+        
         safe_checkout_back
         safe_git branch -D "$branch_name" 2>/dev/null || true
         release_kyzn_lock
