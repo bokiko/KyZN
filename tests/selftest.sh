@@ -6844,10 +6844,9 @@ test_fix_batch_claude_failure_writes_diagnostics() {
     local saved_path="$PATH" rc out log run_id fix_log findings
 
     # Claude crashes mid-edit on the CRITICAL batch. The HIGH batch that
-    # follows still runs (the crashed batch is skipped, not reverted — KyZN
-    # does not roll back worktree edits on this path); the crashed batch's
-    # stderr and exit code must survive as a diagnostics log instead of being
-    # deleted along with the temp capture file.
+    # follows still runs after the crashed batch is reverted; the crashed
+    # batch's stderr and exit code must survive as a diagnostics log instead
+    # of being deleted along with the temp capture file.
     _fix_batch_diag_sandbox
     run_id="20260812-fixt10"
     printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
@@ -6895,6 +6894,172 @@ SH
 
     # The log is never deleted by anything downstream of the failed batch.
     assert_file_exists "diagnostics: log still present after the run completes" "$fix_log"
+
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+}
+
+test_fix_batch_claude_crash_reverts_worktree() {
+    log_header "91a. claude crash after modifying files → worktree restored, next batch starts clean"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc out log run_id findings
+
+    # Claude modifies src/index.js and crashes on CRITICAL batch. The HIGH
+    # batch that follows must start with a clean tree — the crashed batch's
+    # edits must be rolled back via `git reset --hard`.
+    _fix_batch_diag_sandbox
+    run_id="20260903-fixt11"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[
+        {"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"},
+        {"severity":"HIGH","category":"correctness","title":"h1","description":"d2","file":"src/index.js","fix":"f2"}
+    ]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    # Capture baseline src/index.js hash before any changes
+    local baseline_index_hash
+    baseline_index_hash=$(git hash-object src/index.js)
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${CLAUDE_CALL:-1}" == "1" ]]; then
+    # CRITICAL batch: modify the file, then crash
+    echo "// CRITICAL batch leaked edit" >> src/index.js
+    echo "mock claude crashed for CRITICAL batch" >&2
+    exit 9
+else
+    # HIGH batch: should start with a clean tree (the CRITICAL edits reverted)
+    # Make a different change
+    printf '# Test Project\n\nFixed documentation.\n' > README.md
+fi
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" HIGH "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/a.out"); log=$(cat "$WORKFLOW_LOG")
+
+    assert_eq "rollback: both batches ran" "2" "$(grep -c CLAUDE-INVOKED "$WORKFLOW_LOG")"
+    assert_contains "rollback: CRITICAL batch reported as failed" "$out" "CRITICAL batch failed"
+
+    # The key assertion: src/index.js must NOT contain the CRITICAL batch's
+    # leaked edit. It should match the baseline (reverted by git reset --hard).
+    local after_critical_hash
+    after_critical_hash=$(git hash-object src/index.js 2>/dev/null || echo "missing")
+    if [[ "$after_critical_hash" == "$baseline_index_hash" ]]; then
+        pass "rollback: src/index.js restored to pre-batch state after crash"
+    else
+        fail "rollback: src/index.js restored to pre-batch state after crash" \
+            "file still contains CRITICAL batch edits: $(grep -c 'CRITICAL batch leaked edit' src/index.js 2>/dev/null || echo 0) leaked lines"
+    fi
+
+    # The HIGH batch should have applied cleanly on the reverted tree
+    assert_contains "rollback: HIGH batch applied after CRITICAL reverted" "$out" "1 batches applied"
+    if [[ -f README.md ]] && grep -q "Fixed documentation" README.md; then
+        pass "rollback: HIGH batch's change committed (clean start)"
+    else
+        fail "rollback: HIGH batch's change committed" "README.md missing or wrong content"
+    fi
+
+    PATH="$saved_path"
+    unset CLAUDE_MUTATE
+    cleanup_sandbox
+}
+
+test_fix_batch_all_fail_dirty_tree_protection() {
+    log_header "91b. all batches fail with dirty tree → no branch switch, kyzn/ branch survives"
+
+    source "$KYZN_ROOT/lib/core.sh"
+    source "$KYZN_ROOT/lib/detect.sh"
+    source "$KYZN_ROOT/lib/verify.sh"
+    source "$KYZN_ROOT/lib/execute.sh"
+    source "$KYZN_ROOT/lib/measure.sh"
+    source "$KYZN_ROOT/lib/prompt.sh"
+    source "$KYZN_ROOT/lib/allowlist.sh"
+    source "$KYZN_ROOT/lib/report.sh"
+    source "$KYZN_ROOT/lib/history.sh"
+    source "$KYZN_ROOT/lib/analyze.sh"
+
+    local saved_path="$PATH" rc out log run_id findings original_branch kyzn_branch
+
+    # Both batches fail, but the second one leaves a dirty tree despite the
+    # reset (simulating a bug in the reset logic or a .kyzn file change).
+    # The all-failed abort must detect the dirty tree and refuse to switch.
+    _fix_batch_diag_sandbox
+    original_branch=$(git rev-parse --abbrev-ref HEAD)
+    run_id="20260903-fixt12"
+    printf '# Analysis\n' > "$KYZN_REPORTS_DIR/${run_id}-analysis.md"
+    findings='[
+        {"severity":"CRITICAL","category":"security","title":"c1","description":"d1","file":"src/index.js","fix":"f1"},
+        {"severity":"HIGH","category":"correctness","title":"h1","description":"d2","file":"src/index.js","fix":"f2"}
+    ]'
+    echo "$findings" > "$WORKFLOW_TMP/findings.json"
+
+    cat > "$WORKFLOW_TMP/mutate.sh" <<'SH'
+#!/usr/bin/env bash
+if [[ "${CLAUDE_CALL:-1}" == "1" ]]; then
+    # CRITICAL batch: modify and crash
+    echo "// CRITICAL leak" >> src/index.js
+    exit 10
+else
+    # HIGH batch: modify, crash, and leave a rogue untracked file
+    # (simulating something that survives the reset)
+    echo "// HIGH leak" >> src/index.js
+    echo "rogue content" > rogue.txt
+    exit 11
+fi
+SH
+    CLAUDE_MUTATE="$WORKFLOW_TMP/mutate.sh"; export CLAUDE_MUTATE
+
+    rc=0
+    run_fix_phase "$WORKFLOW_TMP/findings.json" HIGH "$run_id" "1.00" \
+        > "$WORKFLOW_TMP/a.out" 2>&1 || rc=$?
+    trap - EXIT INT TERM
+    out=$(cat "$WORKFLOW_TMP/a.out")
+
+    # Both batches should have failed
+    assert_contains "dirty-tree: both batches failed" "$out" "All fix batches failed"
+    
+    # The worktree should be dirty (rogue.txt was created but not reset)
+    assert_contains "dirty-tree: CLI reports dirty tree" "$out" "Worktree is dirty"
+    assert_contains "dirty-tree: CLI refuses branch switch" "$out" "refusing to switch branches"
+    
+    # We should still be on the kyzn/ branch (not switched back)
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [[ "$current_branch" == kyzn/* ]]; then
+        pass "dirty-tree: still on kyzn/ branch after all-failed abort"
+    else
+        fail "dirty-tree: still on kyzn/ branch" "switched to $current_branch"
+    fi
+    
+    # The kyzn/ branch should not have been deleted
+    if git rev-parse --verify "$current_branch" &>/dev/null; then
+        pass "dirty-tree: kyzn/ branch survives (not deleted)"
+    else
+        fail "dirty-tree: kyzn/ branch survives" "branch was deleted"
+    fi
+    
+    # The original branch should have zero new modifications
+    # (can't easily check this from the kyzn/ branch, but we verified we're not on it)
+    assert_not_contains "dirty-tree: original branch untouched" "$out" "checked out $original_branch"
+    
+    # The run should have failed
+    assert_exit_code "dirty-tree: run fails with dirty tree" 1 "$rc"
 
     PATH="$saved_path"
     unset CLAUDE_MUTATE
@@ -9014,6 +9179,8 @@ main() {
     test_test_deletion_guard_sees_both_rename_sides
     test_git_path_batches_flush_and_surface_failure
     test_fix_batch_claude_failure_writes_diagnostics
+    test_fix_batch_claude_crash_reverts_worktree
+    test_fix_batch_all_fail_dirty_tree_protection
     test_lock_identity_canonical_and_worktrees
     test_lock_symlinked_global_dir
     test_lock_reclaim_semantics
