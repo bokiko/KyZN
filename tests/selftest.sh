@@ -6994,7 +6994,7 @@ test_fix_batch_all_fail_dirty_tree_protection() {
     source "$KYZN_ROOT/lib/history.sh"
     source "$KYZN_ROOT/lib/analyze.sh"
 
-    local saved_path="$PATH" rc out log run_id findings original_branch kyzn_branch
+    local saved_path="$PATH" rc out log run_id findings original_branch
 
     # Both batches fail, but the second one leaves a dirty tree despite the
     # reset (simulating a bug in the reset logic or a .kyzn file change).
