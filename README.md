@@ -237,8 +237,8 @@ kyzn fix --allow-unsafe-host-execution
 The CI entries above are deterministic KyZN fixtures, not claims that every external language toolchain is installed in the matrix. Host execution remains explicitly unsafe until an isolated runner ships.
 
 <!-- BEGIN GENERATED REPOSITORY FACTS -->
-- Repository files: **78**
-- Bash entrypoints/modules/scripts: **26** files, **18989** lines
+- Repository files: **79**
+- Bash entrypoints/modules/scripts: **26** files, **18991** lines
 - Self-test harness: **136** test functions, **9239** lines (runtime assertion totals are reported by the suite, not hardcoded)
 - Project profiles: **6** languages plus the generic fallback
 - CI matrix: **Linux and macOS**, each running quick and full self-tests
