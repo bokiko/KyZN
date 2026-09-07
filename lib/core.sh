@@ -1428,6 +1428,7 @@ write_history() {
 
     if [[ -n "$_extra_name" ]]; then
         local -n _wh_fields="$_extra_name"
+        local key
         for key in "${!_wh_fields[@]}"; do
             jq_args+=(--arg "$key" "${_wh_fields[$key]}")
         done
