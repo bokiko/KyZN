@@ -138,7 +138,7 @@ remain on the branch; preserving them is deliberate, and the branch is left for 
 
 <!-- BEGIN GENERATED REPOSITORY FACTS -->
 - Repository files: **79**
-- Bash entrypoints/modules/scripts: **26** files, **18991** lines
+- Bash entrypoints/modules/scripts: **26** files, **18990** lines
 - Self-test harness: **136** test functions, **9239** lines (runtime assertion totals are reported by the suite, not hardcoded)
 - Project profiles: **6** languages plus the generic fallback
 - CI matrix: **Linux and macOS**, each running quick and full self-tests
